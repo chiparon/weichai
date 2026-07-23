@@ -188,6 +188,20 @@ function declaration(
           /^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_]\w*)\s*\(/,
       },
     ],
+    CSharp: [
+      {
+        kind: 'class',
+        pattern:
+          /^\s*(?:public\s+)?(?:(?:abstract|sealed|static|partial|readonly|unsafe)\s+)*(?:class|struct|interface|record|enum)\s+([A-Za-z_$][\w$]*)/,
+      },
+      ...(atTypeMemberLevel
+        ? [{
+            kind: 'function' as const,
+            pattern:
+              /^\s*(?:(?:public|protected|private|internal|static|virtual|override|abstract|sealed|async|new|partial|readonly|unsafe|extern)\s+)*(?:[\w$.[\]<?>,@?]+\s+)+([A-Za-z_$][\w$]*)\s*\(/,
+          }]
+        : []),
+    ],
   };
 
   for (const { kind, pattern } of patterns[language]) {

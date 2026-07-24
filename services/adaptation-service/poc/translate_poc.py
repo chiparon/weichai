@@ -248,14 +248,55 @@ def compile_csharp(code: str, class_name: str) -> dict:
     编译 C# 方法体。
     返回 {"success": bool, "errors": [str], "output": str}
     """
-    # 构造一个最小可编译的 C# 文件
+    # 构造一个最小可编译的 C# 文件（含桩类型 + 静态依赖）
     full_source = f"""using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
 using System.Text;
 
+// ---- 编译桩：领域对象 ----
+public class OrderItem {{
+    public decimal Price {{ get; set; }}
+    public int Quantity {{ get; set; }}
+    public string Category {{ get; set; }} = "";
+    public string ProductId {{ get; set; }} = "";
+}}
+public class Discount {{
+    public bool IsValid() => true;
+    public decimal Apply(decimal total) => total * 0.9m;
+}}
+public class Order {{
+    public List<OrderItem> Items {{ get; set; }} = new();
+    public string Customer {{ get; set; }} = "";
+}}
+public class PaymentRequest {{
+    public decimal Amount {{ get; set; }}
+    public string AccountId {{ get; set; }} = "";
+}}
+public class PaymentResult {{ public bool Success {{ get; set; }} }}
+public class Account {{
+    public decimal Balance {{ get; set; }}
+}}
+public class InsufficientFundsException : Exception {{
+    public InsufficientFundsException(string msg) : base(msg) {{ }}
+}}
+public class PaymentFailedException : Exception {{
+    public PaymentFailedException(string msg, Exception inner) : base(msg, inner) {{ }}
+}}
+public class GatewayException : Exception {{ }}
+public class AccountRepository {{
+    public Account FindById(string id) => new Account {{ Balance = 1000m }};
+    public void Save(Account a) {{ }}
+}}
+public class PaymentGateway {{
+    public PaymentResult Charge(PaymentRequest r) => new PaymentResult {{ Success = true }};
+}}
+
 public class {class_name} {{
+    // 依赖桩（模拟 DI 注入的字段）
+    private static readonly AccountRepository accountRepository = new();
+    private static readonly PaymentGateway paymentGateway = new();
 {code}
 }}
 """

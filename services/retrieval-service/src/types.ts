@@ -1,4 +1,8 @@
-import type { Language, SearchRequest } from '@forexplore/contracts';
+import type {
+  IndexedCodeDocument,
+  Language,
+  SearchRequest,
+} from '@forexplore/contracts';
 
 export type { IndexedCodeDocument } from '@forexplore/contracts';
 
@@ -9,7 +13,7 @@ export interface RetrievedCodeDocument extends IndexedCodeDocument {
 
 export interface SearchFilters {
   repositories: string[];
-  language?: Language;
+  languages: Language[];
   kind?: 'class' | 'function';
 }
 

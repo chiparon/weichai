@@ -37,6 +37,7 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     request: AdaptationRequest,
     signal?: AbortSignal,
   ): Promise<AdaptationResult> {
+    assertSupportedTranslation(request);
     const matchType = inferMatchType(request);
 
     // ===== Step 1: LLM 翻译 =====
@@ -113,6 +114,22 @@ export class AdaptationAdapter implements CodeAdaptationPort {
 }
 
 // ---- helpers ----
+
+function assertSupportedTranslation(request: AdaptationRequest): void {
+  if (request.strategy !== "translate") {
+    throw new Error(
+      `AdaptationAdapter only supports the "translate" strategy; received "${request.strategy}".`,
+    );
+  }
+  if (
+    request.candidate.language !== "Java" ||
+    request.target.language !== "CSharp"
+  ) {
+    throw new Error(
+      `Unsupported adaptation language pair: ${request.candidate.language} -> ${request.target.language}. Expected Java -> CSharp.`,
+    );
+  }
+}
 
 function inferMatchType(request: AdaptationRequest): "exact" | "partial" | "different" {
   const notes = request.decisionNotes.toLowerCase();

@@ -29,13 +29,14 @@ def search_candidates(query: str, top_k: int = 5) -> list[dict]:
             "name": "placeholder",
             "kind": "function",
             "path": "unknown",
-            "language": "Java",
+            "language": "CSharp",
             "signature": "unknown",
         },
         "requirement": query,
         "topK": top_k,
         "retrievalMode": "hybrid",
         "repositoryScopes": [],
+        "candidateLanguages": ["Java"],
     }
     req = urllib.request.Request(
         SEARCH_API,
@@ -237,6 +238,11 @@ def main():
             continue
 
         best = candidates[0]
+        if best.get("language") != "Java":
+            raise RuntimeError(
+                "Search language gate failed: "
+                f"expected Java candidate, received {best.get('language', 'unknown')}"
+            )
         print(f"  → 最佳匹配: {best['title']} ({best['language']})")
         print(f"    path: {best['path']}")
         print(f"    score: {best['score']['overall']:.3f}")

@@ -31,7 +31,9 @@ function parseManifest(value: unknown, manifestPath: string): CorpusManifest {
       (!Array.isArray(manifest.dependencies) ||
         !manifest.dependencies.every((dependency) => typeof dependency === 'string')))
   ) {
-    throw new Error(`Corpus manifest ${manifestPath} has invalid metadata.`);
+    throw new Error(
+      `Corpus manifest ${manifestPath} has invalid retrieval metadata.`,
+    );
   }
   return manifest as CorpusManifest;
 }
@@ -46,8 +48,15 @@ async function loadManifest(repositoryRoot: string): Promise<CorpusManifest | nu
       if (code === 'ENOENT') continue;
       throw error;
     }
-    const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
-    return parseManifest(value, manifestPath);
+    try {
+      const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
+      return parseManifest(value, manifestPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid corpus manifest ${manifestPath}: ${message}`, {
+        cause: error,
+      });
+    }
   }
   return null;
 }

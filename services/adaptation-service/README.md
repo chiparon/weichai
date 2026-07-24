@@ -3,7 +3,7 @@
 Java → C# code adaptation: LLM translation → compile validation → auto-fix → backfill.
 
 `AdaptationAdapter` accepts only the `translate` strategy with a Java candidate
-and a `CSharp` target. Unsupported language pairs are rejected before any LLM
+and a `C#` target. Unsupported language pairs are rejected before any LLM
 request is made.
 
 ## Quick start

@@ -12,7 +12,7 @@ export interface CorpusManifest {
 }
 
 const supportedLanguages = new Set<Language>([
-  'TypeScript', 'Python', 'Java', 'Rust', 'Go', 'CSharp',
+  'TypeScript', 'Python', 'Java', 'C#', 'Rust', 'Go',
 ]);
 
 function parseManifest(value: unknown, manifestPath: string): CorpusManifest {

@@ -87,7 +87,7 @@ export class AdaptationAdapter implements CodeAdaptationPort {
 
     return {
       strategy: request.strategy,
-      targetLanguage: "CSharp" as Language,
+      targetLanguage: "C#" as Language,
       generatedCode: csharpCode,
       interfaceMappings: mappings,
       validation: [
@@ -123,10 +123,10 @@ function assertSupportedTranslation(request: AdaptationRequest): void {
   }
   if (
     request.candidate.language !== "Java" ||
-    request.target.language !== "CSharp"
+    request.target.language !== "C#"
   ) {
     throw new Error(
-      `Unsupported adaptation language pair: ${request.candidate.language} -> ${request.target.language}. Expected Java -> CSharp.`,
+      `Unsupported adaptation language pair: ${request.candidate.language} -> ${request.target.language}. Expected Java -> C#.`,
     );
   }
 }

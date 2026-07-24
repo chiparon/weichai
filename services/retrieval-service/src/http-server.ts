@@ -21,9 +21,9 @@ const languages = new Set<Language>([
   'TypeScript',
   'Python',
   'Java',
+  'C#',
   'Rust',
   'Go',
-  'CSharp',
 ]);
 
 function json(

@@ -25,7 +25,7 @@ const request: AdaptationRequest = {
     name: "Calculate",
     kind: "function",
     path: "src/Calculator.cs",
-    language: "CSharp",
+    language: "C#",
     signature: "public decimal Calculate()",
   },
   candidate: javaCandidate,
@@ -44,22 +44,22 @@ describe("AdaptationAdapter language gate", () => {
         candidate: { ...javaCandidate, language: "Python" },
       }),
     ).rejects.toThrow(
-      "Unsupported adaptation language pair: Python -> CSharp. Expected Java -> CSharp.",
+      "Unsupported adaptation language pair: Python -> C#. Expected Java -> C#.",
     );
   });
 
-  it("rejects non-CSharp targets before invoking the translator", async () => {
+  it("rejects non-C# targets before invoking the translator", async () => {
     await expect(
       adapter.adapt({
         ...request,
         target: { ...request.target, language: "TypeScript" },
       }),
     ).rejects.toThrow(
-      "Unsupported adaptation language pair: Java -> TypeScript. Expected Java -> CSharp.",
+      "Unsupported adaptation language pair: Java -> TypeScript. Expected Java -> C#.",
     );
   });
 
-  it("rejects strategies unsupported by the Java-to-CSharp adapter", async () => {
+  it("rejects strategies unsupported by the Java-to-C# adapter", async () => {
     await expect(adapter.adapt({ ...request, strategy: "wrap" })).rejects.toThrow(
       'AdaptationAdapter only supports the "translate" strategy; received "wrap".',
     );

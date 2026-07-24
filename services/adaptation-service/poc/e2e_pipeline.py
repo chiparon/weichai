@@ -29,7 +29,7 @@ def search_candidates(query: str, top_k: int = 5) -> list[dict]:
             "name": "placeholder",
             "kind": "function",
             "path": "unknown",
-            "language": "CSharp",
+            "language": "C#",
             "signature": "unknown",
         },
         "requirement": query,

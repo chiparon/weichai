@@ -19,5 +19,6 @@ export function toModuleTarget(node: ModuleNode): ModuleTarget | null {
     documentation: node.documentation,
     line: node.line,
     implementationStatus: node.implementationStatus,
+    issues: node.issues,
   };
 }

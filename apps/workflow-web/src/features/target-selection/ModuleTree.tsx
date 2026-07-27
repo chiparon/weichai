@@ -46,8 +46,25 @@ const kindLabels: Partial<Record<ModuleKind, string>> = {
   function: 'fn',
 };
 
+function collectIncompleteCounts(
+  node: ModuleNode,
+  counts = new Map<string, number>(),
+): Map<string, number> {
+  const childCount = (node.children ?? []).reduce((count, child) => {
+    collectIncompleteCounts(child, counts);
+    return count + (counts.get(child.id) ?? 0);
+  }, 0);
+  const ownCount =
+    node.issues?.length || (node.implementationStatus === 'unimplemented' && childCount === 0)
+      ? 1
+      : 0;
+  counts.set(node.id, childCount + ownCount);
+  return counts;
+}
+
 export function ModuleTree({ root, selectedId, onSelect }: ModuleTreeProps) {
   const initialExpanded = useMemo(() => new Set(collectInitialExpandedIds(root)), [root]);
+  const incompleteCounts = useMemo(() => collectIncompleteCounts(root), [root]);
   const [expanded, setExpanded] = useState(initialExpanded);
 
   function toggle(id: string) {
@@ -65,6 +82,7 @@ export function ModuleTree({ root, selectedId, onSelect }: ModuleTreeProps) {
     const target = toModuleTarget(node);
     const isSelectable = Boolean(target);
     const isSelected = selectedId === node.id;
+    const incompleteCount = incompleteCounts.get(node.id) ?? 0;
 
     return (
       <div key={node.id}>
@@ -100,9 +118,13 @@ export function ModuleTree({ root, selectedId, onSelect }: ModuleTreeProps) {
             <NodeIcon node={node} expanded={isExpanded} />
           </span>
           <span className="tree-label">{node.name}</span>
-          {node.implementationStatus === 'unimplemented' ? (
-            <span className="tree-status" title="源码中尚未实现">
-              todo
+          {incompleteCount > 0 ? (
+            <span
+              className="tree-status"
+              title={`${incompleteCount} 个待补齐符号`}
+              aria-hidden="true"
+            >
+              {incompleteCount}
             </span>
           ) : null}
           {kindLabels[node.kind] ? <span className="tree-kind">{kindLabels[node.kind]}</span> : null}

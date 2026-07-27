@@ -7,6 +7,25 @@ import App from './App';
 afterEach(cleanup);
 
 describe('ForeXplore vertical workflow', () => {
+  it('summarizes source-level incomplete modules and opens one as a target', async () => {
+    const moduleTree = await workspaceModuleSymbols.loadTree(csharpWorkspaceId);
+    render(<App ports={mockWorkflowPorts} moduleTree={moduleTree} />);
+
+    expect(
+      screen.getByRole('heading', { name: '还剩 1 个模块需要补齐' }),
+    ).toBeTruthy();
+    expect(screen.getByText('2', { selector: '.readiness-metrics strong' })).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '打开未完成模块 GetQuoteAsync' }),
+    );
+
+    expect(
+      screen.getByText('Gets a quote through the configured cache and provider fallback policy.'),
+    ).toBeTruthy();
+    expect(screen.getByText('未完成信号')).toBeTruthy();
+  });
+
   it('limits real adaptation demo searches to Java candidates', async () => {
     const moduleTree = await workspaceModuleSymbols.loadTree(csharpWorkspaceId);
     const search = vi.fn(

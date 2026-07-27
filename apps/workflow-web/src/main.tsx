@@ -5,10 +5,7 @@ import '@fontsource/ibm-plex-mono/400.css';
 import { mockWorkflowPorts } from '@forexplore/mock-adapters';
 import { withSeekDbSearch } from '@forexplore/seekdb-adapter';
 import { withAdaptationService } from '@forexplore/adaptation-http-adapter';
-import {
-  csharpWorkspaceId,
-  workspaceModuleSymbols,
-} from '@forexplore/workspace-adapters';
+import { moduleTree } from 'virtual:target-module-tree';
 import App from './App';
 import './styles.css';
 
@@ -23,18 +20,13 @@ if (adaptationApiUrl) {
   workflowPorts = withAdaptationService(workflowPorts, { baseUrl: adaptationApiUrl });
 }
 
-async function bootstrap() {
-  const moduleTree = await workspaceModuleSymbols.loadTree(csharpWorkspaceId);
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <App
-        ports={workflowPorts}
-        moduleTree={moduleTree}
-        searchProvider={retrievalApiUrl ? 'SeekDB' : 'Mock'}
-        adaptationProvider={adaptationApiUrl ? 'DeepSeek HTTP' : 'Mock'}
-      />
-    </React.StrictMode>,
-  );
-}
-
-void bootstrap();
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App
+      ports={workflowPorts}
+      moduleTree={moduleTree}
+      searchProvider={retrievalApiUrl ? 'SeekDB' : 'Mock'}
+      adaptationProvider={adaptationApiUrl ? 'DeepSeek HTTP' : 'Mock'}
+    />
+  </React.StrictMode>,
+);

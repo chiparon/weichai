@@ -14,9 +14,10 @@ public sealed class QuoteOrchestrationService
     /// <summary>Creates a quote service with its providers, cache, and audit journal.</summary>
     public QuoteOrchestrationService(IReadOnlyList<IQuoteProvider> providers, IQuoteCache cache, IAuditJournal audit)
     {
-        this.providers = providers;
-        this.cache = cache;
-        this.audit = audit;
+        ArgumentNullException.ThrowIfNull(providers);
+        this.providers = providers.ToArray();
+        this.cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        this.audit = audit ?? throw new ArgumentNullException(nameof(audit));
     }
 
     // REQ: Normalize pair once, cache by normalized pair, and preserve request cancellation semantics.
@@ -24,6 +25,7 @@ public sealed class QuoteOrchestrationService
     public async Task<Quote> GetQuoteAsync(QuoteRequest request, CancellationToken cancellationToken)
     {
         // REQ: Java uses a synchronous loader; the C# port must keep the async boundary visible.
+        // TODO(forexplore): translate the selected Java cache workflow into this async boundary.
         throw new NotImplementedException("Translation exercise: implement cache and fallback orchestration");
     }
 
@@ -31,6 +33,74 @@ public sealed class QuoteOrchestrationService
     /// <summary>Queries eligible providers in policy order until one returns a quote.</summary>
     private async Task<Quote> FetchWithFallbackAsync(QuoteRequest request, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException("Translation exercise: preserve retryability without swallowing cancellation");
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var pair = NormalizePair(request);
+        var failures = new List<Exception>();
+        foreach (var provider in providers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (!provider.Supports(pair))
+                {
+                    continue;
+                }
+
+                var quote = await provider.FetchAsync(request, cancellationToken);
+                ValidateQuote(quote, pair);
+                await audit.AppendAsync(
+                    "quote.provider.selected",
+                    pair,
+                    provider.Name,
+                    cancellationToken);
+                return quote;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+                await audit.AppendAsync(
+                    "quote.provider.failed",
+                    pair,
+                    $"{provider.Name}|{error.GetType().Name}|{error.Message}",
+                    cancellationToken);
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            throw new InvalidOperationException($"No quote provider supports {pair}.");
+        }
+
+        throw new AggregateException(
+            $"All eligible quote providers failed for {pair}.",
+            failures);
+    }
+
+    private static string NormalizePair(QuoteRequest request)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Base);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Counter);
+        return $"{request.Base.Trim()}{request.Counter.Trim()}".ToUpperInvariant();
+    }
+
+    private static void ValidateQuote(Quote quote, string expectedPair)
+    {
+        ArgumentNullException.ThrowIfNull(quote);
+        if (!string.Equals(quote.Pair, expectedPair, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Provider {quote.Provider} returned {quote.Pair} for {expectedPair}.");
+        }
+        if (quote.Bid.Amount > quote.Ask.Amount)
+        {
+            throw new InvalidDataException(
+                $"Provider {quote.Provider} returned a bid above its ask.");
+        }
     }
 }

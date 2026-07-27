@@ -1,4 +1,4 @@
-import type { ModuleKind, ModuleNode } from '@forexplore/contracts';
+import type { ModuleIssue, ModuleKind, ModuleNode } from '@forexplore/contracts';
 
 export const csharpWorkspaceId = 'forexplore-csharp-workspace';
 
@@ -19,9 +19,29 @@ const symbolDocumentation: Record<string, string> = {
   'in-memory-cache-class': 'Stores quotes in memory behind the target cache contract.',
   'cache-load-function': 'Returns a cached quote or loads and stores a new value.',
   'cache-invalidate-function': 'Removes the normalized currency pair from the cache.',
+  'in-memory-audit-class': 'Stores an append-only, verifiable audit hash chain in memory.',
+  'journal-append-function': 'Appends one entry after its predecessor and returns the new sequence.',
+  'journal-verify-function': 'Verifies sequence continuity, links, and every stored digest.',
   'program-class': 'Hosts the ForeXplore C# translation target.',
   'program-main-function': 'Composes the sample host and runs the translation exercise.',
   'requirements-matrix-class': 'Lists the behavior cases expected from translated implementations.',
+};
+
+const sourceIssues: Partial<Record<string, ModuleIssue[]>> = {
+  'get-quote-async-function': [
+    {
+      id: 'issue:src/Application/QuoteOrchestrationService.cs:28:todo:0',
+      kind: 'todo',
+      message: 'forexplore: translate the selected Java cache workflow into this async boundary.',
+      line: 28,
+    },
+    {
+      id: 'issue:src/Application/QuoteOrchestrationService.cs:29:stub:1',
+      kind: 'stub',
+      message: 'Translation exercise: implement cache and fallback orchestration',
+      line: 29,
+    },
+  ],
 };
 
 function symbol(
@@ -33,6 +53,10 @@ function symbol(
   line: number,
   children?: ModuleNode[],
 ): ModuleNode {
+  const issues = sourceIssues[id];
+  const incomplete =
+    Boolean(issues?.length) ||
+    Boolean(children?.some((child) => child.implementationStatus === 'unimplemented'));
   return {
     id,
     name,
@@ -42,6 +66,8 @@ function symbol(
     signature,
     documentation: symbolDocumentation[id],
     line,
+    implementationStatus: incomplete ? 'unimplemented' : 'implemented',
+    issues,
     children,
   };
 }
@@ -76,7 +102,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                 'class',
                 'src/Application/AuditPipeline.cs',
                 'public sealed class AuditPipeline',
-                8,
+                6,
                 [
                   symbol(
                     'audit-append-function',
@@ -84,7 +110,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                     'function',
                     'src/Application/AuditPipeline.cs',
                     'ValueTask<long> AppendAsync(string action, string subject, string payload, CancellationToken cancellationToken)',
-                    16,
+                    18,
                   ),
                   symbol(
                     'audit-verify-function',
@@ -92,7 +118,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                     'function',
                     'src/Application/AuditPipeline.cs',
                     'Task<bool> VerifyAsync(CancellationToken cancellationToken)',
-                    22,
+                    34,
                   ),
                 ],
               ),
@@ -116,7 +142,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                       'function',
                       'src/Application/QuoteOrchestrationService.cs',
                       'Task<Quote> GetQuoteAsync(QuoteRequest request, CancellationToken cancellationToken)',
-                      24,
+                      25,
                     ),
                     symbol(
                       'fetch-with-fallback-function',
@@ -124,7 +150,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                       'function',
                       'src/Application/QuoteOrchestrationService.cs',
                       'Task<Quote> FetchWithFallbackAsync(QuoteRequest request, CancellationToken cancellationToken)',
-                      32,
+                      34,
                     ),
                   ],
                 ),
@@ -141,7 +167,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                   'class',
                   'src/Application/SettlementOrchestrationService.cs',
                   'public sealed class SettlementOrchestrationService',
-                  7,
+                  8,
                   [
                     symbol(
                       'settle-batch-async-function',
@@ -149,7 +175,7 @@ export const csharpWorkspaceTree: ModuleNode = {
                       'function',
                       'src/Application/SettlementOrchestrationService.cs',
                       'Task<IReadOnlyList<SettlementOutcome>> SettleBatchAsync(IReadOnlyList<SettlementInstruction> instructions, Func<SettlementInstruction, int, CancellationToken, Task<SettlementOutcome>> gateway, CancellationToken cancellationToken)',
-                      16,
+                      25,
                     ),
                   ],
                 ),
@@ -200,10 +226,10 @@ export const csharpWorkspaceTree: ModuleNode = {
                   'class',
                   'src/Infrastructure/InMemoryAdapters.cs',
                   'public sealed class InMemoryQuoteProvider',
-                  9,
+                  12,
                   [
-                    symbol('provider-supports-function', 'Supports', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'bool Supports(string pair)', 23),
-                    symbol('provider-fetch-function', 'FetchAsync', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'ValueTask<Quote> FetchAsync(QuoteRequest request, CancellationToken cancellationToken)', 26),
+                    symbol('provider-supports-function', 'Supports', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'bool Supports(string pair)', 30),
+                    symbol('provider-fetch-function', 'FetchAsync', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'ValueTask<Quote> FetchAsync(QuoteRequest request, CancellationToken cancellationToken)', 35),
                   ],
                 ),
                 symbol(
@@ -212,10 +238,36 @@ export const csharpWorkspaceTree: ModuleNode = {
                   'class',
                   'src/Infrastructure/InMemoryAdapters.cs',
                   'public sealed class InMemoryQuoteCache',
-                  34,
+                  81,
                   [
-                    symbol('cache-load-function', 'GetOrLoadAsync', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'Task<Quote> GetOrLoadAsync(QuoteRequest request, Func<CancellationToken, Task<Quote>> loader, CancellationToken cancellationToken)', 38),
-                    symbol('cache-invalidate-function', 'Invalidate', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'void Invalidate(string pair)', 43),
+                    symbol('cache-load-function', 'GetOrLoadAsync', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'Task<Quote> GetOrLoadAsync(QuoteRequest request, Func<CancellationToken, Task<Quote>> loader, CancellationToken cancellationToken)', 100),
+                    symbol('cache-invalidate-function', 'Invalidate', 'function', 'src/Infrastructure/InMemoryAdapters.cs', 'void Invalidate(string pair)', 140),
+                  ],
+                ),
+                symbol(
+                  'in-memory-audit-class',
+                  'InMemoryAuditJournal',
+                  'class',
+                  'src/Infrastructure/InMemoryAdapters.cs',
+                  'public sealed class InMemoryAuditJournal',
+                  180,
+                  [
+                    symbol(
+                      'journal-append-function',
+                      'AppendAsync',
+                      'function',
+                      'src/Infrastructure/InMemoryAdapters.cs',
+                      'ValueTask<long> AppendAsync(string action, string subject, string payload, CancellationToken cancellationToken)',
+                      195,
+                    ),
+                    symbol(
+                      'journal-verify-function',
+                      'VerifyAsync',
+                      'function',
+                      'src/Infrastructure/InMemoryAdapters.cs',
+                      'Task<bool> VerifyAsync(CancellationToken cancellationToken)',
+                      232,
+                    ),
                   ],
                 ),
               ],
@@ -239,8 +291,8 @@ export const csharpWorkspaceTree: ModuleNode = {
           ],
         },
         file('program-file', 'Program.cs', 'src/Program.cs', [
-          symbol('program-class', 'Program', 'class', 'src/Program.cs', 'public static class Program', 7, [
-            symbol('program-main-function', 'Main', 'function', 'src/Program.cs', 'Task Main(string[] args)', 11),
+          symbol('program-class', 'Program', 'class', 'src/Program.cs', 'public static class Program', 9, [
+            symbol('program-main-function', 'Main', 'function', 'src/Program.cs', 'Task Main(string[] args)', 13),
           ]),
         ]),
       ],

@@ -141,9 +141,11 @@ npm run build:adaptation
 npm test
 ```
 
-The runtime module tree is loaded through `ModuleSymbolPort` from the C# target
-fixture. The repository also includes a Vite-time TypeScript workspace scanner
-for generated module-tree integrations.
+The Web module tree is generated from the C# target fixture at Vite build/dev
+time. It combines curated symbol contracts with live source locations and
+incomplete-code signals (`TODO`/`FIXME`/`HACK`/`XXX` and placeholder
+exceptions). The static `ModuleSymbolPort` adapter remains available to tests
+and non-Vite integrations.
 
 ## Development guide
 

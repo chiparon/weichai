@@ -11,6 +11,15 @@ export type ModuleKind =
 
 export type ImplementationStatus = 'implemented' | 'unimplemented';
 
+export type ModuleIssueKind = 'todo' | 'fixme' | 'hack' | 'xxx' | 'stub';
+
+export interface ModuleIssue {
+  id: string;
+  kind: ModuleIssueKind;
+  message: string;
+  line: number;
+}
+
 export interface ModuleNode {
   id: string;
   name: string;
@@ -21,6 +30,7 @@ export interface ModuleNode {
   documentation?: string;
   line?: number;
   implementationStatus?: ImplementationStatus;
+  issues?: ModuleIssue[];
   children?: ModuleNode[];
 }
 
@@ -34,4 +44,5 @@ export interface ModuleTarget {
   documentation?: string;
   line?: number;
   implementationStatus?: ImplementationStatus;
+  issues?: ModuleIssue[];
 }

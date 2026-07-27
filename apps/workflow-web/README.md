@@ -21,3 +21,11 @@ Only public service URLs belong in the Web `.env`; keep `DEEPSEEK_API_KEY` in
 Feature directories correspond to visible workflow stages. They must not
 implement repository indexing, candidate ranking, code translation, or direct
 workspace mutation.
+
+The initial screen is a source-completion dashboard. At Vite build/dev time it
+scans the delivered C# target workspace for `TODO`, `FIXME`, `HACK`, `XXX`,
+`NotImplementedException`, and `NotSupportedException`, then attaches each
+finding to the narrowest known symbol. `REQ:` comments remain visible as
+contracts but are not counted as incomplete work. Clicking an actionable
+finding opens that function directly in the existing retrieval/adaptation
+workflow.

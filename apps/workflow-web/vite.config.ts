@@ -2,12 +2,16 @@ import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
-import { scanTargetModuleTree } from './build/target-module-tree';
+import { csharpWorkspaceTree } from '../../packages/workspace-adapters/src/csharp-workspace.ts';
+import { scanCSharpWorkspaceTree } from './build/target-module-tree';
 
 const virtualModuleId = 'virtual:target-module-tree';
 const resolvedVirtualModuleId = `\0${virtualModuleId}`;
 const targetWorkspace = fileURLToPath(
-  new URL('../../fixtures/target-system/currency-platform', import.meta.url),
+  new URL(
+    '../../fixtures/target-system/forexplore-csharp-workspace',
+    import.meta.url,
+  ),
 );
 const normalizedTargetWorkspace = targetWorkspace.replaceAll('\\', '/');
 
@@ -19,7 +23,10 @@ function targetModuleTreePlugin(): Plugin {
     },
     async load(id) {
       if (id !== resolvedVirtualModuleId) return undefined;
-      const moduleTree = await scanTargetModuleTree(targetWorkspace);
+      const moduleTree = await scanCSharpWorkspaceTree(
+        targetWorkspace,
+        csharpWorkspaceTree,
+      );
       return `export const moduleTree = ${JSON.stringify(moduleTree)};`;
     },
     configureServer(server) {
@@ -31,7 +38,7 @@ function targetModuleTreePlugin(): Plugin {
             normalizedChangedPath === normalizedTargetWorkspace ||
             normalizedChangedPath.startsWith(`${normalizedTargetWorkspace}/`)
           ) ||
-          !['.ts', '.tsx'].includes(
+          !['.cs', '.csproj'].includes(
             normalizedChangedPath.slice(normalizedChangedPath.lastIndexOf('.')),
           )
         ) {

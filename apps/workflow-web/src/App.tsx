@@ -28,6 +28,10 @@ import {
 import { CandidateBrowser } from './features/candidate-selection/CandidateBrowser';
 import { PatchReview } from './features/patch-review/PatchReview';
 import { ModuleTree } from './features/target-selection/ModuleTree';
+import {
+  ProjectReadiness,
+  summarizeProjectReadiness,
+} from './features/target-selection/ProjectReadiness';
 import { WorkflowRail } from './features/workflow-progress/WorkflowRail';
 
 const retrievalOptions: Array<{
@@ -279,6 +283,18 @@ function Inspector({
                 {state.target.documentation}
               </p>
             ) : null}
+            {state.target.issues?.length ? (
+              <div className="target-issues">
+                <span>未完成信号</span>
+                {state.target.issues.map((issue) => (
+                  <p key={issue.id}>
+                    <em>{issue.kind === 'stub' ? '未实现异常' : issue.kind.toUpperCase()}</em>
+                    {issue.message}
+                    <code>:{issue.line}</code>
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <span>
               {state.target.path}:{state.target.line}
             </span>
@@ -358,6 +374,10 @@ export default function App({
 }: AppProps) {
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState);
   const candidate = useMemo(() => selectedCandidate(state), [state]);
+  const readiness = useMemo(
+    () => summarizeProjectReadiness(moduleTree),
+    [moduleTree],
+  );
 
   async function handleSearch() {
     if (!state.target) return;
@@ -458,7 +478,12 @@ export default function App({
         </div>
         <div className="explorer-scope">
           <span>WORKSPACE</span>
-          <strong>{moduleTree.name}</strong>
+          <strong>
+            {moduleTree.name}
+            {readiness.incompleteModuleCount ? (
+              <em>{readiness.incompleteModuleCount} 待补齐</em>
+            ) : null}
+          </strong>
         </div>
         <ModuleTree
           root={moduleTree}
@@ -466,7 +491,7 @@ export default function App({
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
         />
         <div className="explorer-note">
-          仅 class / function 可作为工作流目标；文件节点用于导航和上下文组织。
+          已扫描 TODO、FIXME、HACK、XXX 与未实现异常；带数字的节点包含待补齐符号。
         </div>
       </aside>
 
@@ -476,17 +501,10 @@ export default function App({
 
         <div className="workspace-content">
           {state.stage === 'target' ? (
-            <div className="target-empty-state">
-              <span className="empty-state-index">01</span>
-              <div>
-                <div className="eyebrow">从软件结构开始</div>
-                <h1>选择一个需要补齐能力的 class 或 function</h1>
-                <p>
-                  目标符号会作为后续检索、接口映射、翻译和回填的稳定锚点。当前 C# 树由
-                  ModuleSymbolPort 提供，并保留真实路径和签名；后续可替换为 IDE Symbol Provider。
-                </p>
-              </div>
-            </div>
+            <ProjectReadiness
+              root={moduleTree}
+              onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
+            />
           ) : null}
 
           {state.stage === 'requirement' ? (
@@ -556,11 +574,12 @@ export default function App({
       />
 
       <footer className="statusbar">
-        <span>{moduleTree.name} · main</span>
+        <span>{moduleTree.name} · source scan</span>
         <span>检索器：{searchProvider} · {state.retrievalMode}</span>
         <span>适配器：{adaptationProvider}</span>
         <span>目标：{state.target?.language ?? '未选择'}</span>
         <span className="statusbar-spacer" />
+        <span>未完成：{readiness.incompleteModuleCount}</span>
         <span>Ports 3/3 ready</span>
       </footer>
     </div>

@@ -1,0 +1,26 @@
+[
+  {
+    "rank": 1,
+    "repository": "settlement-queue-py",
+    "language": "Python",
+    "symbol": "QueuedPayoutEngine.execute_group",
+    "path": "src/settlement_queue/engine.py",
+    "relevance_reason": "Strongest behavioral match across all 4 required patterns. (1) Idempotency: per-item idempotency via ReceiptLedger.reserve() — same key always returns the cached DeliveryReceipt without invoking the gateway. (2) Partial retry: each item independently retries with exponential backoff + deterministic jitter (Blake2s-hash-seeded); only deferred (failed) items enter the RetryCalendar for later reprocessing, never the whole batch. (3) Duplicate prevention: deterministic receipt IDs (SHA-256 of key|reference|currency|amount), reservation-based mutual exclusion prevents concurrent duplicate gateway calls, multi-layer dedup across planner→engine→ledger→reconciler. (4) Order preservation: execute_group gathers async tasks but assembles output by ordinal — output[ordinal] always corresponds to input[ordinal]; PayoutCoordinator.orchestrate further re-orders by original intent sequence."
+  },
+  {
+    "rank": 2,
+    "repository": "ledger-flow-ts",
+    "language": "TypeScript",
+    "symbol": "OrderedBatchCommitter.commit",
+    "path": "src/ordered-batch-committer.ts",
+    "relevance_reason": "TypeScript implementation (same language as target) with explicit JSDoc documenting the exact pattern: 'A repeated request with the same key retries only previously failed instructions, while a concurrent repeat joins the same promise. Output slots always correspond to input slots.' (1) Idempotency: batchFingerprint + idempotencyKey with completed/running maps; same key+fingerprint returns cached outcomes. (2) Partial retry: prior outcomes with some settled items cause only non-settled items to re-process; per-instruction receipt cache (keyed by key+instructionId) skips already-settled items via zero-attempt instant return. (3) Duplicate prevention: canonical receipt store with first-writer-wins semantics (receipts.get(receiptKey) ?? proposedReceipt); duplicate instructionId rejected at input validation; fingerprint mismatch across calls raises error. (4) Order preservation: pre-allocated new Array(normalized.length) with index-based worker assignment — outcomes[i] always corresponds to items[i]."
+  },
+  {
+    "rank": 3,
+    "repository": "batch-reconcile-go",
+    "language": "Go",
+    "symbol": "BatchCommitCoordinator.Reconcile",
+    "path": "src/reconcile/coordinator.go",
+    "relevance_reason": "Most sophisticated concurrent-handling implementation with production-grade safeguards. (1) Idempotency: SHA-256 batch fingerprint via CommitRequest.Fingerprint() with BatchArchive lookup; matching fingerprint returns cached entries; in-flight dedup via joinOrCreateFlight using batchFlight channels so concurrent callers share a single execution. (2) Partial retry: each payment independently retried in commitPayment's for-attempt loop; RetryPolicy.Decide classifies errors by FailureKind (Timeout, Transient retryable; Cancelled, Conflict, Permanent non-retryable); exponential backoff with jitter. (3) Duplicate prevention: per-payment receipt lookup (FindByPayment) before any transfer; payment-level mutex gates (acquirePaymentGate) serialize concurrent same-identity processing preventing TOCTOU races; MemoryReceiptStore.Save rejects incompatible duplicate PaymentIDs. (4) Order preservation: pre-allocated make([]BatchEntry, len(request.Payments)) with position-captured goroutine closures — entries[position] preserves input order regardless of goroutine completion order."
+  }
+]

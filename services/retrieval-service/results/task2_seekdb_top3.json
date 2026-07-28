@@ -1,0 +1,83 @@
+[
+  {
+    "id": "ledger-flow-ts:src/ordered-batch-committer.ts:121:commit",
+    "title": "commit",
+    "repository": "fixture/ledger-flow-ts",
+    "license": "MIT",
+    "language": "TypeScript",
+    "kind": "function",
+    "path": "src/ordered-batch-committer.ts",
+    "signature": "public async commit( items: readonly SettlementItem[], idempotencyKey: string, writer: (item: SettlementItem, attempt: number) => Promise<string>, ): Promise<readonly SettlementOutcome[]> {",
+    "summary": "Function commit: public async commit( items: readonly SettlementItem[], idempotencyKey: string, writer: (item: SettlementItem, attempt: number) => Promise<string>, ): Promise<readonly SettlementOutcome[]> {",
+    "score": {
+      "overall": 0.6704898695088357,
+      "semantic": 0.7072661976912941,
+      "symbol": 0.24909145082488512,
+      "contract": 0.9000000000000001
+    },
+    "preview": "  public async commit(\n    items: readonly SettlementItem[],\n    idempotencyKey: string,\n    writer: (item: SettlementItem, attempt: number) => Promise<string>,\n  ): Promise<readonly SettlementOutcome[]> {\n    const key = idempotencyKey.trim();\n    if (key.length === 0 || key.length > 256) {\n      throw new TypeError(\n        \"idempotency key must contain from 1 to 256 characters\",\n      );\n    }\n\n    const normalized: SettlementItem[] = [];\n    const instructionIds = new Set<string>();\n    for (let index = 0; index < items.length; index += 1) {\n      const item = normalizedItem(items[index]!, index);\n      if (instructionIds.has(item.instructionId)) {\n        throw new TypeError(`duplicate instructionId: ${item.instructionId}`);\n      }\n      instructionIds.add(item.instructionId);\n      normalized.push(item);\n    }\n    const fingerprint = batchFingerprint(normalized);\n\n    const active = this.running.get(key);\n    if (active !== undefined) {\n      if (active.fingerprint !== fingerprint) {\n        throw new Error(\"idempotency key is already running another batch\");\n      }\n      return active.promise;\n    }\n\n    const prior = this.completed.get(key);\n    if (prior !== undefined && prior.fingerprint !== fingerprint) {\n      throw new Error(\"idempotency key was previously used for another batch\");\n    }\n    if (\n      prior !== undefined &&\n      prior.outcomes.every((outcome) => outcome.status === \"settled\")\n    ) {\n      return prior.outcomes;\n    }\n    if (normalized.length === 0) {\n      const empty = immutableOutcomes([]);\n      this.completed.set(key, { fingerprint, outcomes: empty });\n      return empty;\n    }\n\n    let promise!: Promise<readonly SettlementOutcome[]>;\n    promise = (async () => {\n      const outcomes = new Array<SettlementOutcome>(normalized.length);\n      let nextIndex = 0;\n\n      const settleOne = async (index: number): Promise<void> => {\n        const item = normalized[index]!;\n        const receiptKey = `${key}\\u001f${item.instructionId}`;\n        const storedReceipt = this.receipts.get(receiptKey);\n        if (storedReceipt !== undefined) {\n          outcomes[index] = {\n            instructionId: item.instructionId,\n            status: \"settled\",\n            receipt: storedReceipt,\n            attempts: 0,\n          };\n          return;\n        }\n\n        const previous = prior?.outcomes[index];\n        if (\n          previous?.status === \"settled\" &&\n          previous.instructionId === item.instructionId &&\n          previous.receipt !== undefined\n        ) {\n          this.receipts.set(receiptKey, previous.receipt);\n          outcomes[index] = { ...previous, attempts: 0 };\n          return;\n        }\n\n        let lastError = \"settlement writer failed\";\n        for (let attempt = 1; attempt <= this.maximumAttempts; attempt += 1) {\n          try {\n            const proposedReceipt = (await writer(item, attempt)).trim();\n            if (proposedReceipt.length === 0 || proposedReceipt.length > 512) {\n              throw new TypeError(\n                \"writer returned an invalid receipt identifier\",\n              );\n            }\n            const canonicalReceipt =\n              this.receipts.get(receiptKey) ?? proposedReceipt;\n            this.receipts.set(receiptKey, canonicalReceipt);\n            outcomes[index] = {\n              instructionId: item.instructionId,\n              status: \"settled\",\n              receipt: canonicalReceipt,\n              attempts: attempt,\n            };\n            return;\n          } catch (error) {\n            lastError = error instanceof Error ? error.message : String(error);\n            if (attempt >= this.maximumAttempts) {\n              break;\n            }\n            const linearBackoff = this.retryDelayMs * attempt;\n            const cappedBackoff = Math.min(60_000, linearBackoff);\n            if (cappedBackoff > 0) {\n              await this.delay(cappedBackoff);\n            }\n          }\n        }\n        outcomes[index] = {\n          instructionId: item.instructionId,\n          status: \"failed\",\n          error: lastError,\n          attempts: this.maximumAttempts,\n        };\n      };\n\n      const worker = async (): Promise<void> => {\n        while (true) {\n          const index = nextIndex;\n          nextIndex += 1;\n          if (index >= normalized.length) {\n            return;\n          }\n          await settleOne(index);\n        }\n      };\n      const workerCount = Math.min(this.maximumParallelism, normalized.length);\n      await Promise.all(Array.from({ length: workerCount }, worker));\n\n      const immutable = immutableOutcomes(outcomes);\n      this.completed.set(key, { fingerprint, outcomes: immutable });\n      return immutable;\n    })();\n\n    this.running.set(key, { fingerprint, promise });\n    try {\n      return await promise;\n    } finally {\n      const activeAfterCompletion = this.running.get(key);\n      if (activeAfterCompletion?.promise === promise) {\n        this.running.delete(key);\n      }\n    }\n  }",
+    "dependencies": [
+      "typescript (development only)",
+      "@types/node (development only)"
+    ],
+    "compatibility": [
+      "Extracted from TypeScript source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "forexplore-reference-java:src/main/java/forexplore/reference/application/ReferencePlatform.java:29:settle",
+    "title": "settle",
+    "repository": "fixture/forexplore-reference-java",
+    "license": "MIT",
+    "language": "Java",
+    "kind": "function",
+    "path": "src/main/java/forexplore/reference/application/ReferencePlatform.java",
+    "signature": "public List<SettlementResult> settle() {",
+    "summary": "Function settle: public List<SettlementResult> settle() {",
+    "score": {
+      "overall": 0.6342757386192566,
+      "semantic": 0.6867957765210271,
+      "symbol": 0.4199989217669222,
+      "contract": 0.8500000000000001
+    },
+    "preview": "    public List<SettlementResult> settle() {\n        List<SettlementInstruction> instructions = List.of(\n            new SettlementInstruction(\"order-100\", \"EURUSD\", new Money(\"EUR\", new BigDecimal(\"1200.50\")), \"ledger-a\", 3),\n            new SettlementInstruction(\"order-101\", \"GBPUSD\", new Money(\"GBP\", new BigDecimal(\"700.25\")), \"ledger-b\", 2));\n        List<SettlementResult> result = settlements.apply(instructions, (instruction, attempt) -> {\n            if (instruction.idempotencyKey().endsWith(\"101\") && attempt == 1) return SettlementResult.retry(instruction.idempotencyKey(), \"temporary gateway\", clock.now());\n            String receipt = instruction.idempotencyKey() + \"-r\" + attempt;\n            return SettlementResult.settled(instruction.idempotencyKey(), receipt, clock.now());\n        });\n        result.forEach(value -> audits.append(\"SETTLEMENT\", value.idempotencyKey(), value.status()));\n        return result;\n    }",
+    "dependencies": [],
+    "compatibility": [
+      "Extracted from Java source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "ledger-flow-ts:src/ordered-batch-committer.ts:84:OrderedBatchCommitter",
+    "title": "OrderedBatchCommitter",
+    "repository": "fixture/ledger-flow-ts",
+    "license": "MIT",
+    "language": "TypeScript",
+    "kind": "class",
+    "path": "src/ordered-batch-committer.ts",
+    "signature": "export class OrderedBatchCommitter {",
+    "summary": "A process-local idempotent settlement coordinator. Successful receipts survive later retries.  A repeated request with the same key retries only previously failed instructions, while a concurrent repeat joins the same promise.  Output slots always correspond to input slots.",
+    "score": {
+      "overall": 0.6225495583640899,
+      "semantic": 0.7109114355392233,
+      "symbol": 0.1826786196176043,
+      "contract": 0.55
+    },
+    "preview": "export class OrderedBatchCommitter {\n  private readonly completed = new Map<string, CompletedBatch>();\n  private readonly running = new Map<string, RunningBatch>();\n  private readonly receipts = new Map<string, string>();\n\n  public constructor(\n    private readonly maximumAttempts = 3,\n    private readonly retryDelayMs = 2,\n    private readonly delay: (ms: number) => Promise<void> = (ms) =>\n      new Promise((resolve) => setTimeout(resolve, ms)),\n    private readonly maximumParallelism = 8,\n  ) {\n    if (\n      !Number.isInteger(maximumAttempts) ||\n      maximumAttempts < 1 ||\n      maximumAttempts > 20\n    ) {\n      throw new RangeError(\"maximumAttempts must be an integer from 1 to 20\");\n    }\n    if (\n      !Number.isFinite(retryDelayMs) ||\n      retryDelayMs < 0 ||\n      retryDelayMs > 60_000\n    ) {\n      throw new RangeError(\"retryDelayMs must be from 0 to 60000\");\n    }\n    if (\n      !Number.isInteger(maximumParallelism) ||\n      maximumParallelism < 1 ||\n      maximumParallelism > 1_024\n    ) {\n      throw new RangeError(\n        \"maximumParallelism must be an integer from 1 to 1024\",\n      );\n    }\n  }\n\n  public async commit(\n    items: readonly SettlementItem[],\n    idempotencyKey: string,\n    writer: (item: SettlementItem, attempt: number) => Promise<string>,\n  ): Promise<readonly SettlementOutcome[]> {\n    const key = idempotencyKey.trim();\n    if (key.length === 0 || key.length > 256) {\n      throw new TypeError(\n        \"idempotency key must contain from 1 to 256 characters\",\n      );\n    }\n\n    const normalized: SettlementItem[] = [];\n    const instructionIds = new Set<string>();\n    for (let index = 0; index < items.length; index += 1) {\n      const item = normalizedItem(items[index]!, index);\n      if (instructionIds.has(item.instructionId)) {\n        throw new TypeError(`duplicate instructionId: ${item.instructionId}`);\n      }\n      instructionIds.add(item.instructionId);\n      normalized.push(item);\n    }\n    const fingerprint = batchFingerprint(normalized);\n\n    const active = this.running.get(key);\n    if (active !== undefined) {\n      if (active.fingerprint !== fingerprint) {\n        throw new Error(\"idempotency key is already running another batch\");\n      }\n      return active.promise;\n    }\n\n    const prior = this.completed.get(key);\n    if (prior !== undefined && prior.fingerprint !== fingerprint) {\n      throw new Error(\"idempotency key was previously used for another batch\");\n    }\n    if (\n      prior !== undefined &&\n      prior.outcomes.every((outcome) => outcome.status === \"settled\")\n    ) {\n      return prior.outcomes;\n    }\n    if (normalized.length === 0) {\n      const empty = immutableOutcomes([]);\n      this.completed.set(key, { fingerprint, outcomes: empty });\n      return empty;\n    }\n\n    let promise!: Promise<readonly SettlementOutcome[]>;\n    promise = (async () => {\n      const outcomes = new Array<SettlementOutcome>(normalized.length);\n      let nextIndex = 0;\n\n      const settleOne = async (index: number): Promise<void> => {\n        const item = normalized[index]!;\n        const receiptKey = `${key}\\u001f${item.instructionId}`;\n        const storedReceipt = this.receipts.get(receiptKey);\n        if (storedReceipt !== undefined) {\n          outcomes[index] = {\n            instructionId: item.instructionId,\n            status: \"settled\",\n            receipt: storedReceipt,\n            attempts: 0,\n          };\n          return;\n        }\n\n        const previous = prior?.outcomes[index];\n        if (\n          previous?.status === \"settled\" &&\n          previous.instructionId === item.instructionId &&\n          previous.receipt !== undefined\n        ) {\n          this.receipts.set(receiptKey, previous.receipt);\n          outcomes[index] = { ...previous, attempts: 0 };\n          return;\n        }\n\n        let lastError = \"settlement writer failed\";\n        for (let attempt = 1; attempt <= this.maximumAttempts; attempt += 1) {\n          try {\n            const proposedReceipt = (await writer(item, attempt)).trim();\n            if (proposedReceipt.length === 0 || proposedReceipt.length > 512) {\n              throw new TypeError(\n                \"writer returned an invalid receipt identifier\",\n              );\n            }\n            const canonicalReceipt =\n              this.receipts.get(receiptKey) ?? proposedReceipt;\n            this.receipts.set(receiptKey, canonicalReceipt);\n            outcomes[index] = {\n              instructionId: item.instructionId,\n              status: \"settled\",\n              receipt: canonicalReceipt,\n              attempts: attempt,\n            };\n            return;\n          } catch (error) {\n            lastError = error instanceof Error ? error.message : String(error);\n            if (attempt >= this.maximumAttempts) {\n              break;\n            }\n            const linearBackoff = this.retryDelayMs * attempt;\n            const cappedBackoff = Math.min(60_000, linearBackoff);\n            if (cappedBackoff > 0) {\n              await this.delay(cappedBackoff);\n            }\n          }\n        }\n        outcomes[index] = {\n          instructionId: item.instructionId,\n          status: \"failed\",\n          error: lastError,\n          attempts: this.maximumAttempts,\n        };\n      };\n\n      const worker = async (): Promise<void> => {\n        while (true) {\n          const index = nextIndex;\n          nextIndex += 1;\n          if (index >= normalized.length) {\n            return;",
+    "dependencies": [
+      "typescript (development only)",
+      "@types/node (development only)"
+    ],
+    "compatibility": [
+      "Extracted from TypeScript source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  }
+]

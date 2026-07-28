@@ -1,0 +1,81 @@
+[
+  {
+    "id": "signal-buffer-ts:src/partition-runner.ts:15:accept",
+    "title": "accept",
+    "repository": "fixture/signal-buffer-ts",
+    "license": "MIT",
+    "language": "TypeScript",
+    "kind": "function",
+    "path": "src/partition-runner.ts",
+    "signature": "public async accept( signal: TradeSignal, handler: (signal: TradeSignal) => Promise<void>, acknowledge: (signal: TradeSignal) => Promise<void>, ): Promise<\"handled\" | \"duplicate\"> {",
+    "summary": "Function accept: public async accept( signal: TradeSignal, handler: (signal: TradeSignal) => Promise<void>, acknowledge: (signal: TradeSignal) => Promise<void>, ): Promise<\"handled\" | \"duplicate\"> {",
+    "score": {
+      "overall": 0.660183551059876,
+      "semantic": 0.6829355751593267,
+      "symbol": 0.2534248499886373,
+      "contract": 0.9000000000000001
+    },
+    "preview": "  public async accept(\n    signal: TradeSignal,\n    handler: (signal: TradeSignal) => Promise<void>,\n    acknowledge: (signal: TradeSignal) => Promise<void>,\n  ): Promise<\"handled\" | \"duplicate\"> {\n    if (this.acknowledged.has(signal.messageId)) return \"duplicate\";\n    if (!Number.isSafeInteger(signal.sequence) || signal.sequence < 0) throw new RangeError(\"invalid sequence\");\n    if (!Number.isFinite(signal.quantity) || signal.quantity <= 0) throw new RangeError(\"invalid quantity\");\n    const lane = this.lanes.get(signal.account) ?? {\n      tail: Promise.resolve(),\n      queued: 0,\n      completedSequence: -1,\n    };\n    lane.queued += 1;\n    let release: (() => void) | undefined;\n    const gate = new Promise<void>((resolve) => {\n      release = resolve;\n    });\n    const predecessor = lane.tail;\n    lane.tail = predecessor.catch(() => undefined).then(() => gate);\n    this.lanes.set(signal.account, lane);\n    await predecessor.catch(() => undefined);\n    try {\n      if (this.acknowledged.has(signal.messageId)) return \"duplicate\";\n      if (signal.sequence <= lane.completedSequence) {\n        throw new Error(`sequence ${signal.sequence} is not newer than ${lane.completedSequence}`);\n      }\n      await handler(signal);\n      await acknowledge(signal);\n      this.acknowledged.add(signal.messageId);\n      lane.completedSequence = signal.sequence;\n      lane.failedSequence = undefined;\n      return \"handled\";\n    } catch (reason: unknown) {\n      lane.failedSequence = signal.sequence;\n      throw reason;\n    } finally {\n      lane.queued -= 1;\n      release?.();\n      if (lane.queued === 0 && this.lanes.get(signal.account) === lane) this.lanes.delete(signal.account);\n    }\n  }",
+    "dependencies": [
+      "TypeScript and Node.js declarations (development only)"
+    ],
+    "compatibility": [
+      "Extracted from TypeScript source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "ordered-events-py:src/ordered_events/pump.py:36:consume",
+    "title": "consume",
+    "repository": "fixture/ordered-events-py",
+    "license": "MIT",
+    "language": "Python",
+    "kind": "function",
+    "path": "src/ordered_events/pump.py",
+    "signature": "async def consume( self, event: TradeEvent, headers: EventHeaders, process: Processor, acknowledge: Acknowledger, ) -> ProcessOutcome:",
+    "summary": "Function consume: async def consume( self, event: TradeEvent, headers: EventHeaders, process: Processor, acknowledge: Acknowledger, ) -> ProcessOutcome:",
+    "score": {
+      "overall": 0.6295065956327388,
+      "semantic": 0.6950383186340381,
+      "symbol": 0.30689220914705534,
+      "contract": 0.8500000000000001
+    },
+    "preview": "    async def consume(\n        self,\n        event: TradeEvent,\n        headers: EventHeaders,\n        process: Processor,\n        acknowledge: Acknowledger,",
+    "dependencies": [],
+    "compatibility": [
+      "Extracted from Python source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "signal-buffer-ts:src/operations-workbench.ts:246:summarizeAccountRisk",
+    "title": "summarizeAccountRisk",
+    "repository": "fixture/signal-buffer-ts",
+    "license": "MIT",
+    "language": "TypeScript",
+    "kind": "function",
+    "path": "src/operations-workbench.ts",
+    "signature": "public summarizeAccountRisk( settlements: readonly SettlementIntent[], trades: readonly TradeSignal[], audits: readonly AuditEntry[], sequenceGaps: ReadonlyMap<string, readonly number[]>, ): ReadonlyMap<string, number> {",
+    "summary": "Function summarizeAccountRisk: public summarizeAccountRisk( settlements: readonly SettlementIntent[], trades: readonly TradeSignal[], audits: readonly AuditEntry[], sequenceGaps: ReadonlyMap<string, readonly number[]>, ): ReadonlyMap<string, number> {",
+    "score": {
+      "overall": 0.6059997840268913,
+      "semantic": 0.6268688662726374,
+      "symbol": 0.12134180693824748,
+      "contract": 0.9000000000000001
+    },
+    "preview": "  public summarizeAccountRisk(\n    settlements: readonly SettlementIntent[],\n    trades: readonly TradeSignal[],\n    audits: readonly AuditEntry[],\n    sequenceGaps: ReadonlyMap<string, readonly number[]>,\n  ): ReadonlyMap<string, number> {\n    const risk = new Map<string, number>();\n    const auditSubjects = new Set(audits.map((entry) => String(entry.fields.subject ?? \"\")).filter(Boolean));\n    for (const intent of settlements) {\n      const amountRisk = Math.log10(Math.max(1, Math.abs(intent.amount)));\n      const priorityRisk = Math.max(0, intent.priority - 50) / 10;\n      const auditRisk = auditSubjects.has(intent.identity) ? 0 : 3;\n      risk.set(intent.account, (risk.get(intent.account) ?? 0) + amountRisk + priorityRisk + auditRisk);\n    }\n    for (const trade of trades) {\n      const directionRisk = trade.side === \"sell\" ? 1.2 : 1;\n      const quantityRisk = Math.log2(Math.max(1, trade.quantity)) * directionRisk;\n      const gapRisk = (sequenceGaps.get(trade.account)?.length ?? 0) * 2;\n      const auditRisk = auditSubjects.has(trade.messageId) ? 0 : 1.5;\n      risk.set(trade.account, (risk.get(trade.account) ?? 0) + quantityRisk + gapRisk + auditRisk);\n    }\n    return new Map([...risk.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])));\n  }",
+    "dependencies": [
+      "TypeScript and Node.js declarations (development only)"
+    ],
+    "compatibility": [
+      "Extracted from TypeScript source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  }
+]

@@ -20,6 +20,7 @@ export interface RetrievalConfig {
         url: string;
         apiKey: string;
         model: string;
+        supportsDimensions: boolean;
       };
 }
 
@@ -63,6 +64,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
           url: env.SEEKDB_EMBEDDING_URL?.trim() || 'https://api.openai.com/v1/embeddings',
           apiKey: env.SEEKDB_EMBEDDING_API_KEY?.trim() || '',
           model: env.SEEKDB_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small',
+          supportsDimensions: boolean(
+            env.SEEKDB_EMBEDDING_SUPPORTS_DIMENSIONS,
+            false,
+          ),
         }
       : { provider: 'hash', dimension };
 

@@ -1,0 +1,77 @@
+[
+  {
+    "id": "forexplore-reference-java:src/main/java/forexplore/reference/application/QuoteCache.java:15:getOrLoad",
+    "title": "getOrLoad",
+    "repository": "fixture/forexplore-reference-java",
+    "license": "MIT",
+    "language": "Java",
+    "kind": "function",
+    "path": "src/main/java/forexplore/reference/application/QuoteCache.java",
+    "signature": "public synchronized Quote getOrLoad(QuoteRequest request, Function<QuoteRequest, Quote> loader) {",
+    "summary": "Function getOrLoad: public synchronized Quote getOrLoad(QuoteRequest request, Function<QuoteRequest, Quote> loader) {",
+    "score": {
+      "overall": 0.6617595910556533,
+      "semantic": 0.6544615788643309,
+      "symbol": 0.3642350327708281,
+      "contract": 0.8500000000000001
+    },
+    "preview": "    public synchronized Quote getOrLoad(QuoteRequest request, Function<QuoteRequest, Quote> loader) {\n        Entry existing = entries.get(request.normalizedPair());\n        Instant now = clock.now();\n        if (existing != null && existing.expiresAt().isAfter(now)) return existing.quote();\n        Quote loaded = loader.apply(request);\n        entries.put(request.normalizedPair(), new Entry(loaded, now.plusSeconds(request.maxAgeSeconds())));\n        while (entries.size() > maxEntries) entries.remove(entries.keySet().iterator().next());\n        return loaded;\n    }",
+    "dependencies": [],
+    "compatibility": [
+      "Extracted from Java source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "forexplore-reference-java:src/main/java/forexplore/reference/application/ReferencePlatform.java:23:quote",
+    "title": "quote",
+    "repository": "fixture/forexplore-reference-java",
+    "license": "MIT",
+    "language": "Java",
+    "kind": "function",
+    "path": "src/main/java/forexplore/reference/application/ReferencePlatform.java",
+    "signature": "public Quote quote(String base, String counter) {",
+    "summary": "Function quote: public Quote quote(String base, String counter) {",
+    "score": {
+      "overall": 0.6581530433285507,
+      "semantic": 0.7243402919287178,
+      "symbol": 0.2302050983124842,
+      "contract": 0.8500000000000001
+    },
+    "preview": "    public Quote quote(String base, String counter) {\n        QuoteRequest request = new QuoteRequest(base + counter, base, counter, clock.now(), 30);\n        Quote quote = cache.getOrLoad(request, value -> router.route(value, audits.records().size() + 1L));\n        audits.append(\"QUOTE\", quote.key(), quote.spread().amount().toPlainString());\n        return quote;\n    }",
+    "dependencies": [],
+    "compatibility": [
+      "Extracted from Java source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  },
+  {
+    "id": "forexplore-reference-java:src/main/java/forexplore/reference/application/QuoteRouter.java:21:route",
+    "title": "route",
+    "repository": "fixture/forexplore-reference-java",
+    "license": "MIT",
+    "language": "Java",
+    "kind": "function",
+    "path": "src/main/java/forexplore/reference/application/QuoteRouter.java",
+    "signature": "public Quote route(QuoteRequest request, long requestId) {",
+    "summary": "Function route: public Quote route(QuoteRequest request, long requestId) {",
+    "score": {
+      "overall": 0.6260740498761395,
+      "semantic": 0.6323967356918577,
+      "symbol": 0.27643998466371217,
+      "contract": 0.8500000000000001
+    },
+    "preview": "    public Quote route(QuoteRequest request, long requestId) {\n        Instant now = clock.now();\n        List<ProviderClient> eligible = new ArrayList<>();\n        for (ProviderClient provider : providers) {\n            ProviderHealth state = health.get(provider.name());\n            if (provider.supports(request.normalizedPair()) && state.canCall(now)) eligible.add(provider);\n        }\n        eligible.sort(Comparator.comparingInt(provider -> health.get(provider.name()).failures()));\n        RuntimeException last = new IllegalStateException(\"no quote provider\");\n        for (ProviderClient provider : eligible) {\n            ProviderHealth state = health.get(provider.name());\n            try {\n                Quote quote = provider.fetch(request.normalizedPair(), requestId);\n                state.success();\n                return quote;\n            } catch (RuntimeException error) {\n                state.failure(now, cooldown); last = error;\n            }\n        }\n        throw last;\n    }",
+    "dependencies": [],
+    "compatibility": [
+      "Extracted from Java source"
+    ],
+    "risks": [
+      "Synthetic evaluation fixture"
+    ]
+  }
+]

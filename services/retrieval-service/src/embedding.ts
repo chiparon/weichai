@@ -65,6 +65,7 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
     private readonly url: string,
     private readonly apiKey: string,
     private readonly model: string,
+    private readonly supportsDimensions: boolean = false,
     private readonly request: typeof globalThis.fetch = globalThis.fetch,
     private readonly timeoutMs = 30_000,
   ) {}
@@ -79,8 +80,7 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
       body: JSON.stringify({
         input: texts,
         model: this.model,
-        dimensions: this.dimension,
-        encoding_format: 'float',
+        ...(this.supportsDimensions ? { dimensions: this.dimension } : {}),
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -91,7 +91,10 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Embedding API returned invalid JSON (HTTP ${response.status}).`);
     }
     if (!response.ok) {
-      throw new Error(apiErrorMessage(body) || `Embedding API returned HTTP ${response.status}.`);
+      throw new Error(
+        apiErrorMessage(body) ||
+          `Embedding API returned HTTP ${response.status}. Body: ${JSON.stringify(body)}`,
+      );
     }
     if (typeof body !== 'object' || body === null) {
       throw new Error('Embedding API returned an invalid response body.');

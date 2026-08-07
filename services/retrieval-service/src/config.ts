@@ -1,3 +1,21 @@
+export type RerankingConfig =
+  | { provider: 'none' }
+  | {
+      provider: 'openai';
+      url: string;
+      apiKey: string;
+      model: string;
+      timeoutMs: number;
+      maxRetries: number;
+    }
+  | {
+      provider: 'local';
+      url: string;
+      model: string;
+      timeoutMs: number;
+      maxRetries: number;
+    };
+
 export interface RetrievalConfig {
   host: string;
   port: number;
@@ -22,6 +40,7 @@ export interface RetrievalConfig {
         model: string;
         supportsDimensions: boolean;
       };
+  reranking: RerankingConfig;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -75,6 +94,35 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
     throw new Error('SEEKDB_EMBEDDING_API_KEY is required for the openai provider.');
   }
 
+  const rerankProvider = env.RERANK_PROVIDER?.trim().toLowerCase() || 'none';
+  if (!['none', 'openai', 'local'].includes(rerankProvider)) {
+    throw new Error('RERANK_PROVIDER must be "none", "openai", or "local".');
+  }
+
+  const reranking: RerankingConfig =
+    rerankProvider === 'openai'
+      ? {
+          provider: 'openai',
+          url: env.RERANK_OPENAI_URL?.trim() || 'https://api.deepseek.com/v1/chat/completions',
+          apiKey: env.RERANK_OPENAI_API_KEY?.trim() || '',
+          model: env.RERANK_OPENAI_MODEL?.trim() || 'deepseek-chat',
+          timeoutMs: positiveInteger(env.RERANK_TIMEOUT_MS, 30_000, 'RERANK_TIMEOUT_MS'),
+          maxRetries: positiveInteger(env.RERANK_MAX_RETRIES, 2, 'RERANK_MAX_RETRIES'),
+        }
+      : rerankProvider === 'local'
+        ? {
+            provider: 'local',
+            url: env.RERANK_LOCAL_URL?.trim() || 'http://127.0.0.1:11434/v1/chat/completions',
+            model: env.RERANK_LOCAL_MODEL?.trim() || 'qwen2.5:7b',
+            timeoutMs: positiveInteger(env.RERANK_TIMEOUT_MS, 60_000, 'RERANK_TIMEOUT_MS'),
+            maxRetries: positiveInteger(env.RERANK_MAX_RETRIES, 1, 'RERANK_MAX_RETRIES'),
+          }
+        : { provider: 'none' };
+
+  if (reranking.provider === 'openai' && !reranking.apiKey) {
+    throw new Error('RERANK_OPENAI_API_KEY is required for the openai rerank provider.');
+  }
+
   return {
     host: env.RETRIEVAL_HOST?.trim() || '127.0.0.1',
     port: positiveInteger(env.RETRIEVAL_PORT, 8787, 'RETRIEVAL_PORT'),
@@ -90,5 +138,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
       vectorDimension: dimension,
     },
     embedding,
+    reranking,
   };
 }

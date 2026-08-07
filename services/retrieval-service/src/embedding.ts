@@ -59,6 +59,28 @@ function apiErrorMessage(value: unknown): string | undefined {
   return typeof message === 'string' ? message : undefined;
 }
 
+const RETRYABLE_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND',
+  'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
+]);
+
+function isRetryable(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && RETRYABLE_CODES.has(code)) return true;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause instanceof Error) {
+    const causeCode = (cause as NodeJS.ErrnoException).code;
+    if (causeCode && RETRYABLE_CODES.has(causeCode)) return true;
+  }
+  return error.message.includes('fetch failed') || error.message.includes('network');
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
   constructor(
     readonly dimension: number,
@@ -68,9 +90,30 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
     private readonly supportsDimensions: boolean = false,
     private readonly request: typeof globalThis.fetch = globalThis.fetch,
     private readonly timeoutMs = 30_000,
+    private readonly maxRetries = 3,
+    private readonly baseDelayMs = 1000,
   ) {}
 
   async embed(texts: string[]): Promise<number[][]> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        return await this.tryEmbed(texts);
+      } catch (error: unknown) {
+        lastError = error;
+        if (attempt === this.maxRetries || !isRetryable(error)) throw error;
+        const delay = this.baseDelayMs * 2 ** attempt;
+        console.warn(
+          `Embedding API request failed (attempt ${attempt + 1}/${this.maxRetries + 1}), ` +
+            `retrying in ${delay}ms: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await sleep(delay);
+      }
+    }
+    throw lastError;
+  }
+
+  private async tryEmbed(texts: string[]): Promise<number[][]> {
     const response = await this.request(this.url, {
       method: 'POST',
       headers: {

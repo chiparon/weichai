@@ -4,32 +4,71 @@ Java → C# code adaptation: target-context analysis → planned translation →
 
 ## Analyzer workflow
 
-The service now runs two model stages. `ContextCollector` first reads a bounded,
-repository-scoped view of the C# target file, containing type, imports, sibling
-files, and textual references. `analyzer.ts` compares that context with the Java
-candidate and produces a schema-validated `AnalysisReport`. The translator then
-receives that report and must follow its implementation plan while preserving the
-target contract.
+`ContextCollector` first reads a bounded, repository-scoped view of the C# target
+file, containing type, imports, sibling files, and textual references. `analyzer.ts`
+compares that context with the Java candidate and produces a schema-validated
+`AnalysisReport`.
 
-The analyzer can be called independently. It only needs `target`, `candidate`,
-and `requirement`; `strategy` and `decisionNotes` remain translation concerns:
+The analyzer can also be called independently with `POST /v1/analyze`. Its response
+contains both `report` and collected `context`; `/v1/adapt` stops before translation
+when the report rejects a candidate or contains explicit `blockingIssues`.
 
-```bash
-curl -X POST http://127.0.0.1:8788/v1/analyze \
-  -H 'content-type: application/json' \
-  --data @adaptation-request.json
+## Analyzer-driven Translator Agent
+
+The Translator now has a structured member-C entry point:
+
+```ts
+const result = await translateWithAnalysis(
+  {
+    candidateSource,
+    targetContext,
+    requirement,
+    analysisReport,
+  },
+  { apiKey },
+  signal,
+);
 ```
 
-The response contains both `report` and the collected `context`. Candidates marked
-`reject` are returned by `/v1/analyze`, but `/v1/adapt` stops before translation.
+The model receives target module context and `AnalysisReport v1` in a separate
+system/user call. Its decision order is fixed to target contract, requirement,
+analysis report, then candidate details. The response is parsed as a structured
+`TranslationResult` containing generated code, mappings, completed plan steps,
+and unresolved items.
+
+Runtime guards reject Analyzer `reject` decisions, explicit blocking issues,
+changed target signatures, omitted plan steps/mappings, and output that expands
+into using/namespace/enclosing-type changes. The existing
+`translateJavaToCSharp()` and `fixCompileErrors()` exports remain compatible for
+the current HTTP adapter while the Analyzer and orchestration work lands.
+
+Validator integration uses the reserved repair entry point:
+
+```ts
+const repaired = await repairTranslation(
+  {
+    ...translationInput,
+    previousResult,
+    validationFeedback,
+  },
+  { apiKey },
+  signal,
+);
+```
+
+A passing feedback result is idempotent and performs no model request. Failed
+feedback must contain structured syntax, contract, dependency, or behavior
+issues. Fixed member-C samples live in `testdata/translator-*.json`.
+
+Ordinary `unresolved` observations remain visible to Translator and Validator but
+do not stop translation. Analyzer uses `blockingIssues` only for questions that
+cannot be implemented reliably from the current evidence.
 
 ## ReCodeAgent MCP migration
 
 The repository includes a read-only stdio MCP server rewritten from the useful
-subset of the MIT-licensed
-[Intelligent-CAT-Lab/ReCodeAgent](https://github.com/Intelligent-CAT-Lab/ReCodeAgent)
-at commit `cd20f3a893bcaef40c7f56ea1090ac7867ea17ea`. It keeps the public tool names and argument conventions that
-are useful for this module-level task:
+subset of the MIT-licensed ReCodeAgent project. It preserves the analysis tools
+needed here, adds Java/C# support, and confines all reads to the configured root:
 
 - `get_directory_tree(path, print_dirs_only, max_depth)`
 - `get_file_structure(language, file_path)`
@@ -38,37 +77,12 @@ are useful for this module-level task:
 - `read_file(path, maxChars)`
 - `get_target_context(target)`
 
-ReCodeAgent's original project analyzer relies on Tree-sitter parsers but does not
-support C#. Its language-server MCP also requires per-language LSP processes and a
-large Docker toolchain. This port reimplements the read-only subset in TypeScript,
-adds Java/C# support, enforces project-root path confinement, and omits editing,
-rename, diagnostics, and test-runner tools because those belong to the Translator
-and Validator responsibilities in ForeXplore. It is source-oriented rather than a
-full LSP replacement, so overload resolution and generated symbols remain Analyzer
-uncertainties rather than hard facts.
-
-Build before starting the MCP server:
+Build and start it with:
 
 ```bash
 npm run build:adaptation
 npm run mcp --workspace @forexplore/adaptation-service -- \
   fixtures/target-system/forexplore-csharp-workspace
-```
-
-Example client configuration:
-
-```json
-{
-  "mcpServers": {
-    "forexplore-analysis": {
-      "command": "node",
-      "args": [
-        "/absolute/path/to/weichai/services/adaptation-service/dist/mcp-server.js",
-        "/absolute/path/to/weichai/fixtures/target-system/forexplore-csharp-workspace"
-      ]
-    }
-  }
-}
 ```
 
 `AdaptationAdapter` accepts only the `translate` strategy with a Java candidate
@@ -145,7 +159,9 @@ code-indexer (module 1) → retrieval-service (module 2) → adaptation-service 
 
 | File | Role |
 |------|------|
-| `src/translator.ts` | LLM Java→C# translation |
+| `src/translator.ts` | AnalysisReport-driven Translator, contract guards, structured output and repair |
+| `src/translator.test.ts` | Translator parsing, rejection, contract, planning and repair tests |
+| `testdata/translator-*.json` | direct/adapt/reject member-C fixtures |
 | `src/context-collector.ts` | Bounded target repository context collection |
 | `src/analyzer.ts` | Schema-validated Analyzer Agent and module plan |
 | `src/mcp-tools.ts` | ReCodeAgent-compatible read-only project tools |

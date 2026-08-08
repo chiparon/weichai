@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net";
 import type {
+  AnalysisResult,
   AdaptationRequest,
   AdaptationResult,
   ApplyResult,
@@ -24,11 +25,14 @@ afterEach(async () => {
 });
 
 async function listen(
-  adapter: CodeAdaptationPort,
+  adapter: CodeAdaptationPort & Partial<{
+    analyze(request: AdaptationRequest, signal?: AbortSignal): Promise<AnalysisResult>;
+  }>,
   backfill: CodeBackfillPort,
 ): Promise<string> {
   const server = createHttpServer({
     adapter,
+    analyzer: adapter.analyze ? { analyze: adapter.analyze.bind(adapter) } : undefined,
     backfill,
     corsOrigin: "http://localhost:4173",
   });
@@ -128,6 +132,71 @@ describe("adaptation HTTP API", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe(
       "http://localhost:4173",
     );
+  });
+
+  it("routes analyzer requests without invoking translation", async () => {
+    const analysis: AnalysisResult = {
+      report: {
+        schemaVersion: "1.0",
+        applicability: { level: "adapt", confidence: 0.8, reasons: ["partial match"] },
+        behaviorMapping: [],
+        contractMapping: [],
+        dependencyPlan: [],
+        implementationPlan: ["translate the method"],
+        risks: [],
+        assumptions: [],
+        unresolved: [],
+        blockingIssues: [],
+      },
+      context: {
+        targetFile: "src/Calculator.cs",
+        targetSource: "",
+        targetFragment: "",
+        imports: [],
+        neighboringFiles: [],
+        references: [],
+        truncated: false,
+      },
+    };
+    const adapter = {
+      adapt: vi.fn(),
+      analyze: vi.fn(async () => analysis),
+    };
+    const backfill: CodeBackfillPort = { apply: vi.fn() };
+    const url = await listen(adapter, backfill);
+
+    const response = await fetch(`${url}/v1/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(adaptationRequest),
+    });
+
+    expect(response.status).toBe(200);
+    expect(adapter.analyze).toHaveBeenCalledWith(adaptationRequest, expect.any(AbortSignal));
+    expect(adapter.adapt).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual(analysis);
+  });
+
+  it("accepts the smaller analysis contract without strategy metadata", async () => {
+    const analysis: AnalysisResult = {
+      report: {
+        schemaVersion: "1.0",
+        applicability: { level: "direct", confidence: 1, reasons: ["same behavior"] },
+        behaviorMapping: [], contractMapping: [], dependencyPlan: [],
+        implementationPlan: ["translate"], risks: [], assumptions: [], unresolved: [], blockingIssues: [],
+      },
+      context: { targetFile: "src/Calculator.cs", targetSource: "", targetFragment: "", imports: [], neighboringFiles: [], references: [], truncated: false },
+    };
+    const adapter = { adapt: vi.fn(), analyze: vi.fn(async () => analysis) };
+    const url = await listen(adapter, { apply: vi.fn() });
+    const body = {
+      target: adaptationRequest.target,
+      candidate: adaptationRequest.candidate,
+      requirement: adaptationRequest.requirement,
+    };
+    const response = await fetch(`${url}/v1/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(response.status).toBe(200);
+    expect(adapter.analyze).toHaveBeenCalledWith(body, expect.any(AbortSignal));
   });
 
   it("routes backfill requests to the backfill adapter", async () => {

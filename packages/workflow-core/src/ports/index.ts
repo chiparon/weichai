@@ -2,6 +2,7 @@ import type { CodeAdaptationPort } from './code-adaptation.port';
 import type { CodeBackfillPort } from './code-backfill.port';
 import type { CodeSearchPort } from './code-search.port';
 
+export type { CodeAnalysisPort } from './code-analysis.port';
 export type { CodeAdaptationPort } from './code-adaptation.port';
 export type { CodeBackfillPort } from './code-backfill.port';
 export type { CodeSearchPort } from './code-search.port';

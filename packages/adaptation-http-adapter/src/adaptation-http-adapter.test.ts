@@ -1,4 +1,5 @@
 import type {
+  AnalysisResult,
   AdaptationRequest,
   AdaptationResult,
   ApplyResult,
@@ -7,6 +8,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import {
   AdaptationHttpAdapter,
+  AnalysisHttpAdapter,
   BackfillHttpAdapter,
   withAdaptationService,
 } from './adaptation-http-adapter';
@@ -50,6 +52,30 @@ const adaptationResult: AdaptationResult = {
   files: [],
 };
 
+const analysisResult: AnalysisResult = {
+  report: {
+    schemaVersion: '1.0',
+    applicability: { level: 'adapt', confidence: 0.8, reasons: ['similar behavior'] },
+    behaviorMapping: [],
+    contractMapping: [],
+    dependencyPlan: [],
+    implementationPlan: ['Preserve the target signature.'],
+    risks: [],
+    assumptions: [],
+    unresolved: [],
+    blockingIssues: [],
+  },
+  context: {
+    targetFile: request.target.path,
+    targetSource: '',
+    targetFragment: '',
+    imports: [],
+    neighboringFiles: [],
+    references: [],
+    truncated: false,
+  },
+};
+
 const patches: FilePatch[] = [];
 const applyResult: ApplyResult = {
   appliedFiles: [],
@@ -57,6 +83,22 @@ const applyResult: ApplyResult = {
 };
 
 describe('adaptation HTTP adapters', () => {
+  it('posts the standalone analysis contract without translation metadata', async () => {
+    const fetch = vi.fn(async () => Response.json(analysisResult));
+    const adapter = new AnalysisHttpAdapter({ baseUrl: 'http://127.0.0.1:8788/', fetch });
+    const analysisRequest = {
+      target: request.target,
+      candidate: request.candidate,
+      requirement: request.requirement,
+    };
+
+    await expect(adapter.analyze(analysisRequest)).resolves.toEqual(analysisResult);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8788/v1/analyze',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(analysisRequest) }),
+    );
+  });
+
   it('posts adaptation requests and validates responses', async () => {
     const fetch = vi.fn(async () => Response.json(adaptationResult));
     const adapter = new AdaptationHttpAdapter({

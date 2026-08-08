@@ -18,6 +18,7 @@ const backfill = new BackfillAdapter({
 
 const server = createHttpServer({
   adapter,
+  analyzer: adapter,
   backfill,
   corsOrigin: config.corsOrigin,
 });

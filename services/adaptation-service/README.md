@@ -1,6 +1,75 @@
 # Adaptation Service (Module 3)
 
-Java → C# code adaptation: LLM translation → compile validation → auto-fix → backfill.
+Java → C# code adaptation: target-context analysis → planned translation → compile validation → auto-fix → backfill.
+
+## Analyzer workflow
+
+The service now runs two model stages. `ContextCollector` first reads a bounded,
+repository-scoped view of the C# target file, containing type, imports, sibling
+files, and textual references. `analyzer.ts` compares that context with the Java
+candidate and produces a schema-validated `AnalysisReport`. The translator then
+receives that report and must follow its implementation plan while preserving the
+target contract.
+
+The analyzer can be called independently. It only needs `target`, `candidate`,
+and `requirement`; `strategy` and `decisionNotes` remain translation concerns:
+
+```bash
+curl -X POST http://127.0.0.1:8788/v1/analyze \
+  -H 'content-type: application/json' \
+  --data @adaptation-request.json
+```
+
+The response contains both `report` and the collected `context`. Candidates marked
+`reject` are returned by `/v1/analyze`, but `/v1/adapt` stops before translation.
+
+## ReCodeAgent MCP migration
+
+The repository includes a read-only stdio MCP server rewritten from the useful
+subset of the MIT-licensed
+[Intelligent-CAT-Lab/ReCodeAgent](https://github.com/Intelligent-CAT-Lab/ReCodeAgent)
+at commit `cd20f3a893bcaef40c7f56ea1090ac7867ea17ea`. It keeps the public tool names and argument conventions that
+are useful for this module-level task:
+
+- `get_directory_tree(path, print_dirs_only, max_depth)`
+- `get_file_structure(language, file_path)`
+- `definition(symbolName)`
+- `references(symbolName, maxResults)`
+- `read_file(path, maxChars)`
+- `get_target_context(target)`
+
+ReCodeAgent's original project analyzer relies on Tree-sitter parsers but does not
+support C#. Its language-server MCP also requires per-language LSP processes and a
+large Docker toolchain. This port reimplements the read-only subset in TypeScript,
+adds Java/C# support, enforces project-root path confinement, and omits editing,
+rename, diagnostics, and test-runner tools because those belong to the Translator
+and Validator responsibilities in ForeXplore. It is source-oriented rather than a
+full LSP replacement, so overload resolution and generated symbols remain Analyzer
+uncertainties rather than hard facts.
+
+Build before starting the MCP server:
+
+```bash
+npm run build:adaptation
+npm run mcp --workspace @forexplore/adaptation-service -- \
+  fixtures/target-system/forexplore-csharp-workspace
+```
+
+Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "forexplore-analysis": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/weichai/services/adaptation-service/dist/mcp-server.js",
+        "/absolute/path/to/weichai/fixtures/target-system/forexplore-csharp-workspace"
+      ]
+    }
+  }
+}
+```
 
 `AdaptationAdapter` accepts only the `translate` strategy with a Java candidate
 and a `C#` target. Unsupported language pairs are rejected before any LLM
@@ -77,6 +146,10 @@ code-indexer (module 1) → retrieval-service (module 2) → adaptation-service 
 | File | Role |
 |------|------|
 | `src/translator.ts` | LLM Java→C# translation |
+| `src/context-collector.ts` | Bounded target repository context collection |
+| `src/analyzer.ts` | Schema-validated Analyzer Agent and module plan |
+| `src/mcp-tools.ts` | ReCodeAgent-compatible read-only project tools |
+| `src/mcp-server.ts` | stdio JSON-RPC MCP server |
 | `src/compiler.ts` | C# compile check (dotnet build) |
 | `src/model-config.ts` | Isolated temporary model provider configuration |
 | `src/adaptation-adapter.ts` | Main adapter, orchestrates translate→compile→fix |

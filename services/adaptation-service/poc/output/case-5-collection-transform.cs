@@ -7,7 +7,8 @@ public Dictionary<string, decimal> CalculateCategoryTotals(List<Order> orders)
         {
             string category = item.Category;
             decimal amount = item.Price * item.Quantity;
-            if (totals.TryGetValue(category, out decimal existing))
+            decimal existing;
+            if (totals.TryGetValue(category, out existing))
             {
                 totals[category] = existing + amount;
             }

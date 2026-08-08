@@ -1,5 +1,10 @@
-import type { AdaptationRequest, SearchCandidate } from "@forexplore/contracts";
-import { describe, expect, it } from "vitest";
+import type {
+  AdaptationRequest,
+  AnalysisReport,
+  SearchCandidate,
+  TargetModuleContext,
+} from "@forexplore/contracts";
+import { describe, expect, it, vi } from "vitest";
 import { AdaptationAdapter, _buildFilePatch } from "./adaptation-adapter";
 
 const javaCandidate: SearchCandidate = {
@@ -34,6 +39,29 @@ const request: AdaptationRequest = {
   decisionNotes: "",
 };
 
+const context: TargetModuleContext = {
+  targetFile: request.target.path,
+  targetSource: "public decimal Calculate() { throw new NotImplementedException(); }",
+  targetFragment: "public decimal Calculate() { throw new NotImplementedException(); }",
+  imports: [],
+  neighboringFiles: [],
+  references: [],
+  truncated: false,
+};
+
+const report: AnalysisReport = {
+  schemaVersion: "1.0",
+  applicability: { level: "adapt", confidence: 0.9, reasons: ["Return type conversion is required."] },
+  behaviorMapping: [{ requirement: request.requirement, status: "covered", candidateEvidence: ["return 1.0"], targetAction: "Return decimal." }],
+  contractMapping: [{ source: "double", target: "decimal", action: "convert", note: "Preserve the target contract." }],
+  dependencyPlan: [],
+  implementationPlan: ["Preserve the target signature.", "Translate the return value to decimal."],
+  risks: [],
+  assumptions: [],
+  unresolved: [],
+  blockingIssues: [],
+};
+
 describe("AdaptationAdapter language gate", () => {
   const adapter = new AdaptationAdapter({ apiKey: "not-used-by-gate-tests" });
 
@@ -63,6 +91,57 @@ describe("AdaptationAdapter language gate", () => {
     await expect(adapter.adapt({ ...request, strategy: "wrap" })).rejects.toThrow(
       'AdaptationAdapter only supports the "translate" strategy; received "wrap".',
     );
+  });
+});
+
+describe("AdaptationAdapter two-stage orchestration", () => {
+  it("passes the analyzer report into translation and builds a Validator handoff", async () => {
+    const analyze = vi.fn(async () => report);
+    const translate = vi.fn(async () => "public decimal Calculate() { return 1.0m; }");
+    const adapter = new AdaptationAdapter({
+      apiKey: "test-key",
+      analyze,
+      translate,
+      contextCollector: { collect: () => context },
+      compileStandalone: () => ({ success: true, errors: [], output: "ok" }),
+      maxRetries: 0,
+    });
+
+    const result = await adapter.adapt(request);
+
+    expect(analyze).toHaveBeenCalledWith(
+      expect.objectContaining({ target: request.target, candidate: request.candidate, context }),
+      undefined,
+    );
+    expect(translate).toHaveBeenCalledWith(
+      expect.objectContaining({ analysisReport: report, targetContext: context, matchType: "partial" }),
+      "test-key",
+      undefined,
+    );
+    expect(result.analysisReport).toEqual(report);
+    expect(result.interfaceMappings).toEqual(report.contractMapping);
+    expect(result.validatorHandoff).toMatchObject({
+      schemaVersion: "1.0",
+      traceId: expect.any(String),
+      target: request.target,
+      candidate: { id: request.candidate.id },
+      analysisReport: report,
+      generatedCode: "public decimal Calculate() { return 1.0m; }",
+    });
+  });
+
+  it("stops before translation when the analyzer reports a blocking issue", async () => {
+    const translate = vi.fn();
+    const adapter = new AdaptationAdapter({
+      apiKey: "test-key",
+      analyze: async () => ({ ...report, blockingIssues: ["Target dependency is unresolved."] }),
+      translate,
+      contextCollector: { collect: () => context },
+      compileStandalone: () => ({ success: true, errors: [], output: "ok" }),
+    });
+
+    await expect(adapter.adapt(request)).rejects.toThrow("Target dependency is unresolved");
+    expect(translate).not.toHaveBeenCalled();
   });
 });
 

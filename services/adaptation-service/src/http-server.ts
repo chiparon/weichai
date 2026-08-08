@@ -5,6 +5,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import type {
+  AnalysisRequest,
+  AnalysisResult,
   AdaptationRequest,
   FilePatch,
   Language,
@@ -16,6 +18,9 @@ import type {
 
 export interface HttpServerOptions {
   adapter: CodeAdaptationPort;
+  analyzer?: {
+    analyze(request: AnalysisRequest, signal?: AbortSignal): Promise<AnalysisResult>;
+  };
   backfill: CodeBackfillPort;
   corsOrigin: string;
 }
@@ -85,8 +90,17 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isAdaptationRequest(value: unknown): value is AdaptationRequest {
-  if (typeof value !== "object" || value === null) return false;
+  if (!isAnalysisRequest(value)) return false;
   const body = value as Partial<AdaptationRequest>;
+  return (
+    typeof body.decisionNotes === "string" &&
+    ["translate", "bridge", "wrap", "reuse"].includes(String(body.strategy))
+  );
+}
+
+function isAnalysisRequest(value: unknown): value is AnalysisRequest {
+  if (typeof value !== "object" || value === null) return false;
+  const body = value as Partial<AnalysisRequest>;
   const target = body.target as Partial<AdaptationRequest["target"]> | undefined;
   const candidate = body.candidate as
     | Partial<AdaptationRequest["candidate"]>
@@ -94,8 +108,6 @@ function isAdaptationRequest(value: unknown): value is AdaptationRequest {
 
   return (
     typeof body.requirement === "string" &&
-    typeof body.decisionNotes === "string" &&
-    ["translate", "bridge", "wrap", "reuse"].includes(String(body.strategy)) &&
     typeof target === "object" &&
     target !== null &&
     typeof target.id === "string" &&
@@ -191,6 +203,26 @@ export function createHttpServer(options: HttpServerOptions): Server {
           return;
         }
         const result = await options.adapter.adapt(body, requestSignal(request));
+        json(response, 200, result, options.corsOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/v1/analyze") {
+        const body = await readBody(request);
+        if (!isAnalysisRequest(body)) {
+          json(
+            response,
+            400,
+            { error: "Invalid AdaptationRequest payload." },
+            options.corsOrigin,
+          );
+          return;
+        }
+        if (!options.analyzer) {
+          json(response, 501, { error: "Analyzer is not configured." }, options.corsOrigin);
+          return;
+        }
+        const result = await options.analyzer.analyze(body, requestSignal(request));
         json(response, 200, result, options.corsOrigin);
         return;
       }

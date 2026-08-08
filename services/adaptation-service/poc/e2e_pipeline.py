@@ -10,6 +10,7 @@ import os, sys, json, subprocess, tempfile, shutil, re, urllib.request
 from pathlib import Path
 from datetime import datetime
 from openai import OpenAI
+from csharp_compile import compile_csharp
 
 # ============================================================
 # 配置
@@ -94,89 +95,6 @@ def translate_java_to_csharp(java_source: str, csharp_signature: str,
 # ============================================================
 # C# 编译校验（同 translate_poc.py）
 # ============================================================
-def compile_csharp(code: str, class_name: str) -> dict:
-    full_source = f"""using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Globalization;
-using System.Text;
-
-// ---- 编译桩 ----
-public class OrderItem {{
-    public decimal Price {{ get; set; }}
-    public int Quantity {{ get; set; }}
-    public string Category {{ get; set; }} = "";
-    public string ProductId {{ get; set; }} = "";
-}}
-public class Discount {{
-    public bool IsValid() => true;
-    public decimal Apply(decimal total) => total * 0.9m;
-}}
-public class Order {{
-    public List<OrderItem> Items {{ get; set; }} = new();
-    public string Customer {{ get; set; }} = "";
-}}
-public class PaymentRequest {{
-    public decimal Amount {{ get; set; }}
-    public string AccountId {{ get; set; }} = "";
-}}
-public class PaymentResult {{ public bool Success {{ get; set; }} }}
-public class Account {{ public decimal Balance {{ get; set; }} }}
-public class InsufficientFundsException : Exception {{
-    public InsufficientFundsException(string msg) : base(msg) {{ }}
-}}
-public class PaymentFailedException : Exception {{
-    public PaymentFailedException(string msg, Exception inner) : base(msg, inner) {{ }}
-}}
-public class GatewayException : Exception {{ }}
-public class AccountRepository {{
-    public Account FindById(string id) => new Account {{ Balance = 1000m }};
-    public void Save(Account a) {{ }}
-}}
-public class PaymentGateway {{
-    public PaymentResult Charge(PaymentRequest r) => new PaymentResult {{ Success = true }};
-}}
-
-public class {class_name} {{
-    private static readonly AccountRepository accountRepository = new();
-    private static readonly PaymentGateway paymentGateway = new();
-{code}
-}}
-"""
-    tmp_dir = Path(tempfile.mkdtemp(prefix="e2e_compile_"))
-    cs_file = tmp_dir / f"{class_name}.cs"
-    cs_file.write_text(full_source, encoding="utf-8")
-
-    try:
-        csproj = """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Library</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-  </PropertyGroup>
-</Project>"""
-        (tmp_dir / "tmp.csproj").write_text(csproj, encoding="utf-8")
-
-        result = subprocess.run(
-            ["dotnet", "build", "--nologo", "-v", "q"],
-            cwd=str(tmp_dir),
-            capture_output=True, text=True, encoding='utf-8', timeout=30,
-        )
-        stderr = result.stderr or ""
-        if result.returncode == 0:
-            return {"success": True, "errors": []}
-        else:
-            errors = []
-            for line in (stderr + (result.stdout or "")).split("\n"):
-                if re.search(r"error\s+CS\d+", line, re.IGNORECASE):
-                    parts = line.split(":", 2)
-                    errors.append(parts[2].strip() if len(parts) >= 3 else line.strip())
-            return {"success": False, "errors": errors or [stderr.strip()]}
-    finally:
-        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-
-
 def fix_compile_errors(bad_code: str, errors: list[str], requirement: str) -> str:
     client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"],
                     base_url="https://api.deepseek.com/v1")

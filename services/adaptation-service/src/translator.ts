@@ -3,12 +3,15 @@
  * 调用 DeepSeek API（兼容 OpenAI 格式）将 Java 方法翻译为 C#。
  */
 import { adaptationModelConfig } from "./model-config";
+import type { AnalysisReport, TargetModuleContext } from "@forexplore/contracts";
 
 export interface TranslateRequest {
   javaSource: string;
   csharpSignature: string;
   requirement: string;
   matchType: "exact" | "partial" | "different";
+  analysisReport?: AnalysisReport;
+  targetContext?: TargetModuleContext;
 }
 
 const MATCH_NOTES: Record<string, string> = {
@@ -75,6 +78,12 @@ ${requirement}
 // ---- helpers ----
 
 function buildPrompt(req: TranslateRequest): string {
+  const analysis = req.analysisReport
+    ? `\n【Analyzer 报告】\n${JSON.stringify(req.analysisReport, null, 2)}\n`
+    : "";
+  const targetContext = req.targetContext
+    ? `\n【目标模块上下文】\n${JSON.stringify(req.targetContext, null, 2)}\n`
+    : "";
   return `你是 Java→C# 代码翻译专家。请把以下 Java 方法翻译成 C#。
 
 【匹配类型】${MATCH_NOTES[req.matchType] ?? ""}
@@ -91,13 +100,16 @@ ${req.csharpSignature}
 
 【需求描述】
 ${req.requirement}
+${analysis}${targetContext}
 
 【翻译规则】
 ${SYSTEM_RULES}
 
 15. 不要写 using 语句 (放到编译 wrapper 里统一处理)
 16. 只输出方法代码（包含签名），不要 class 包裹，不要文件头，不要解释
-17. 不要 markdown 代码块标记 (\`\`\`)`;
+17. 不要 markdown 代码块标记 (\`\`\`)
+18. 决策优先级：目标 C# 不可变契约 > 功能需求 > Analyzer 报告 > Java 候选细节
+19. 严格执行 Analyzer 的 implementationPlan；候选未覆盖的行为按目标上下文补齐，不得引入 dependencyPlan 中标记为 unresolved 的依赖`;
 }
 
 async function callLLM(

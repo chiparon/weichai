@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from openai import OpenAI
+from csharp_compile import compile_csharp, compiler_status
 
 # ============================================================
 # 配置
@@ -238,141 +239,6 @@ def translate_java_to_csharp(java_source: str, csharp_signature: str,
 # ============================================================
 # Step 2: C# 编译校验
 # ============================================================
-def has_dotnet() -> bool:
-    """检查是否装了 .NET SDK"""
-    return shutil.which("dotnet") is not None
-
-
-def compile_csharp(code: str, class_name: str) -> dict:
-    """
-    编译 C# 方法体。
-    返回 {"success": bool, "errors": [str], "output": str}
-    """
-    # 构造一个最小可编译的 C# 文件（含桩类型 + 静态依赖）
-    full_source = f"""using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Globalization;
-using System.Text;
-
-// ---- 编译桩：领域对象 ----
-public class OrderItem {{
-    public decimal Price {{ get; set; }}
-    public int Quantity {{ get; set; }}
-    public string Category {{ get; set; }} = "";
-    public string ProductId {{ get; set; }} = "";
-}}
-public class Discount {{
-    public bool IsValid() => true;
-    public decimal Apply(decimal total) => total * 0.9m;
-}}
-public class Order {{
-    public List<OrderItem> Items {{ get; set; }} = new();
-    public string Customer {{ get; set; }} = "";
-}}
-public class PaymentRequest {{
-    public decimal Amount {{ get; set; }}
-    public string AccountId {{ get; set; }} = "";
-}}
-public class PaymentResult {{ public bool Success {{ get; set; }} }}
-public class Account {{
-    public decimal Balance {{ get; set; }}
-}}
-public class InsufficientFundsException : Exception {{
-    public InsufficientFundsException(string msg) : base(msg) {{ }}
-}}
-public class PaymentFailedException : Exception {{
-    public PaymentFailedException(string msg, Exception inner) : base(msg, inner) {{ }}
-}}
-public class GatewayException : Exception {{ }}
-public class AccountRepository {{
-    public Account FindById(string id) => new Account {{ Balance = 1000m }};
-    public void Save(Account a) {{ }}
-}}
-public class PaymentGateway {{
-    public PaymentResult Charge(PaymentRequest r) => new PaymentResult {{ Success = true }};
-}}
-
-public class {class_name} {{
-    // 依赖桩（模拟 DI 注入的字段）
-    private static readonly AccountRepository accountRepository = new();
-    private static readonly PaymentGateway paymentGateway = new();
-{code}
-}}
-"""
-    tmp_dir = Path(tempfile.mkdtemp(prefix="cs_compile_"))
-    cs_file = tmp_dir / f"{class_name}.cs"
-    cs_file.write_text(full_source, encoding="utf-8")
-
-    try:
-        if has_dotnet():
-            # 方案 A: dotnet build
-            # 先建一个最小 project
-            csproj = """<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Library</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-  </PropertyGroup>
-</Project>"""
-            (tmp_dir / "tmp.csproj").write_text(csproj, encoding="utf-8")
-
-            result = subprocess.run(
-                ["dotnet", "build", "--nologo", "-v", "q"],
-                cwd=str(tmp_dir),
-                capture_output=True, text=True, encoding='utf-8', timeout=30
-            )
-        else:
-            # 方案 B: csc.exe (Windows 自带)
-            dll_path = tmp_dir / "test.dll"
-            result = subprocess.run(
-                ["csc", "/target:library", f"/out:{dll_path}",
-                 "/nologo", str(cs_file)],
-                capture_output=True, text=True, encoding='utf-8', timeout=30
-            )
-
-        stderr = result.stderr or ""
-        stdout = result.stdout or ""
-        combined = stderr + stdout
-
-        if result.returncode == 0:
-            return {"success": True, "errors": [], "output": combined.strip() or "编译通过"}
-        else:
-            errors = _parse_errors(combined)
-            return {"success": False, "errors": errors, "output": combined}
-
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "errors": [".NET SDK 未安装，无法编译。请运行: winget install Microsoft.DotNet.SDK.8"],
-            "output": "",
-        }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "errors": ["编译超时"], "output": ""}
-    finally:
-        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-
-
-def _parse_errors(output: str) -> list[str]:
-    """提取关键编译错误行"""
-    lines = output.split("\n")
-    errors = []
-    for line in lines:
-        # 匹配 error CSxxxx 格式
-        if re.search(r"error\s+CS\d+", line, re.IGNORECASE):
-            # 只保留文件名之后的部分
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                errors.append(parts[2].strip())
-            else:
-                errors.append(line.strip())
-    if not errors:
-        # 兜底：取后几行
-        errors = [l.strip() for l in lines if l.strip()][-5:]
-    return errors
-
-
 # ============================================================
 # Step 3: 自动修复循环
 # ============================================================
@@ -477,14 +343,11 @@ def main():
         print("   PowerShell: $env:DEEPSEEK_API_KEY = 'sk-...'")
         sys.exit(1)
 
-    # 检查编译环境
-    if has_dotnet():
-        print("[OK] .NET SDK ready")
-    else:
-        print("[WARN] .NET SDK not found - skip compile check")
-        print("   安装方法: https://dotnet.microsoft.com/download")
-        print("   或: winget install Microsoft.DotNet.SDK.8")
-        print()
+    compiler = compiler_status()
+    if not compiler["available"]:
+        print("[X] No usable .NET SDK or C# compiler was found")
+        sys.exit(2)
+    print(f"[OK] C# compiler ready: {compiler['kind']} ({compiler['command']})")
 
     # 跑全部 test case
     results = []

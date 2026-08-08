@@ -1,5 +1,17 @@
-import type { AdaptationRequest, AdaptationResult, ApplyResult, FilePatch } from '@forexplore/contracts';
-import type { CodeAdaptationPort, CodeBackfillPort, WorkflowPorts } from '@forexplore/workflow-core';
+import type {
+  AnalysisRequest,
+  AnalysisResult,
+  AdaptationRequest,
+  AdaptationResult,
+  ApplyResult,
+  FilePatch,
+} from '@forexplore/contracts';
+import type {
+  CodeAdaptationPort,
+  CodeAnalysisPort,
+  CodeBackfillPort,
+  WorkflowPorts,
+} from '@forexplore/workflow-core';
 
 export interface AdaptationHttpOptions {
   baseUrl: string;
@@ -20,6 +32,19 @@ function isAdaptationResult(value: unknown): value is AdaptationResult {
     Array.isArray(result.interfaceMappings) &&
     Array.isArray(result.validation) &&
     Array.isArray(result.files)
+  );
+}
+
+function isAnalysisResult(value: unknown): value is AnalysisResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const result = value as Partial<AnalysisResult>;
+  return (
+    typeof result.report === 'object' &&
+    result.report !== null &&
+    result.report.schemaVersion === '1.0' &&
+    typeof result.context === 'object' &&
+    result.context !== null &&
+    typeof result.context.targetFile === 'string'
   );
 }
 
@@ -70,6 +95,36 @@ export class AdaptationHttpAdapter implements CodeAdaptationPort {
     const body: unknown = await response.json();
     if (!isAdaptationResult(body)) {
       throw new Error('Adaptation service returned an invalid response.');
+    }
+    return body;
+  }
+}
+
+export class AnalysisHttpAdapter implements CodeAnalysisPort {
+  private readonly analyzeUrl: string;
+  private readonly request: typeof globalThis.fetch;
+
+  constructor(options: AdaptationHttpOptions) {
+    if (!options.baseUrl.trim()) {
+      throw new Error('Adaptation API base URL must not be empty.');
+    }
+    this.analyzeUrl = endpoint(options.baseUrl, '/v1/analyze');
+    this.request = options.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  async analyze(request: AnalysisRequest, signal?: AbortSignal): Promise<AnalysisResult> {
+    const response = await this.request(this.analyzeUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Analysis failed: ${await responseError(response)}`);
+    }
+    const body: unknown = await response.json();
+    if (!isAnalysisResult(body)) {
+      throw new Error('Adaptation service returned an invalid analysis response.');
     }
     return body;
   }

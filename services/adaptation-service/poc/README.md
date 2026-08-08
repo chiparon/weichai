@@ -2,6 +2,16 @@
 
 ## 快速开始
 
+### 0. 先验证仓库中已有的 5 份基线输出
+
+这一步不调用模型，也不需要 API Key：
+
+```bash
+python services/adaptation-service/poc/validate_baseline.py
+```
+
+脚本会优先使用可用的 .NET SDK；如果机器只有 .NET Runtime，则自动回退到 Windows 自带的 `csc.exe`。领域类型由受控编译桩提供，避免把 `Order`、`PaymentRequest` 等上下文缺失误报成翻译错误。
+
 ### 1. 安装依赖
 
 ```powershell

@@ -4,22 +4,33 @@
  * 流程: LLM翻译 → 独立编译 → 自动修复(最多3轮) → 集成编译 → 生成结果
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  AnalysisReport,
+  AnalysisRequest,
+  AnalysisResult,
+  AnalyzerRequest,
   AdaptationRequest,
   AdaptationResult,
   FilePatch,
   InterfaceMapping,
   Language,
+  TargetModuleContext,
+  ValidatorHandoff,
 } from "@forexplore/contracts";
-import type { CodeAdaptationPort } from "@forexplore/workflow-core";
+import type { CodeAdaptationPort, CodeAnalysisPort } from "@forexplore/workflow-core";
 import { translateJavaToCSharp, fixCompileErrors } from "./translator";
+import type { TranslateRequest } from "./translator";
+import { analyzeModule } from "./analyzer";
+import { ContextCollector } from "./context-collector";
 import {
   compileIntegrated,
   compileStandalone,
   isCompilerUnavailable,
 } from "./compiler";
+import type { CompileResult } from "./compiler";
 
 const MAX_RETRIES = 3;
 
@@ -30,17 +41,64 @@ export interface AdaptationAdapterOptions {
   skeletonProjectPath?: string;
   /** 目标项目根目录（可选，有则生成定点 context patch 而非全量替换） */
   projectRoot?: string;
+  /** Analyzer 注入点，测试和替换模型时使用。 */
+  analyze?: AnalyzerFunction;
+  /** 目标上下文收集器注入点。 */
+  contextCollector?: Pick<ContextCollector, "collect">;
+  /** Translator 注入点，验证两阶段交接或替换实现时使用。 */
+  translate?: TranslatorFunction;
+  /** 编译器和修复器注入点，用于无外部工具的编排测试。 */
+  compileStandalone?: StandaloneCompilerFunction;
+  compileIntegrated?: IntegratedCompilerFunction;
+  repair?: RepairFunction;
+  maxRetries?: number;
 }
 
-export class AdaptationAdapter implements CodeAdaptationPort {
+export type AnalyzerFunction = (
+  request: AnalyzerRequest,
+  signal?: AbortSignal,
+) => Promise<AnalysisReport>;
+
+export type TranslatorFunction = (
+  request: TranslateRequest,
+  apiKey: string,
+  signal?: AbortSignal,
+) => Promise<string>;
+
+export type StandaloneCompilerFunction = (code: string, className: string) => CompileResult;
+export type IntegratedCompilerFunction = (
+  code: string,
+  projectPath: string,
+  targetFilePath: string,
+) => CompileResult;
+export type RepairFunction = typeof fixCompileErrors;
+
+export class AdaptationAdapter implements CodeAdaptationPort, CodeAnalysisPort {
   #apiKey: string;
   #skeletonProjectPath?: string;
   #projectRoot?: string;
+  #analyze: AnalyzerFunction;
+  #contextCollector: Pick<ContextCollector, "collect">;
+  #translate: TranslatorFunction;
+  #compileStandalone: StandaloneCompilerFunction;
+  #compileIntegrated: IntegratedCompilerFunction;
+  #repair: RepairFunction;
+  #maxRetries: number;
 
   constructor(options: AdaptationAdapterOptions) {
     this.#apiKey = options.apiKey;
     this.#skeletonProjectPath = options.skeletonProjectPath;
     this.#projectRoot = options.projectRoot;
+    this.#analyze = options.analyze ?? ((request, signal) =>
+      analyzeModule(request, { apiKey: this.#apiKey }, signal));
+    this.#contextCollector = options.contextCollector ?? new ContextCollector({
+      projectRoot: options.projectRoot,
+    });
+    this.#translate = options.translate ?? translateJavaToCSharp;
+    this.#compileStandalone = options.compileStandalone ?? compileStandalone;
+    this.#compileIntegrated = options.compileIntegrated ?? compileIntegrated;
+    this.#repair = options.repair ?? fixCompileErrors;
+    this.#maxRetries = Math.max(0, Math.min(options.maxRetries ?? MAX_RETRIES, MAX_RETRIES));
   }
 
   async adapt(
@@ -48,24 +106,38 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     signal?: AbortSignal,
   ): Promise<AdaptationResult> {
     assertSupportedTranslation(request);
-    const matchType = inferMatchType(request);
+    const { context: targetContext, report: analysisReport } = await this.analyze(
+      request,
+      signal,
+    );
+    if (analysisReport.applicability.level === "reject" || analysisReport.blockingIssues.length > 0) {
+      throw new Error(
+        `Analyzer blocked candidate "${request.candidate.id}": ${[
+          ...analysisReport.applicability.reasons,
+          ...analysisReport.blockingIssues,
+        ].join("; ")}`,
+      );
+    }
+    const matchType = analysisMatchType(analysisReport, request);
 
     // ===== Step 1: LLM 翻译 =====
-    let csharpCode = await translateJavaToCSharp(
+    let csharpCode = await this.#translate(
       {
         javaSource: request.candidate.preview,
         csharpSignature: request.target.signature,
         requirement: request.requirement,
         matchType,
+        analysisReport,
+        targetContext,
       },
       this.#apiKey,
       signal,
     );
 
     // ===== Step 2: 编译 + 自动修复 =====
-    let standaloneResult = compileStandalone(csharpCode, request.target.name);
+    let standaloneResult = this.#compileStandalone(csharpCode, request.target.name);
     let integratedResult = this.#skeletonProjectPath
-      ? compileIntegrated(csharpCode, this.#skeletonProjectPath, request.target.path)
+      ? this.#compileIntegrated(csharpCode, this.#skeletonProjectPath, request.target.path)
       : null;
     let retries = 0;
     let repairResult = integratedResult ?? standaloneResult;
@@ -73,9 +145,9 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     while (
       !repairResult.success &&
       !isCompilerUnavailable(repairResult) &&
-      retries < MAX_RETRIES
+      retries < this.#maxRetries
     ) {
-      csharpCode = await fixCompileErrors(
+      csharpCode = await this.#repair(
         csharpCode,
         repairResult.errors,
         request.target.signature,
@@ -83,16 +155,16 @@ export class AdaptationAdapter implements CodeAdaptationPort {
         this.#apiKey,
         signal,
       );
-      standaloneResult = compileStandalone(csharpCode, request.target.name);
+      standaloneResult = this.#compileStandalone(csharpCode, request.target.name);
       integratedResult = this.#skeletonProjectPath
-        ? compileIntegrated(csharpCode, this.#skeletonProjectPath, request.target.path)
+        ? this.#compileIntegrated(csharpCode, this.#skeletonProjectPath, request.target.path)
         : null;
       repairResult = integratedResult ?? standaloneResult;
       retries++;
     }
 
     // ===== Step 3: 生成映射 =====
-    const mappings = buildMappings(request.candidate.preview, csharpCode);
+    const mappings = buildMappings(request.candidate.preview, csharpCode, analysisReport);
 
     // ===== Step 4: 生成 FilePatch =====
     const originalContent = readOriginalIfAvailable(
@@ -106,31 +178,71 @@ export class AdaptationAdapter implements CodeAdaptationPort {
       request.target.line,
     );
 
+    const validation = [
+      {
+        label: "独立编译",
+        status: standaloneResult.success ? "pass" as const : "warn" as const,
+        detail: standaloneResult.success
+          ? "编译通过"
+          : standaloneResult.errors.slice(0, 3).join("; "),
+      },
+      {
+        label: "集成编译",
+        status: integratedResult?.success ? "pass" as const : "warn" as const,
+        detail: integratedResult
+          ? integratedResult.success
+            ? "编译通过"
+            : integratedResult.errors.slice(0, 3).join("; ")
+          : "未执行（需 skeleton 项目路径）",
+      },
+    ];
+    const validatorHandoff: ValidatorHandoff = {
+      schemaVersion: "1.0",
+      traceId: randomUUID(),
+      target: request.target,
+      candidate: {
+        id: request.candidate.id,
+        repository: request.candidate.repository,
+        path: request.candidate.path,
+        language: request.candidate.language,
+        signature: request.candidate.signature,
+      },
+      requirement: request.requirement,
+      analysisReport,
+      generatedCode: csharpCode,
+      interfaceMappings: mappings,
+      preValidation: validation,
+      files: [patch],
+    };
+
     return {
       strategy: request.strategy,
       targetLanguage: "C#" as Language,
       generatedCode: csharpCode,
       interfaceMappings: mappings,
-      validation: [
-        {
-          label: "独立编译",
-          status: standaloneResult.success ? "pass" : "warn",
-          detail: standaloneResult.success
-            ? "编译通过"
-            : standaloneResult.errors.slice(0, 3).join("; "),
-        },
-        {
-          label: "集成编译",
-          status: integratedResult?.success ? "pass" : "warn",
-          detail: integratedResult
-            ? integratedResult.success
-              ? "编译通过"
-              : integratedResult.errors.slice(0, 3).join("; ")
-            : "未执行（需 skeleton 项目路径）",
-        },
-      ],
+      analysisReport,
+      validation,
       files: [patch],
+      validatorHandoff,
     };
+  }
+
+  async analyze(
+    request: AnalysisRequest,
+    signal?: AbortSignal,
+  ): Promise<AnalysisResult> {
+    assertSupportedLanguagePair(request);
+    const context = this.#contextCollector.collect(request.target);
+    const report = await this.#analyze(
+      {
+        target: request.target,
+        candidate: request.candidate,
+        requirement: request.requirement,
+        context,
+      },
+      signal,
+    );
+    return { report, context };
   }
 }
 
@@ -142,10 +254,11 @@ function assertSupportedTranslation(request: AdaptationRequest): void {
       `AdaptationAdapter only supports the "translate" strategy; received "${request.strategy}".`,
     );
   }
-  if (
-    request.candidate.language !== "Java" ||
-    request.target.language !== "C#"
-  ) {
+  assertSupportedLanguagePair(request);
+}
+
+function assertSupportedLanguagePair(request: AnalysisRequest): void {
+  if (request.candidate.language !== "Java" || request.target.language !== "C#") {
     throw new Error(
       `Unsupported adaptation language pair: ${request.candidate.language} -> ${request.target.language}. Expected Java -> C#.`,
     );
@@ -159,11 +272,25 @@ function inferMatchType(request: AdaptationRequest): "exact" | "partial" | "diff
   return "exact";
 }
 
+function analysisMatchType(
+  report: AnalysisReport,
+  request: AdaptationRequest,
+): "exact" | "partial" | "different" {
+  if (report.applicability.level === "direct") return "exact";
+  if (report.applicability.level === "adapt") return "partial";
+  if (report.applicability.level === "reference") return "different";
+  return inferMatchType(request);
+}
+
 /** 从 Java 源码和 C# 代码中推断类型映射 */
 function buildMappings(
   _javaSource: string,
   _csharpCode: string,
+  analysisReport?: AnalysisReport,
 ): InterfaceMapping[] {
+  if (analysisReport?.contractMapping.length) {
+    return analysisReport.contractMapping.map((mapping) => ({ ...mapping }));
+  }
   const rules: Array<[string, string, InterfaceMapping["action"]]> = [
     ["double", "decimal", "convert"],
     ["List<", "List<", "preserve"],

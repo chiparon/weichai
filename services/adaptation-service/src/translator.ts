@@ -468,8 +468,15 @@ function validateTranslationResult(
   request: AnalyzeTranslationRequest,
 ): TranslationResult {
   const generatedCode = cleanGeneratedCode(result.generatedCode);
+  const unresolved = result.unresolved.map((item) => item.trim()).filter(Boolean);
+  if (unresolved.length > 0) {
+    throw new Error(
+      `Translator returned unresolved items and cannot complete translation: ${unresolved.join("; ")}`,
+    );
+  }
   assertTargetScope(generatedCode);
   assertTargetContract(generatedCode, request.targetContext.targetSignature);
+  assertOnlyTargetMethod(generatedCode, request.targetContext.targetSignature);
 
   const missingSteps = request.analysisReport.implementationPlan.filter(
     (step) => !result.completedSteps.includes(step),
@@ -507,16 +514,217 @@ function assertTargetContract(code: string, targetSignature: string): void {
 }
 
 function assertTargetScope(code: string): void {
-  if (/^```/m.test(code)) throw new Error("Translator output still contains markdown fences.");
-  if (/^\s*(?:global\s+)?using\s+/m.test(code)) {
+  if (/^```/.test(code)) throw new Error("Translator output still contains markdown fences.");
+  if (/^\s*(?:global\s+)?using\s+/.test(code)) {
     throw new Error("Translator must not add using directives outside the target module region.");
   }
-  if (/^\s*(?:file\s+)?namespace\s+/m.test(code)) {
+  if (/^\s*(?:file\s+)?namespace\s+/.test(code)) {
     throw new Error("Translator must not add a namespace declaration.");
   }
-  if (/^\s*(?:(?:public|internal|private|protected|static|sealed|abstract|partial)\s+)*(?:class|record|struct|interface)\s+/m.test(code)) {
+  if (
+    /^\s*(?:(?:public|internal|private|protected|static|sealed|abstract|partial)\s+)*(?:class|record|struct|interface)\s+/.test(
+      code,
+    )
+  ) {
     throw new Error("Translator must not generate an enclosing type.");
   }
+}
+
+/**
+ * The target signature alone is not a sufficient scope guard: a model can
+ * return the requested method followed by another member. Walk the generated
+ * C# enough to locate the outer method body, then require that only whitespace
+ * or comments remain. This deliberately permits nested blocks, local
+ * functions, strings, and expression-bodied methods inside the requested
+ * method.
+ */
+function assertOnlyTargetMethod(code: string, targetSignature: string): void {
+  const signatureEnd = findTargetSignatureEnd(code, targetSignature);
+  const bodyStart = skipCSharpTrivia(code, signatureEnd);
+
+  let methodEnd: number;
+  if (code.startsWith("=>", bodyStart)) {
+    methodEnd = findExpressionBodyEnd(code, bodyStart + 2);
+  } else if (code[bodyStart] === "{") {
+    methodEnd = findBlockBodyEnd(code, bodyStart);
+  } else {
+    throw new Error("Translator must return a complete body for the requested target method.");
+  }
+
+  if (skipCSharpTrivia(code, methodEnd) !== code.length) {
+    throw new Error(
+      "Translator output must contain exactly one target method with no declarations after its body.",
+    );
+  }
+}
+
+function findTargetSignatureEnd(code: string, targetSignature: string): number {
+  const normalizedTarget = normalizeSignature(targetSignature).replace(/;$/, "");
+  let codeIndex = 0;
+
+  for (let targetIndex = 0; targetIndex < normalizedTarget.length; targetIndex += 1) {
+    while (codeIndex < code.length && /\s/.test(code[codeIndex] ?? "")) codeIndex += 1;
+    if (code[codeIndex] !== normalizedTarget[targetIndex]) {
+      throw new Error(`Translator changed the immutable target signature: ${targetSignature}`);
+    }
+    codeIndex += 1;
+  }
+
+  return codeIndex;
+}
+
+function skipCSharpTrivia(code: string, start: number): number {
+  let index = start;
+  while (index < code.length) {
+    if (/\s/.test(code[index] ?? "")) {
+      index += 1;
+      continue;
+    }
+    if (code.startsWith("//", index)) {
+      const newline = code.indexOf("\n", index + 2);
+      index = newline === -1 ? code.length : newline + 1;
+      continue;
+    }
+    if (code.startsWith("/*", index)) {
+      const end = code.indexOf("*/", index + 2);
+      if (end === -1) throw new Error("Translator output contains an unterminated block comment.");
+      index = end + 2;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+function findBlockBodyEnd(code: string, start: number): number {
+  let depth = 0;
+  let index = start;
+
+  while (index < code.length) {
+    const skipped = skipCSharpToken(code, index);
+    if (skipped !== null) {
+      index = skipped;
+      continue;
+    }
+
+    if (code[index] === "{") depth += 1;
+    if (code[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+      if (depth < 0) break;
+    }
+    index += 1;
+  }
+
+  throw new Error("Translator output contains an unterminated target method body.");
+}
+
+function findExpressionBodyEnd(code: string, start: number): number {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let index = start;
+
+  while (index < code.length) {
+    const skipped = skipCSharpToken(code, index);
+    if (skipped !== null) {
+      index = skipped;
+      continue;
+    }
+
+    switch (code[index]) {
+      case "(":
+        parentheses += 1;
+        break;
+      case ")":
+        parentheses -= 1;
+        break;
+      case "[":
+        brackets += 1;
+        break;
+      case "]":
+        brackets -= 1;
+        break;
+      case "{":
+        braces += 1;
+        break;
+      case "}":
+        braces -= 1;
+        break;
+      case ";":
+        if (parentheses === 0 && brackets === 0 && braces === 0) return index + 1;
+        break;
+      default:
+        break;
+    }
+    index += 1;
+  }
+
+  throw new Error("Translator output contains an unterminated expression-bodied target method.");
+}
+
+/** Returns the index after a C# literal or comment, or null for code. */
+function skipCSharpToken(code: string, start: number): number | null {
+  if (code.startsWith("//", start)) {
+    const newline = code.indexOf("\n", start + 2);
+    return newline === -1 ? code.length : newline + 1;
+  }
+  if (code.startsWith("/*", start)) {
+    const end = code.indexOf("*/", start + 2);
+    if (end === -1) throw new Error("Translator output contains an unterminated block comment.");
+    return end + 2;
+  }
+  if (code[start] === "'") return skipQuotedLiteral(code, start, false, "'");
+
+  let quoteStart = start;
+  let verbatim = false;
+  if (code[quoteStart] === "$" || code[quoteStart] === "@") {
+    const firstPrefix = code[quoteStart];
+    quoteStart += 1;
+    if (firstPrefix === "@") verbatim = true;
+    if (
+      (code[quoteStart] === "$" || code[quoteStart] === "@") &&
+      code[quoteStart] !== firstPrefix
+    ) {
+      verbatim = verbatim || code[quoteStart] === "@";
+      quoteStart += 1;
+    }
+  }
+  if (code[quoteStart] !== '"') return null;
+  return skipQuotedLiteral(code, quoteStart, verbatim);
+}
+
+function skipQuotedLiteral(
+  code: string,
+  start: number,
+  verbatim: boolean,
+  quote = '"',
+): number {
+  let quoteCount = 0;
+  while (code[start + quoteCount] === quote) quoteCount += 1;
+  if (quote === '"' && quoteCount >= 3) {
+    const delimiter = quote.repeat(quoteCount);
+    const end = code.indexOf(delimiter, start + quoteCount);
+    if (end === -1) throw new Error("Translator output contains an unterminated raw string literal.");
+    return end + quoteCount;
+  }
+
+  let index = start + 1;
+  while (index < code.length) {
+    if (!verbatim && code[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    if (code[index] === quote) {
+      if (verbatim && code[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+      return index + 1;
+    }
+    index += 1;
+  }
+  throw new Error("Translator output contains an unterminated string or character literal.");
 }
 
 function normalizeSignature(value: string): string {

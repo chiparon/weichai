@@ -146,6 +146,52 @@ describe("Translator Agent", () => {
     ).rejects.toThrow("must not generate an enclosing type");
   });
 
+  it("stops when the Translator reports unresolved blockers", async () => {
+    const request = fixture("translator-direct");
+    const blocked = resultFor(request);
+    blocked.unresolved = ["missing target dependency"];
+
+    await expect(
+      translateWithAnalysis(request, {
+        apiKey: "test-key",
+        request: modelRequest(blocked),
+      }),
+    ).rejects.toThrow("returned unresolved items");
+  });
+
+  it("rejects a member appended after the requested target method", async () => {
+    const request = fixture("translator-direct");
+    const expanded = resultFor(
+      request,
+      `${request.targetContext.targetSignature} { return await _cache.GetAsync(key, cancellationToken); }\nprivate void DeleteAll() { }`,
+    );
+
+    await expect(
+      translateWithAnalysis(request, {
+        apiKey: "test-key",
+        request: modelRequest(expanded),
+      }),
+    ).rejects.toThrow("exactly one target method");
+  });
+
+  it("accepts one normal method with nested blocks, literals, and trailing comments", () => {
+    const request = fixture("translator-direct");
+    const complete = resultFor(
+      request,
+      `${request.targetContext.targetSignature}\n{\n  if (string.IsNullOrWhiteSpace(key))\n  {\n    throw new ArgumentException("{key}", nameof(key));\n  }\n\n  return await _cache.GetAsync(key, cancellationToken);\n}\n// End of generated method.`,
+    );
+
+    expect(() => translatorInternals.validateTranslationResult(complete, request)).not.toThrow();
+  });
+
+  it("accepts a valid expression-bodied target method", () => {
+    const request = fixture("translator-direct");
+    request.targetContext.targetSignature = "public decimal Calculate()";
+    const complete = resultFor(request, "public decimal Calculate() => 1.0m;");
+
+    expect(() => translatorInternals.validateTranslationResult(complete, request)).not.toThrow();
+  });
+
   it("requires every planned step and contract mapping to be acknowledged", () => {
     const request = fixture("translator-direct");
     const incomplete = resultFor(request);

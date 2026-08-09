@@ -51,6 +51,14 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   return parsed;
 }
 
+function nonNegativeInteger(value: string | undefined, fallback: number, name: string): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
 function identifier(value: string | undefined, fallback: string, name: string): string {
   const selected = value?.trim() || fallback;
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(selected)) {
@@ -85,7 +93,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
           model: env.SEEKDB_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small',
           supportsDimensions: boolean(
             env.SEEKDB_EMBEDDING_SUPPORTS_DIMENSIONS,
-            false,
+            true,
           ),
         }
       : { provider: 'hash', dimension };
@@ -107,7 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
           apiKey: env.RERANK_OPENAI_API_KEY?.trim() || '',
           model: env.RERANK_OPENAI_MODEL?.trim() || 'deepseek-chat',
           timeoutMs: positiveInteger(env.RERANK_TIMEOUT_MS, 30_000, 'RERANK_TIMEOUT_MS'),
-          maxRetries: positiveInteger(env.RERANK_MAX_RETRIES, 2, 'RERANK_MAX_RETRIES'),
+          maxRetries: nonNegativeInteger(env.RERANK_MAX_RETRIES, 2, 'RERANK_MAX_RETRIES'),
         }
       : rerankProvider === 'local'
         ? {
@@ -115,7 +123,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
             url: env.RERANK_LOCAL_URL?.trim() || 'http://127.0.0.1:11434/v1/chat/completions',
             model: env.RERANK_LOCAL_MODEL?.trim() || 'qwen2.5:7b',
             timeoutMs: positiveInteger(env.RERANK_TIMEOUT_MS, 60_000, 'RERANK_TIMEOUT_MS'),
-            maxRetries: positiveInteger(env.RERANK_MAX_RETRIES, 1, 'RERANK_MAX_RETRIES'),
+            maxRetries: nonNegativeInteger(env.RERANK_MAX_RETRIES, 1, 'RERANK_MAX_RETRIES'),
           }
         : { provider: 'none' };
 

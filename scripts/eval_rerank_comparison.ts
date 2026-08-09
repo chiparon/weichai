@@ -564,4 +564,7 @@ async function main() {
   console.log(`  Agent     P@3~17%  P@5~30%  Dist@3=0  HighHit3=1/2 (task 4-5 only)`);
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

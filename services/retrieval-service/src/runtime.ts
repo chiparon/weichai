@@ -16,7 +16,7 @@ export function createEmbeddingProvider(config: RetrievalConfig): EmbeddingProvi
       config.embedding.url,
       config.embedding.apiKey,
       config.embedding.model,
-      config.embedding.supportsDimensions,
+      { supportsDimensions: config.embedding.supportsDimensions },
     );
   }
   return new HashEmbeddingProvider(config.embedding.dimension);

@@ -63,6 +63,7 @@ export class RerankingSearchEngine implements SearchEngine {
     rerankResults: Array<{ id: string; score: number; reason: string }>,
     topK: number,
   ): SearchCandidate[] {
+    this.assertCompleteRerankResults(candidates, rerankResults);
     const rerankMap = new Map(rerankResults.map((r) => [r.id, r]));
 
     const reranked = candidates.map((c) => {
@@ -82,5 +83,48 @@ export class RerankingSearchEngine implements SearchEngine {
     });
 
     return reranked.slice(0, topK);
+  }
+
+  /**
+   * A partial or fabricated LLM response must never reshuffle the original
+   * search results. Treat it as a failed rerank so {@link search} falls back
+   * to the deterministic retrieval order.
+   */
+  private assertCompleteRerankResults(
+    candidates: SearchCandidate[],
+    rerankResults: Array<{ id: string; score: number; reason: string }>,
+  ): void {
+    const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+    if (candidateIds.size !== candidates.length) {
+      throw new Error('Cannot rerank a candidate list with duplicate ids.');
+    }
+
+    if (!Array.isArray(rerankResults)) {
+      throw new Error('Reranker returned a non-array result.');
+    }
+
+    const seen = new Set<string>();
+    for (const result of rerankResults) {
+      if (
+        typeof result !== 'object' || result === null ||
+        typeof result.id !== 'string' ||
+        !Number.isFinite(result.score)
+      ) {
+        throw new Error('Reranker returned an invalid result item.');
+      }
+      if (!candidateIds.has(result.id)) {
+        throw new Error(`Reranker returned an unknown candidate id: ${result.id}`);
+      }
+      if (seen.has(result.id)) {
+        throw new Error(`Reranker returned a duplicate candidate id: ${result.id}`);
+      }
+      seen.add(result.id);
+    }
+
+    if (seen.size !== candidateIds.size) {
+      throw new Error(
+        `Reranker returned ${seen.size}/${candidateIds.size} candidate ids; refusing partial ranking.`,
+      );
+    }
   }
 }

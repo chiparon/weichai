@@ -273,4 +273,7 @@ async function main() {
   console.log(`Top-20 results saved to ${resultsDir}/seekdb_top20.json`);
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

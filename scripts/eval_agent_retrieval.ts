@@ -301,7 +301,9 @@ async function main() {
 
   // 汇总
   console.log('\n' + '='.repeat(80));
-  console.log('AGGREGATE METRICS (macro-average across 5 tasks)');
+  console.log(
+    `AGGREGATE METRICS (${allMetrics.length}/${tasks.length} selected tasks; not a full benchmark)`,
+  );
   console.log('='.repeat(80));
 
   const avg = (key: string) => allMetrics.reduce((s, m) => s + m[key], 0) / allMetrics.length;
@@ -326,7 +328,10 @@ async function main() {
   console.log(`Top-20 results saved to ${resultsDir}/agent_top20.json`);
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
 
 // ---- 辅助函数 ----
 function loadTasks(fp: string) {

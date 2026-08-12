@@ -328,7 +328,8 @@ interface ValidatorFeedback {
 - [x] 迁移 ReCodeAgent 中适合本项目的只读 MCP 工具；
 - [x] 验收 B 的目标上下文收集：补充字段、构造参数、相关成员、依赖类型、调用方、`REQ:` 约束和预算裁剪，并保留旧上下文字段兼容性；
 - [x] 验收 C 的 Translator：补充单目标方法范围保护，并让编译修复继续携带 `AnalysisReport` 和目标上下文；
-- [ ] 用相同模型参数重跑 5 个 POC 和真实候选。当前环境没有 `DEEPSEEK_API_KEY`，不能伪造新基线；
+- [x] 已使用 `DEEPSEEK_MODEL=deepseek-v4-flash` 重跑 5 个 POC，5/5 编译通过；详细结果见 `docs/reports/translation-baseline.md`；
+- [ ] 用相同模型参数跑真实候选。需要 Validator 侧提供候选输入和运行环境；
 - [ ] Validator 组用实际反馈样例完成一次联调；
 - [ ] 从现有 Java/C# fixture 中选定 8～12 组正式评测对并补人工标注。
 

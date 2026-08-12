@@ -34,6 +34,20 @@
 
 这次修复没有改变五个样例的业务行为。领域类型仍由受控 stub 提供；case 5 仅把 C# 7 的内联 `out` 变量声明改成等价的 C# 5 写法，以兼容 Windows Framework 自带编译器。
 
+## 真实模型复跑结果
+
+2026-08-12 使用 `DEEPSEEK_MODEL=deepseek-v4-flash` 重新运行了同一批 5 个 POC。运行时从未跟踪的 `services/adaptation-service/.env` 读取密钥，结果文件为本地生成的 `services/adaptation-service/poc/output/result_20260812_195316.json`。
+
+| 场景 | 编译结果 | 修复次数 |
+| --- | --- | ---: |
+| case-1-exact-match | 通过 | 0 |
+| case-2-partial-match | 通过 | 0 |
+| case-3-different-signature | 通过 | 0 |
+| case-4-exception-mapping | 通过 | 0 |
+| case-5-collection-transform | 通过 | 0 |
+
+汇总：5/5 通过，未触发编译修复循环。第一次复跑中 case 5 曾生成 C# 7 的内联 `out` 声明，已在 POC 提示词中加入 C# 5 兼容约束并复跑确认通过。
+
 ## 可复跑方式
 
 ```bash

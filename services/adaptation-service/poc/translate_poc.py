@@ -26,7 +26,7 @@ from csharp_compile import compile_csharp, compiler_status
 # ============================================================
 # 配置
 # ============================================================
-MODEL = "deepseek-chat"     # DeepSeek V3, 便宜好用
+MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 MAX_RETRIES = 3             # 编译失败最大自动修复次数
 DOTNET_PATH = "dotnet"      # dotnet 命令, 如果没装 .NET SDK 则在脚本最后看到警告
 
@@ -223,9 +223,10 @@ def translate_java_to_csharp(java_source: str, csharp_signature: str,
 12. Stream API → LINQ (Where / Select / ToDictionary / OrderByDescending / Take)
 13. String.format() → string.Format() 或 $"" 字符串插值
 14. Map.merge() → Dictionary.TryGetValue + 赋值
-15. 不要写 using 语句 (放到编译 wrapper 里统一处理)
-16. 只输出方法代码（包含签名），不要 class 包裹，不要文件头，不要解释
-17. 不要 markdown 代码块标记 (```)
+15. 兼容 Windows Framework C# 编译器：不要使用内联 out 变量声明、字符串插值或其他 C# 7+ 语法；先单独声明变量，再传给 TryGetValue
+16. 不要写 using 语句 (放到编译 wrapper 里统一处理)
+17. 只输出方法代码（包含签名），不要 class 包裹，不要文件头，不要解释
+18. 不要 markdown 代码块标记 (```)
 """
 
     response = client.chat.completions.create(
@@ -263,7 +264,11 @@ def fix_compile_errors(bad_code: str, errors: list[str],
 【功能需求】
 {requirement}
 
-要求: 只输出修复后的 C# 方法代码(含签名), 不要 markdown 标记, 不要解释。"""
+要求:
+1. 只输出修复后的 C# 方法代码(含签名), 不要 markdown 标记, 不要解释。
+2. 编译器是 Windows Framework C# 编译器，只能使用 C# 5 兼容语法；不要使用内联 out 变量声明、字符串插值或其他 C# 7+ 语法。
+3. 对 TryGetValue 等 out 参数，先在上一行声明变量，再传入 out。
+"""
 
     response = client.chat.completions.create(
         model=MODEL,

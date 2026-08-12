@@ -23,12 +23,14 @@ export async function analyzeModule(
   options: AnalyzerOptions,
   signal?: AbortSignal,
 ): Promise<AnalysisReport> {
+  validateAnalyzerRequest(request);
   const prompt = buildAnalyzerPrompt(request);
   const response = await callAnalyzerModel(prompt, options, signal);
   return parseAnalysisReport(response);
 }
 
 export function buildAnalyzerPrompt(request: AnalyzerRequest): string {
+  validateAnalyzerRequest(request);
   return `请输出以下结构的 JSON：
 {
   "schemaVersion": "1.0",
@@ -126,7 +128,7 @@ export function validateAnalysisReport(value: unknown): AnalysisReport {
     applicability: {
       level,
       confidence,
-      reasons: stringArray(value.applicability.reasons, 'applicability.reasons'),
+      reasons: nonEmptyStringArray(value.applicability.reasons, 'applicability.reasons'),
     },
     behaviorMapping: behaviorMappings(value.behaviorMapping),
     contractMapping: contractMappings(value.contractMapping),
@@ -162,30 +164,53 @@ function extractJson(raw: string): string {
 function behaviorMappings(value: unknown): AnalysisReport['behaviorMapping'] {
   if (!Array.isArray(value)) throw new Error('behaviorMapping must be an array.');
   return value.map((item, index) => {
-    if (!isRecord(item) || typeof item.requirement !== 'string' || !isEnum(item.status, ['covered', 'partial', 'missing', 'conflict']) || typeof item.targetAction !== 'string') throw new Error(`Invalid behaviorMapping[${index}].`);
-    return { requirement: item.requirement, status: item.status, candidateEvidence: stringArray(item.candidateEvidence, `behaviorMapping[${index}].candidateEvidence`), targetAction: item.targetAction };
+    if (!isRecord(item) || typeof item.requirement !== 'string' || !item.requirement.trim() || !isEnum(item.status, ['covered', 'partial', 'missing', 'conflict']) || typeof item.targetAction !== 'string' || !item.targetAction.trim()) throw new Error(`Invalid behaviorMapping[${index}].`);
+    const candidateEvidence = stringArray(item.candidateEvidence, `behaviorMapping[${index}].candidateEvidence`);
+    if (item.status !== 'missing' && candidateEvidence.length === 0) throw new Error(`Invalid behaviorMapping[${index}]: candidate evidence is required unless status is missing.`);
+    return { requirement: item.requirement.trim(), status: item.status, candidateEvidence, targetAction: item.targetAction.trim() };
   });
 }
 
 function contractMappings(value: unknown): ContractMapping[] {
   if (!Array.isArray(value)) throw new Error('contractMapping must be an array.');
   return value.map((item, index) => {
-    if (!isRecord(item) || typeof item.source !== 'string' || typeof item.target !== 'string' || !isEnum(item.action, ['preserve', 'rename', 'convert', 'inject', 'replace']) || typeof item.note !== 'string') throw new Error(`Invalid contractMapping[${index}].`);
-    return { source: item.source, target: item.target, action: item.action, note: item.note };
+    if (!isRecord(item) || typeof item.source !== 'string' || !item.source.trim() || typeof item.target !== 'string' || !item.target.trim() || !isEnum(item.action, ['preserve', 'rename', 'convert', 'inject', 'replace']) || typeof item.note !== 'string' || !item.note.trim()) throw new Error(`Invalid contractMapping[${index}].`);
+    return { source: item.source.trim(), target: item.target.trim(), action: item.action, note: item.note.trim() };
   });
 }
 
 function dependencyPlans(value: unknown): DependencyPlan[] {
   if (!Array.isArray(value)) throw new Error('dependencyPlan must be an array.');
   return value.map((item, index) => {
-    if (!isRecord(item) || typeof item.sourceDependency !== 'string' || !isEnum(item.action, ['reuse-existing', 'adapt', 'inline', 'unresolved']) || (item.targetDependency !== undefined && typeof item.targetDependency !== 'string')) throw new Error(`Invalid dependencyPlan[${index}].`);
-    return { sourceDependency: item.sourceDependency, ...(item.targetDependency === undefined ? {} : { targetDependency: item.targetDependency }), action: item.action };
+    if (!isRecord(item) || typeof item.sourceDependency !== 'string' || !item.sourceDependency.trim() || !isEnum(item.action, ['reuse-existing', 'adapt', 'inline', 'unresolved']) || (item.targetDependency !== undefined && (typeof item.targetDependency !== 'string' || !item.targetDependency.trim()))) throw new Error(`Invalid dependencyPlan[${index}].`);
+    return { sourceDependency: item.sourceDependency.trim(), ...(item.targetDependency === undefined ? {} : { targetDependency: item.targetDependency.trim() }), action: item.action };
   });
 }
 
 function stringArray(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) throw new Error(`${label} must be an array of strings.`);
-  return value;
+  if (value.some((item) => !item.trim())) throw new Error(`${label} must not contain blank strings.`);
+  return value.map((item) => item.trim());
+}
+
+function nonEmptyStringArray(value: unknown, label: string): string[] {
+  const result = stringArray(value, label);
+  if (result.length === 0) throw new Error(`${label} must contain at least one item.`);
+  return result;
+}
+
+function validateAnalyzerRequest(request: AnalyzerRequest): void {
+  if (!isRecord(request)) throw new Error('AnalyzerRequest must be an object.');
+  if (typeof request.requirement !== 'string' || !request.requirement.trim()) {
+    throw new Error('AnalyzerRequest.requirement must not be empty.');
+  }
+  if (!isRecord(request.target) || typeof request.target.path !== 'string' || typeof request.target.name !== 'string') {
+    throw new Error('AnalyzerRequest.target must contain a target name and path.');
+  }
+  if (!isRecord(request.candidate) || typeof request.candidate.preview !== 'string') {
+    throw new Error('AnalyzerRequest.candidate must contain a source preview.');
+  }
+  if (!isRecord(request.context)) throw new Error('AnalyzerRequest.context is required.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

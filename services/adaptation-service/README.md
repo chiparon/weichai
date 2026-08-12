@@ -4,10 +4,12 @@ Java → C# code adaptation: target-context analysis → planned translation →
 
 ## Analyzer workflow
 
-`ContextCollector` first reads a bounded, repository-scoped view of the C# target
-file, containing type, imports, sibling files, and textual references. `analyzer.ts`
-compares that context with the Java candidate and produces a schema-validated
-`AnalysisReport`.
+`ContextCollector` first reads a bounded, repository-scoped view of the target
+file, containing type, imports, sibling files, and textual references. It also
+extracts the target method, fields, constructor, related members, target-side
+dependencies, related type definitions, caller excerpts, and `REQ:` constraints.
+`analyzer.ts` compares those facts with the Java candidate and produces a
+schema-validated `AnalysisReport`.
 
 The analyzer can also be called independently with `POST /v1/analyze`. Its response
 contains both `report` and collected `context`; `/v1/adapt` stops before translation
@@ -37,8 +39,8 @@ analysis report, then candidate details. The response is parsed as a structured
 and unresolved items.
 
 Runtime guards reject Analyzer `reject` decisions, explicit blocking issues,
-changed target signatures, omitted plan steps/mappings, and output that expands
-into using/namespace/enclosing-type changes. The existing
+changed target signatures, omitted plan steps/mappings, extra members after the
+target method, and output that expands into using/namespace/enclosing-type changes. The existing
 `translateJavaToCSharp()` and `fixCompileErrors()` exports remain compatible for
 the current HTTP adapter while the Analyzer and orchestration work lands.
 

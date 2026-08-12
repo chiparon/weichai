@@ -19,6 +19,48 @@ export type AnalysisApplicability = 'direct' | 'adapt' | 'reference' | 'reject';
 
 export type BehaviorCoverage = 'covered' | 'partial' | 'missing' | 'conflict';
 
+export interface TargetDependencyContext {
+  name: string;
+  kind: 'field' | 'constructor' | 'signature' | 'invocation' | 'type';
+  declaration: string;
+  path?: string;
+  memberSignatures?: string[];
+}
+
+export interface RelatedTypeContext {
+  name: string;
+  kind: 'class' | 'record' | 'interface' | 'struct' | 'enum' | 'unknown';
+  path: string;
+  declaration: string;
+  source: string;
+}
+
+export interface CallerContext {
+  path: string;
+  line: number;
+  excerpt: string;
+}
+
+export interface StructuredTargetSource {
+  namespace?: string;
+  usings: string[];
+  method: string;
+  /** Complete containing type source, kept separate from the legacy type name. */
+  containingType: string;
+  fields: string[];
+  constructor?: string;
+  relatedMembers: string[];
+}
+
+export interface TargetContextCollection {
+  projectRoot: string;
+  targetFile: string;
+  maxChars: number;
+  actualChars: number;
+  truncated: boolean;
+  truncatedSections: string[];
+}
+
 export interface TargetModuleContext {
   projectRoot?: string;
   targetFile: string;
@@ -38,6 +80,15 @@ export interface TargetModuleContext {
     excerpt: string;
   }>;
   truncated: boolean;
+  /** Rich, structured facts added by the Analyzer context collector. */
+  schemaVersion?: '1.0';
+  target?: ModuleTarget;
+  source?: StructuredTargetSource;
+  dependencies?: TargetDependencyContext[];
+  relatedTypes?: RelatedTypeContext[];
+  callers?: CallerContext[];
+  constraints?: string[];
+  collection?: TargetContextCollection;
 }
 
 export interface BehaviorMapping {

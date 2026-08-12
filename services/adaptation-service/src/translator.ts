@@ -75,6 +75,12 @@ export interface TranslatorModelOptions {
   request?: typeof globalThis.fetch;
 }
 
+export interface CompileRepairContext {
+  analysisReport?: AnalysisReport;
+  targetContext?: TargetModuleContext;
+  candidateSource?: string;
+}
+
 /** Existing Java -> C# entry point kept for HTTP/adapter compatibility. */
 export interface TranslateRequest {
   javaSource: string;
@@ -197,17 +203,31 @@ export async function fixCompileErrors(
   requirement: string,
   apiKey: string,
   signal?: AbortSignal,
+  context?: CompileRepairContext,
 ): Promise<string> {
-  const base = legacyAnalysisRequest({
-    javaSource: "",
-    csharpSignature,
-    requirement,
-    matchType: "different",
-  });
+  const base = context?.analysisReport && context.targetContext
+    ? {
+        candidateSource: context.candidateSource ?? "",
+        requirement,
+        targetContext: translatorTargetContext({
+          javaSource: context.candidateSource ?? "",
+          csharpSignature,
+          requirement,
+          matchType: "different",
+          targetContext: context.targetContext,
+        }),
+        analysisReport: context.analysisReport,
+      }
+    : legacyAnalysisRequest({
+        javaSource: context?.candidateSource ?? "",
+        csharpSignature,
+        requirement,
+        matchType: "different",
+      });
   const previousResult: TranslationResult = {
     schemaVersion: "1.0",
     generatedCode: cleanGeneratedCode(badCode),
-    interfaceMappings: [],
+    interfaceMappings: base.analysisReport.contractMapping.map((mapping) => ({ ...mapping })),
     completedSteps: [...base.analysisReport.implementationPlan],
     unresolved: [],
   };
@@ -440,21 +460,34 @@ function analysisRequest(request: TranslateRequest): AnalyzeTranslationRequest {
 
 function translatorTargetContext(request: TranslateRequest): TranslatorTargetContext {
   const context = request.targetContext;
+  const structured = context?.source;
   return {
     targetSignature: request.csharpSignature,
     targetFilePath: context?.targetFile,
-    enclosingType: context?.containingType,
-    targetCode: context?.targetFragment,
-    importsOrUsings: context?.imports ?? [],
-    members: context?.containingTypeSource ? [context.containingTypeSource] : [],
-    constructorParameters: [],
-    dependencySummaries: context?.neighboringFiles.map((file) => file.summary) ?? [],
-    callerSummaries: context?.references.map((reference) =>
+    enclosingType: structured?.containingType ?? context?.containingType,
+    targetCode: structured?.method ?? context?.targetFragment,
+    importsOrUsings: structured?.usings ?? context?.imports ?? [],
+    members: structured
+      ? [...structured.fields, ...structured.relatedMembers]
+      : context?.containingTypeSource
+        ? [context.containingTypeSource]
+        : [],
+    constructorParameters: structured?.constructor ? [structured.constructor] : [],
+    dependencySummaries: context?.dependencies?.map((dependency) => {
+      const members = dependency.memberSignatures?.length
+        ? `; members: ${dependency.memberSignatures.join(", ")}`
+        : "";
+      return `${dependency.name} (${dependency.kind}): ${dependency.declaration}${members}`;
+    }) ?? context?.neighboringFiles.map((file) => file.summary) ?? [],
+    callerSummaries: context?.callers?.map((caller) =>
+      `${caller.path}:${caller.line} ${caller.excerpt}`,
+    ) ?? context?.references.map((reference) =>
       `${reference.path}:${reference.line} ${reference.excerpt}`,
     ) ?? [],
     immutableConstraints: [
       "Preserve the target method signature exactly.",
       "Use only dependencies evidenced by the target context and AnalysisReport.",
+      ...(context?.constraints ?? []),
     ],
   };
 }
@@ -466,6 +499,7 @@ function validateTranslationResult(
   const generatedCode = cleanGeneratedCode(result.generatedCode);
   assertTargetScope(generatedCode);
   assertTargetContract(generatedCode, request.targetContext.targetSignature);
+  assertOnlyTargetMethod(generatedCode, request.targetContext.targetSignature);
 
   const missingSteps = request.analysisReport.implementationPlan.filter(
     (step) => !result.completedSteps.includes(step),
@@ -513,6 +547,135 @@ function assertTargetScope(code: string): void {
   if (/^\s*(?:(?:public|internal|private|protected|static|sealed|abstract|partial)\s+)*(?:class|record|struct|interface)\s+/m.test(code)) {
     throw new Error("Translator must not generate an enclosing type.");
   }
+}
+
+function assertOnlyTargetMethod(code: string, targetSignature: string): void {
+  const signatureEnd = findTargetSignatureEnd(code, targetSignature);
+  const bodyStart = skipCSharpTrivia(code, signatureEnd);
+  let methodEnd: number;
+  if (code.startsWith('=>', bodyStart)) {
+    methodEnd = findExpressionBodyEnd(code, bodyStart + 2);
+  } else if (code[bodyStart] === '{') {
+    methodEnd = findBlockBodyEnd(code, bodyStart);
+  } else {
+    throw new Error('Translator must return a complete body for the requested target method.');
+  }
+  if (skipCSharpTrivia(code, methodEnd) !== code.length) {
+    throw new Error('Translator output must contain exactly one target method with no declarations after its body.');
+  }
+}
+
+function findTargetSignatureEnd(code: string, targetSignature: string): number {
+  const normalizedTarget = normalizeSignature(targetSignature).replace(/;$/, '');
+  let codeIndex = 0;
+  for (let targetIndex = 0; targetIndex < normalizedTarget.length; targetIndex += 1) {
+    while (codeIndex < code.length && /\s/.test(code[codeIndex] ?? '')) codeIndex += 1;
+    if (code[codeIndex] !== normalizedTarget[targetIndex]) {
+      throw new Error(`Translator changed the immutable target signature: ${targetSignature}`);
+    }
+    codeIndex += 1;
+  }
+  return codeIndex;
+}
+
+function skipCSharpTrivia(code: string, start: number): number {
+  let index = start;
+  while (index < code.length) {
+    if (/\s/.test(code[index] ?? '')) { index += 1; continue; }
+    if (code.startsWith('//', index)) {
+      const newline = code.indexOf('\n', index + 2);
+      index = newline < 0 ? code.length : newline + 1;
+      continue;
+    }
+    if (code.startsWith('/*', index)) {
+      const end = code.indexOf('*/', index + 2);
+      if (end < 0) throw new Error('Translator output contains an unterminated block comment.');
+      index = end + 2;
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+function findBlockBodyEnd(code: string, start: number): number {
+  let depth = 0;
+  let index = start;
+  while (index < code.length) {
+    const skipped = skipCSharpToken(code, index);
+    if (skipped !== null) { index = skipped; continue; }
+    if (code[index] === '{') depth += 1;
+    if (code[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+      if (depth < 0) break;
+    }
+    index += 1;
+  }
+  throw new Error('Translator output contains an unterminated target method body.');
+}
+
+function findExpressionBodyEnd(code: string, start: number): number {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let index = start;
+  while (index < code.length) {
+    const skipped = skipCSharpToken(code, index);
+    if (skipped !== null) { index = skipped; continue; }
+    switch (code[index]) {
+      case '(': parentheses += 1; break;
+      case ')': parentheses -= 1; break;
+      case '[': brackets += 1; break;
+      case ']': brackets -= 1; break;
+      case '{': braces += 1; break;
+      case '}': braces -= 1; break;
+      case ';': if (parentheses === 0 && brackets === 0 && braces === 0) return index + 1; break;
+      default: break;
+    }
+    index += 1;
+  }
+  throw new Error('Translator output contains an unterminated expression-bodied target method.');
+}
+
+function skipCSharpToken(code: string, start: number): number | null {
+  if (code.startsWith('//', start)) {
+    const newline = code.indexOf('\n', start + 2);
+    return newline < 0 ? code.length : newline + 1;
+  }
+  if (code.startsWith('/*', start)) {
+    const end = code.indexOf('*/', start + 2);
+    if (end < 0) throw new Error('Translator output contains an unterminated block comment.');
+    return end + 2;
+  }
+  if (code[start] === "'") return skipQuotedLiteral(code, start, false, "'");
+
+  let quoteStart = start;
+  let verbatim = false;
+  if (code[quoteStart] === '$' || code[quoteStart] === '@') {
+    const prefix = code[quoteStart];
+    quoteStart += 1;
+    verbatim = prefix === '@';
+    if ((code[quoteStart] === '$' || code[quoteStart] === '@') && code[quoteStart] !== prefix) {
+      verbatim ||= code[quoteStart] === '@';
+      quoteStart += 1;
+    }
+  }
+  if (code[quoteStart] !== '"') return null;
+  return skipQuotedLiteral(code, quoteStart, verbatim);
+}
+
+function skipQuotedLiteral(code: string, start: number, verbatim: boolean, quote = '"'): number {
+  let index = start + 1;
+  while (index < code.length) {
+    if (!verbatim && code[index] === '\\') { index += 2; continue; }
+    if (code[index] === quote) {
+      if (verbatim && code[index + 1] === quote) { index += 2; continue; }
+      return index + 1;
+    }
+    index += 1;
+  }
+  throw new Error('Translator output contains an unterminated string or character literal.');
 }
 
 function normalizeSignature(value: string): string {

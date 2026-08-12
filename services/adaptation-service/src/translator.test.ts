@@ -146,6 +146,21 @@ describe("Translator Agent", () => {
     ).rejects.toThrow("must not generate an enclosing type");
   });
 
+  it("rejects a second member appended after the requested method", async () => {
+    const request = fixture("translator-direct");
+    const expanded = resultFor(
+      request,
+      `${request.targetContext.targetSignature} { return 1m; }\nprivate void DeleteAll() { }`,
+    );
+
+    await expect(
+      translateWithAnalysis(request, {
+        apiKey: "test-key",
+        request: modelRequest(expanded),
+      }),
+    ).rejects.toThrow("exactly one target method");
+  });
+
   it("requires every planned step and contract mapping to be acknowledged", () => {
     const request = fixture("translator-direct");
     const incomplete = resultFor(request);

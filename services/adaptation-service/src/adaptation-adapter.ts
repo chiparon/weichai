@@ -154,6 +154,11 @@ export class AdaptationAdapter implements CodeAdaptationPort, CodeAnalysisPort {
         request.requirement,
         this.#apiKey,
         signal,
+        {
+          analysisReport,
+          targetContext,
+          candidateSource: request.candidate.preview,
+        },
       );
       standaloneResult = this.#compileStandalone(csharpCode, request.target.name);
       integratedResult = this.#skeletonProjectPath
@@ -232,7 +237,7 @@ export class AdaptationAdapter implements CodeAdaptationPort, CodeAnalysisPort {
     signal?: AbortSignal,
   ): Promise<AnalysisResult> {
     assertSupportedLanguagePair(request);
-    const context = this.#contextCollector.collect(request.target);
+    const context = this.#contextCollector.collect(request.target, signal);
     const report = await this.#analyze(
       {
         target: request.target,

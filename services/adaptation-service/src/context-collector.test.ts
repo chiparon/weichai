@@ -60,4 +60,51 @@ describe('ContextCollector', () => {
       id: 'linked', name: 'GetRate', kind: 'function', path: 'Linked.cs', language: 'C#', signature: 'void GetRate()',
     })).toThrow('inside the project root');
   });
+
+  it('returns structured facts and respects the rich context budget', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forexplore-context-'));
+    roots.push(root);
+    const src = join(root, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'Service.cs'), [
+      'public sealed class Service {',
+      '  private readonly IStore store;',
+      '  public Service(IStore store) { this.store = store; }',
+      '  // REQ: preserve cancellation',
+      '  public async Task<int> RunAsync(CancellationToken cancellationToken) { return await store.RunAsync(cancellationToken); }',
+      '}',
+    ].join('\n'));
+    writeFileSync(join(src, 'IStore.cs'), 'public interface IStore { Task<int> RunAsync(CancellationToken cancellationToken); }');
+
+    const target = {
+      id: 'run', name: 'RunAsync', kind: 'function' as const, path: 'src/Service.cs', language: 'C#' as const,
+      signature: 'public async Task<int> RunAsync(CancellationToken cancellationToken)', line: 5,
+    };
+    const context = new ContextCollector({ projectRoot: root, maxChars: 3000 }).collect(target);
+
+    expect(context.schemaVersion).toBe('1.0');
+    expect(context.source?.fields).toContain('private readonly IStore store;');
+    expect(context.source?.constructor).toContain('Service(IStore store)');
+    expect(context.dependencies?.map((dependency) => dependency.name)).toContain('IStore');
+    expect(context.relatedTypes?.map((type) => type.name)).toContain('IStore');
+    expect(context.constraints).toContain('REQ: preserve cancellation');
+    expect(context.collection?.actualChars).toBeLessThanOrEqual(3000);
+  });
+
+  it('fails clearly for missing files, missing symbols, and cancelled collection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forexplore-context-'));
+    roots.push(root);
+    const src = join(root, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'Service.cs'), 'public class Service { public void Run() { } }');
+    const base = {
+      id: 'run', name: 'Run', kind: 'function' as const, path: 'src/Service.cs', language: 'C#' as const,
+      signature: 'public void Run()',
+    };
+    expect(() => new ContextCollector({ projectRoot: root }).collect({ ...base, path: 'src/Missing.cs' })).toThrow('Target file does not exist');
+    expect(() => new ContextCollector({ projectRoot: root }).collect({ ...base, name: 'Missing', signature: 'public void Missing()' })).toThrow('was not found');
+    const controller = new AbortController();
+    controller.abort();
+    expect(() => new ContextCollector({ projectRoot: root }).collect(base, controller.signal)).toThrow();
+  });
 });

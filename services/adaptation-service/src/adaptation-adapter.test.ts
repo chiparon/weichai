@@ -130,6 +130,38 @@ describe("AdaptationAdapter two-stage orchestration", () => {
     });
   });
 
+  it("passes the analyzer report and target context to structured compiler repair", async () => {
+    const analyze = vi.fn(async () => report);
+    const repair = vi.fn(async () => "public decimal Calculate() { return 1.0m; }");
+    let compileCalls = 0;
+    const adapter = new AdaptationAdapter({
+      apiKey: "test-key",
+      analyze,
+      translate: async () => "public decimal Calculate() { return 1.0; }",
+      repair,
+      contextCollector: { collect: () => context },
+      compileStandalone: () => {
+        compileCalls += 1;
+        return compileCalls === 1
+          ? { success: false, errors: ["decimal literal requires m suffix"], output: "" }
+          : { success: true, errors: [], output: "ok" };
+      },
+      maxRetries: 1,
+    });
+
+    await adapter.adapt(request);
+
+    expect(repair).toHaveBeenCalledWith(
+      expect.any(String),
+      ["decimal literal requires m suffix"],
+      request.target.signature,
+      request.requirement,
+      "test-key",
+      undefined,
+      expect.objectContaining({ analysisReport: report, targetContext: context }),
+    );
+  });
+
   it("stops before translation when the analyzer reports a blocking issue", async () => {
     const translate = vi.fn();
     const adapter = new AdaptationAdapter({

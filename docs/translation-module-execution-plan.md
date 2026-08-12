@@ -318,7 +318,7 @@ interface ValidatorFeedback {
 
 先记录基线，再看 Analyzer 报告是否能缓存。相同目标和候选在源码 hash 未变化时，可以直接复用报告；第一版不急着做复杂缓存，但契约里要保留稳定版本号。
 
-## 11. 当前进度（2026-08-08）
+## 11. 当前进度（2026-08-12，B/C 验收后）
 
 - [x] 复核现有 5 个 POC 的基线记录；历史结果保存在 `services/adaptation-service/poc/output/result_20260718_180933.json`；
 - [x] 定稿 `AnalysisReport v1`，增加 `blockingIssues` 区分普通未决项和翻译前阻断项；
@@ -326,6 +326,8 @@ interface ValidatorFeedback {
 - [x] 串起 `analyze -> translate -> compile -> handoff`，并补上可注入的确定性集成测试；
 - [x] 定稿 `ValidatorHandoff v1`、`ValidatorFeedback v1` 和 `TranslationRepairRequest`；
 - [x] 迁移 ReCodeAgent 中适合本项目的只读 MCP 工具；
+- [x] 验收 B 的目标上下文收集：补充字段、构造参数、相关成员、依赖类型、调用方、`REQ:` 约束和预算裁剪，并保留旧上下文字段兼容性；
+- [x] 验收 C 的 Translator：补充单目标方法范围保护，并让编译修复继续携带 `AnalysisReport` 和目标上下文；
 - [ ] 用相同模型参数重跑 5 个 POC 和真实候选。当前环境没有 `DEEPSEEK_API_KEY`，不能伪造新基线；
 - [ ] Validator 组用实际反馈样例完成一次联调；
 - [ ] 从现有 Java/C# fixture 中选定 8～12 组正式评测对并补人工标注。

@@ -34,13 +34,14 @@ export type {
   TranslatorAnalysisReport,
   TranslatorModelOptions,
   TranslatorTargetContext,
+  CompileRepairContext,
   ValidationFeedback,
 } from "./translator";
 
 export { analyzeModule, buildAnalyzerPrompt, parseAnalysisReport, validateAnalysisReport } from "./analyzer";
 export type { AnalyzerOptions } from "./analyzer";
 
-export { ContextCollector, collectTargetContext } from "./context-collector";
+export { ContextCollector, collectTargetContext, serializeTargetContext } from "./context-collector";
 export type { ContextCollectorOptions } from "./context-collector";
 
 export { LocalMcpToolHost, createLocalMcpToolHost } from "./mcp-tools";

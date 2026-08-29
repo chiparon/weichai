@@ -64,6 +64,10 @@ export async function loadQuote(id: string): Promise<string> {
       ),
     ).toBe(true);
     expect(documents.every((document) => document.language === 'Java')).toBe(true);
+    // Repository identity is the bare directory/manifest name — no `fixture/` prefix.
+    expect(
+      documents.every((document) => document.repository === 'forexplore-reference-java'),
+    ).toBe(true);
   });
 
   it('rejects malformed manifests and source roots outside the repository', async () => {

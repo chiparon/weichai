@@ -8,9 +8,9 @@ const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const targetRoot = path.join(repositoryRoot, 'fixtures/target-system/commons-fileupload-java-skeleton');
 const corpusRoot = path.join(repositoryRoot, 'fixtures/code-corpus');
 const references = [
-  'fixture/commons-fileupload-csharp',
-  'fixture/commons-fileupload-python',
-  'fixture/commons-fileupload-ts',
+  'commons-fileupload-csharp',
+  'commons-fileupload-python',
+  'commons-fileupload-ts',
 ] as const;
 
 interface TargetClass {
@@ -104,7 +104,7 @@ function referenceCheck(
 }
 
 async function loadAliases(repository: string): Promise<Record<string, string>> {
-  const manifest = JSON.parse(await readFile(path.join(corpusRoot, repository.replace('fixture/', ''), 'manifest.json'), 'utf8')) as {
+  const manifest = JSON.parse(await readFile(path.join(corpusRoot, repository, 'manifest.json'), 'utf8')) as {
     retrievalClassAliases?: Record<string, string>;
   };
   return manifest.retrievalClassAliases ?? {};
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
     Promise.all(references.map((repository) => loadAliases(repository))),
   ]);
   const checks = Object.fromEntries(references.map((repository, index) => [
-    repository.replace('fixture/', ''),
+    repository,
     referenceCheck(target, documents, repository, aliasMaps[index]!),
   ]));
   const errors = Object.entries(checks).flatMap(([repository, check]) => Object.entries(check)
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     .map(([key, value]) => `${repository}.${key}=${JSON.stringify(value)}`));
   const report = {
     javaTopLevelClasses: target.length,
-    referenceRepositories: references.map((value) => value.replace('fixture/', '')),
+    referenceRepositories: [...references],
     checks,
     status: errors.length === 0 ? 'verified' : 'failed',
     errors,

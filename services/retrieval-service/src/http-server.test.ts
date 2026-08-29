@@ -21,6 +21,7 @@ function store(): SearchStore {
   return {
     ping: vi.fn(async () => undefined),
     initialize: vi.fn(async () => undefined),
+    drop: vi.fn(async () => undefined),
     clear: vi.fn(async () => undefined),
     upsert: vi.fn(async () => undefined),
     refreshIndex: vi.fn(async () => undefined),

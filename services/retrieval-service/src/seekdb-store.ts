@@ -7,6 +7,7 @@ import mysql, {
 import type { RetrievalConfig } from './config.js';
 import type {
   IndexedCodeDocument,
+  RepositoryDirectory,
   RetrievedCodeDocument,
   SearchFilters,
   SearchStore,
@@ -157,6 +158,10 @@ export class SeekDbStore implements SearchStore {
     `);
   }
 
+  async drop(): Promise<void> {
+    await this.pool.query(`DROP TABLE IF EXISTS ${this.qualifiedTable}`);
+  }
+
   async clear(): Promise<void> {
     await this.pool.query(`DELETE FROM ${this.qualifiedTable}`);
   }
@@ -234,6 +239,16 @@ export class SeekDbStore implements SearchStore {
 
   async refreshIndex(): Promise<void> {
     await this.pool.query('CALL dbms_index_manager.refresh()');
+  }
+
+  async listRepositories(): Promise<RepositoryDirectory[]> {
+    const [rows] = await this.pool.query<RowDataPacket[]>(
+      `SELECT DISTINCT repository, language FROM ${this.qualifiedTable}`,
+    );
+    return rows.map((row) => ({
+      repository: String(row.repository),
+      language: row.language as IndexedCodeDocument['language'],
+    }));
   }
 
   async semanticSearch(

@@ -21,12 +21,31 @@ export interface SearchFilters {
   kinds: IndexedCodeDocument['kind'][];
 }
 
+/** A corpus directory discovered from the indexed store: repository id + language. */
+export interface RepositoryDirectory {
+  repository: string;
+  language: Language;
+}
+
+export interface DirectorySelectionConfig {
+  /** Whether the coarse directory-name selection stage runs at all. */
+  enabled: boolean;
+  /** Number of top-scoring directories kept before fine-grained retrieval. */
+  topM: number;
+  /** Below this best score the selector falls back to every authorized directory. */
+  minScore: number;
+}
+
 export interface SearchStore {
   ping(): Promise<void>;
   initialize(): Promise<void>;
+  /** Removes the table (schema included); recreate via initialize(). */
+  drop(): Promise<void>;
   clear(): Promise<void>;
   upsert(documents: Array<IndexedCodeDocument & { embedding: number[] }>): Promise<void>;
   refreshIndex(): Promise<void>;
+  /** Distinct repository + language pairs currently indexed, for directory selection. */
+  listRepositories(): Promise<RepositoryDirectory[]>;
   semanticSearch(
     embedding: number[],
     filters: SearchFilters,

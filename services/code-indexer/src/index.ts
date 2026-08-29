@@ -77,7 +77,7 @@ export async function extractCorpus(
           title: symbol.kind === 'class'
             ? manifest.retrievalClassAliases?.[symbol.name] || symbol.name
             : symbol.name,
-          repository: `fixture/${manifest.repository}`,
+          repository: manifest.repository,
           license: manifest.license || 'Unknown',
           language: manifest.language,
           kind: symbol.kind,

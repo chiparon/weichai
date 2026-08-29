@@ -26,7 +26,6 @@ const config = loadConfig();
 const { store, embeddings } = createRuntime(config);
 
 try {
-  await store.initialize();
   const indexedRoots = await Promise.all(
     corpusRoots.map(async (corpusRoot) => {
       const documents = await extractCorpus(corpusRoot);
@@ -41,9 +40,12 @@ try {
     throw new Error(`No code symbols were extracted from ${corpusRoots.join(', ')}.`);
   }
   if (replace) {
-    await store.clear();
-    console.log(`Cleared ${config.seekdb.database}.${config.seekdb.table}.`);
+    // Drop and recreate the table so a changed vector dimension (e.g. switching
+    // embedding providers) rebuilds the schema instead of failing on INSERT.
+    await store.drop();
+    console.log(`Dropped ${config.seekdb.database}.${config.seekdb.table}.`);
   }
+  await store.initialize();
   const batchSize = 32;
   for (let offset = 0; offset < documents.length; offset += batchSize) {
     const batch = documents.slice(offset, offset + batchSize);

@@ -4,6 +4,7 @@ import type {
   SearchRequest,
 } from '@forexplore/contracts';
 import type {
+  DirectorySelectionConfig,
   EmbeddingProvider,
   IndexedCodeDocument,
   RetrievedCodeDocument,
@@ -11,6 +12,7 @@ import type {
   SearchFilters,
   SearchStore,
 } from './types.js';
+import { DEFAULT_DIRECTORY_SELECTION, selectDirectories } from './directory-selector.js';
 import { expandedSearchText, overlap } from './text-analysis.js';
 import { requireRepositoryScopes } from './repository-scope.js';
 
@@ -161,19 +163,37 @@ export class SeekDbSearchEngine implements SearchEngine {
     private readonly store: SearchStore,
     private readonly embeddings: EmbeddingProvider,
     private readonly candidateLimitOverride?: number,
+    private readonly directorySelection: DirectorySelectionConfig = DEFAULT_DIRECTORY_SELECTION,
   ) {}
 
   async search(request: SearchRequest): Promise<SearchCandidate[]> {
     const text = queryText(request);
     const languages = candidateLanguages(request.candidateLanguages);
+    const authorizedRepositories = repositoryScopes(request.repositoryScopes);
     const filters: SearchFilters = {
-      repositories: repositoryScopes(request.repositoryScopes),
+      repositories: authorizedRepositories,
       languages,
       kinds: candidateKinds(request.target.kind),
     };
     const candidateLimit = this.candidateLimitOverride ?? expandedLimit(request.topK);
     const [embedding] = await this.embeddings.embed([text]);
     if (!embedding) throw new Error('Embedding provider returned no query vector.');
+
+    // Stage 1 — coarse directory-name selection narrows the authorized scope
+    // before the fine-grained retrieval runs inside the selected directories.
+    if (this.directorySelection.enabled) {
+      const directories = await this.store.listRepositories();
+      filters.repositories = await selectDirectories(
+        directories,
+        request,
+        authorizedRepositories,
+        this.embeddings,
+        embedding,
+        text,
+        this.directorySelection,
+      );
+    }
+
     const [semantic, fullText] = await Promise.all([
       this.store.semanticSearch(embedding, filters, candidateLimit),
       this.store.textSearch(text, filters, candidateLimit),

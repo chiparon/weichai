@@ -41,6 +41,7 @@ function fakeStore(): SearchStore {
   return {
     ping: vi.fn(async () => undefined),
     initialize: vi.fn(async () => undefined),
+    drop: vi.fn(async () => undefined),
     clear: vi.fn(async () => undefined),
     upsert: vi.fn(async () => undefined),
     refreshIndex: vi.fn(async () => undefined),
@@ -61,6 +62,7 @@ function fakeStore(): SearchStore {
       },
     ]),
     textSearch: vi.fn(async () => [{ ...baseDocument, textScore: 0.88 }]),
+    listRepositories: vi.fn(async () => [{ repository: 'demo/cache', language: 'Python' }]),
     close: vi.fn(async () => undefined),
   };
 }
@@ -152,6 +154,52 @@ describe('SeekDbSearchEngine', () => {
       20,
     );
     expect(store.textSearch).toHaveBeenCalledWith(expect.any(String), expect.anything(), 20);
+  });
+
+  it('narrows the authorized scope through directory selection', async () => {
+    const store = fakeStore();
+    store.listRepositories = vi.fn(async () => [
+      { repository: 'demo/cache', language: 'Python' },
+      { repository: 'demo/queue', language: 'Python' },
+    ]);
+    const localEmbeddings: EmbeddingProvider = {
+      dimension: 3,
+      embed: vi.fn(async (texts: string[]) =>
+        texts.map((text) => (text.includes('cache') ? [1, 0, 0] : [0, 1, 0])),
+      ),
+    };
+    const engine = new SeekDbSearchEngine(store, localEmbeddings, undefined, {
+      enabled: true,
+      topM: 1,
+      minScore: 0.05,
+    });
+
+    await engine.search({ ...request, repositoryScopes: ['demo/cache', 'demo/queue'] });
+
+    expect(store.listRepositories).toHaveBeenCalledOnce();
+    expect(store.semanticSearch).toHaveBeenCalledWith(
+      [1, 0, 0],
+      expect.objectContaining({ repositories: ['demo/cache'] }),
+      50,
+    );
+  });
+
+  it('skips directory selection when disabled', async () => {
+    const store = fakeStore();
+    const engine = new SeekDbSearchEngine(store, embeddings, undefined, {
+      enabled: false,
+      topM: 3,
+      minScore: 0.05,
+    });
+
+    await engine.search(request);
+
+    expect(store.listRepositories).not.toHaveBeenCalled();
+    expect(store.semanticSearch).toHaveBeenCalledWith(
+      [1, 0, 0],
+      expect.objectContaining({ repositories: ['demo/cache'] }),
+      50,
+    );
   });
 
   it('refuses an unscoped request before embedding or querying storage', async () => {

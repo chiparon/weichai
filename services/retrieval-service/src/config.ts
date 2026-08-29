@@ -1,4 +1,6 @@
 import { requireRepositoryScopes } from './repository-scope.js';
+import { DEFAULT_DIRECTORY_SELECTION } from './directory-selector.js';
+import type { DirectorySelectionConfig } from './types.js';
 
 export type RerankingConfig =
   | { provider: 'none' }
@@ -43,6 +45,7 @@ export interface RetrievalConfig {
         supportsDimensions: boolean;
       };
   reranking: RerankingConfig;
+  directorySelection: DirectorySelectionConfig;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -72,6 +75,14 @@ function identifier(value: string | undefined, fallback: string, name: string): 
 function boolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return !['0', 'false', 'no', 'off'].includes(value.toLowerCase());
+}
+
+function unitInterval(value: string | undefined, fallback: number, name: string): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${name} must be a number between 0 and 1.`);
+  }
+  return parsed;
 }
 
 function allowedRepositories(value: string | undefined): string[] {
@@ -165,5 +176,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RetrievalConfi
     },
     embedding,
     reranking,
+    directorySelection: {
+      enabled: boolean(env.RETRIEVAL_DIRECTORY_SELECTION, DEFAULT_DIRECTORY_SELECTION.enabled),
+      topM: positiveInteger(
+        env.RETRIEVAL_DIRECTORY_TOP_M,
+        DEFAULT_DIRECTORY_SELECTION.topM,
+        'RETRIEVAL_DIRECTORY_TOP_M',
+      ),
+      minScore: unitInterval(
+        env.RETRIEVAL_DIRECTORY_MIN_SCORE,
+        DEFAULT_DIRECTORY_SELECTION.minScore,
+        'RETRIEVAL_DIRECTORY_MIN_SCORE',
+      ),
+    },
   };
 }

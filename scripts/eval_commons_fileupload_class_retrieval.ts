@@ -14,9 +14,9 @@ const targetRoot = path.join(
 );
 const corpusRoot = path.join(repositoryRoot, 'fixtures/code-corpus');
 const answerRepositories = [
-  'fixture/commons-fileupload-csharp',
-  'fixture/commons-fileupload-python',
-  'fixture/commons-fileupload-ts',
+  'commons-fileupload-csharp',
+  'commons-fileupload-python',
+  'commons-fileupload-ts',
 ] as const;
 const answerRepositorySet = new Set<string>(answerRepositories);
 const targetClassAliases: Record<string, string> = {
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
         python: 'snake_case responsibility aliases',
         typescript: 'lowerCamel responsibility aliases',
       },
-      answerRepositories: [...answerRepositories].map((value) => value.replace('fixture/', '')),
+      answerRepositories: [...answerRepositories],
       metrics,
     }, null, 2));
   } finally {

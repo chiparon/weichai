@@ -44,6 +44,7 @@ export function createRuntime(config: RetrievalConfig) {
     store,
     embeddings,
     reranker ? 20 : undefined,
+    config.directorySelection,
   );
   const engine: SearchEngine = reranker
     ? new RerankingSearchEngine(

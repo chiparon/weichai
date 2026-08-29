@@ -140,6 +140,7 @@ function candidate(
     language: document.language,
     kind: document.kind,
     path: document.path,
+    line: sourceLineFromDocumentId(document.id),
     signature: document.signature,
     summary: document.summary,
     score: {
@@ -154,6 +155,12 @@ function candidate(
     compatibility: document.compatibility,
     risks: document.risks,
   };
+}
+
+function sourceLineFromDocumentId(id: string): number | undefined {
+  const match = id.match(/:(\d+):[^:]+$/);
+  const line = match?.[1] ? Number.parseInt(match[1], 10) : Number.NaN;
+  return Number.isInteger(line) && line > 0 ? line : undefined;
 }
 
 export class SeekDbSearchEngine implements SearchEngine {

@@ -9,6 +9,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .vscode-test/
+apps/vscode-extension/.vscode-test-user/
 *.vsix
 .forexplore/
 

@@ -1,4 +1,4 @@
-import type { Language, ModuleTarget } from '@forexplore/contracts';
+import type { ClassSnapshot, Language, ModuleTarget } from '@forexplore/contracts';
 import path from 'node:path';
 
 const languageByLanguageId: Record<string, Language> = {
@@ -92,6 +92,29 @@ export function buildModuleTarget(input: EditorSelectionInput): ModuleTarget | n
     path: relativePath.replace(/\\/g, '/'),
     language,
     signature,
+    line,
+    implementationStatus: 'unimplemented',
+  };
+}
+
+export function buildClassModuleTarget(input: {
+  snapshot: ClassSnapshot;
+  filePath: string;
+  workspaceRoot: string;
+}): ModuleTarget | null {
+  const relativePath = path.relative(input.workspaceRoot, input.filePath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    return null;
+  }
+  const normalizedPath = relativePath.replace(/\\/g, '/');
+  const line = input.snapshot.range.start.line + 1;
+  return {
+    id: `workspace://${normalizedPath}#class:${encodeURIComponent(input.snapshot.name)}@L${line}`,
+    name: input.snapshot.name,
+    kind: 'class',
+    path: normalizedPath,
+    language: input.snapshot.language,
+    signature: input.snapshot.declaration,
     line,
     implementationStatus: 'unimplemented',
   };

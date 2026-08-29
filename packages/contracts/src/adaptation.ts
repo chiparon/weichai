@@ -2,6 +2,8 @@ import type { FilePatch } from './backfill';
 import type { Language, ModuleTarget } from './module';
 import type { SearchCandidate } from './retrieval';
 import type { ValidationRecord } from './validation';
+import type { LspValidationResult, ValidatorHandoff } from './language-intelligence';
+import type { SourceLocation } from './language-intelligence';
 
 export type AdaptationStrategy = 'translate' | 'bridge' | 'wrap' | 'reuse';
 
@@ -29,6 +31,10 @@ export interface AdaptationResult {
   modificationPlan?: string[];
   validation: ValidationRecord[];
   files: FilePatch[];
+  /** Present for the class-level VS Code workflow. */
+  lspValidation?: LspValidationResult;
+  /** Created only after LSP reports no candidate-introduced errors. */
+  validatorHandoff?: ValidatorHandoff;
 }
 
 /** Stable schema version shared by Analyzer and Translator. */
@@ -95,6 +101,11 @@ export interface TargetModuleContext {
   relatedTypes: RelatedTypeContext[];
   callers: CallerContext[];
   constraints: string[];
+  /** Definition/reference facts returned by the active language provider. */
+  languageIntelligence?: {
+    definitions: SourceLocation[];
+    references: SourceLocation[];
+  };
   collection: {
     projectRoot: string;
     targetFile: string;

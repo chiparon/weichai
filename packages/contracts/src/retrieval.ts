@@ -39,6 +39,8 @@ export interface SearchCandidate {
   language: Language;
   kind: 'class' | 'function';
   path: string;
+  /** One-based source line supplied by the index when available. */
+  line?: number;
   signature: string;
   summary: string;
   score: CandidateScore;

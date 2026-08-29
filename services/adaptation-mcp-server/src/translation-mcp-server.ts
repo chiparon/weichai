@@ -1,18 +1,12 @@
 import {
-  AdaptationAdapter,
   AnalyzerAgent,
   collectTargetContext,
-  compileTargetIntegrated,
-  compileTargetStandalone,
   ArchitectAgent,
   FileStaticAnalysisSnapshotStore,
   projectTargetContext,
   repairTranslation,
-  TranslationVerifierAdapter,
   translateWithAnalysis,
   type AdaptationAnalyzer,
-  type AdaptationVerifier,
-  type AdaptationValidator,
   type StaticAnalysisSnapshotStore,
   type RepositoryArchitecturePort,
   type TranslatorModelOptions,
@@ -24,6 +18,7 @@ import {
   type RepositoryArchitectureRequest,
 } from "@forexplore/contracts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { LanguageIntelligencePort } from '@forexplore/workflow-core';
 import * as z from "zod/v4";
 
 const MAX_CODE_CHARS = 160_000;
@@ -135,6 +130,26 @@ const rerankResultSchema = z.object({
   reason: z.string().max(8_000).optional(),
 });
 
+const positionSchema = z.object({
+  line: z.number().int().nonnegative(),
+  character: z.number().int().nonnegative(),
+});
+
+const editorTargetSchema = z.object({
+  uri: z.string().trim().min(1).max(16_000),
+  language: languageSchema,
+  position: positionSchema.optional(),
+  symbolName: z.string().trim().min(1).max(1_024).optional(),
+  documentVersion: z.number().int().nonnegative().optional(),
+}).refine((value) => value.position !== undefined || value.symbolName !== undefined, {
+  message: 'position or symbolName is required',
+});
+
+const symbolRequestSchema = z.object({
+  uri: z.string().trim().min(1).max(16_000),
+  position: positionSchema,
+});
+
 export interface AdaptationMcpServerOptions {
   apiKey: string;
   projectRoot: string;
@@ -143,11 +158,10 @@ export interface AdaptationMcpServerOptions {
   /** Optional injected architecture port and snapshot store for tests/hosts. */
   architecturePort?: RepositoryArchitecturePort;
   staticAnalysisSnapshots?: StaticAnalysisSnapshotStore;
-  skeletonProjectPath?: string;
   analyzer?: AdaptationAnalyzer;
   translatorRequest?: typeof globalThis.fetch;
-  validator?: AdaptationValidator;
-  verifier?: AdaptationVerifier;
+  /** Real editor/LSP bridge supplied by an embedding host. No textual fallback is allowed. */
+  languageIntelligence?: LanguageIntelligencePort;
 }
 
 /**
@@ -165,18 +179,6 @@ export function createAdaptationMcpServer(
   const translatorOptions: TranslatorModelOptions = options.translatorRequest
     ? { apiKey: options.apiKey, request: options.translatorRequest }
     : { apiKey: options.apiKey };
-  const adapter = new AdaptationAdapter({
-    apiKey: options.apiKey,
-    projectRoot: options.projectRoot,
-    skeletonProjectPath: options.skeletonProjectPath,
-    analyzer,
-    translatorRequest: options.translatorRequest,
-    validator: options.validator,
-    // Keep even direct programmatic MCP construction fail-closed.  Callers
-    // that own a real isolated runner may inject its verifier explicitly.
-    verifier: options.verifier ?? new TranslationVerifierAdapter({ apiKey: options.apiKey }),
-  });
-
   // Module planning is read-only and is exposed only when the host has both
   // an architecture port and a server-owned immutable snapshot store. The
   // MCP client can therefore select a snapshot but cannot upload source,
@@ -197,6 +199,40 @@ export function createAdaptationMcpServer(
     target,
     signal,
   });
+
+  const languageIntelligence = (): LanguageIntelligencePort => {
+    if (!options.languageIntelligence) {
+      throw new Error('lsp_unavailable: this MCP host has no LanguageIntelligencePort.');
+    }
+    return options.languageIntelligence;
+  };
+
+  server.registerTool('forexplore_resolve_containing_class', {
+    title: 'Resolve Containing Class',
+    description: 'Resolve a complete class, record, or interface through the embedding host language provider.',
+    inputSchema: { target: editorTargetSchema },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  }, async ({ target }, extra) => runTool(() =>
+    languageIntelligence().resolveContainingClass(target, extra.signal),
+  ));
+
+  server.registerTool('definition', {
+    title: 'Definition',
+    description: 'Resolve symbol definitions through the embedding host language provider.',
+    inputSchema: { request: symbolRequestSchema },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  }, async ({ request }, extra) => runTool(() =>
+    languageIntelligence().definitions(request, extra.signal),
+  ));
+
+  server.registerTool('references', {
+    title: 'References',
+    description: 'Resolve symbol references through the embedding host language provider.',
+    inputSchema: { request: symbolRequestSchema },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  }, async ({ request }, extra) => runTool(() =>
+    languageIntelligence().references(request, extra.signal),
+  ));
 
   server.registerTool("forexplore_collect_target_context", {
     title: "Collect Target Context",
@@ -312,53 +348,6 @@ export function createAdaptationMcpServer(
     previousResult,
     validationFeedback,
   }, translatorOptions, extra.signal)));
-
-  server.registerTool("forexplore_validate_translation", {
-    title: "Validate Translation",
-    description: "Compile generated code using the selected target language as a standalone method or inside a temporary copy of the configured project.",
-    inputSchema: {
-      target: targetSchema,
-      generatedCode: z.string().min(1).max(MAX_CODE_CHARS),
-      mode: z.enum(["standalone", "integrated"]),
-      className: z.string().trim().min(1).max(512).optional(),
-    },
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  }, async ({ generatedCode, mode, className, target }) => runTool(() => {
-    if (mode === "standalone") {
-      return compileTargetStandalone(
-        target.language,
-        generatedCode,
-        className ?? "ForeXploreStandalone",
-      );
-    }
-    if (!options.skeletonProjectPath) {
-      throw new Error("Integrated validation requires ADAPTATION_SKELETON_PROJECT_PATH.");
-    }
-    return compileTargetIntegrated(
-      target.language,
-      generatedCode,
-      options.skeletonProjectPath,
-      target.path,
-    );
-  }));
-
-  server.registerTool("forexplore_adapt_translation", {
-    title: "Adapt Translation",
-    description: "Run the guarded workflow: collect context, analyze, translate, compile, repair up to three times, and return a patch preview without writing files.",
-    inputSchema: {
-      target: targetSchema,
-      candidate: candidateSchema,
-      requirement: z.string().trim().min(1).max(MAX_REQUIREMENT_CHARS),
-      decisionNotes: z.string().max(MAX_NOTES_CHARS).default(""),
-    },
-    annotations: { destructiveHint: false },
-  }, async ({ target, candidate, requirement, decisionNotes }, extra) => runTool(() => adapter.adapt({
-    target,
-    candidate,
-    requirement,
-    strategy: "translate",
-    decisionNotes,
-  }, extra.signal)));
 
   return server;
 }

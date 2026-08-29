@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildModuleTarget,
+  buildClassModuleTarget,
   kindFromSignature,
   languageFromLanguageId,
   symbolNameFromSignature,
@@ -93,5 +94,42 @@ describe('buildModuleTarget', () => {
         startLine: 0,
       }),
     ).toBeNull();
+  });
+});
+
+describe('buildClassModuleTarget', () => {
+  it('builds a class target from an LSP-owned snapshot without a selection heuristic', () => {
+    const target = buildClassModuleTarget({
+      workspaceRoot: '/workspace',
+      filePath: '/workspace/src/RateService.cs',
+      snapshot: {
+        uri: 'file:///workspace/src/RateService.cs',
+        path: 'src/RateService.cs',
+        language: 'C#',
+        name: 'RateService',
+        declarationKind: 'record',
+        range: { start: { line: 5, character: 0 }, end: { line: 20, character: 1 } },
+        selectionRange: { start: { line: 5, character: 14 }, end: { line: 5, character: 25 } },
+        documentVersion: 3,
+        source: 'public record RateService {}',
+        declaration: 'public record RateService',
+        imports: [],
+        baseTypes: [],
+        interfaces: [],
+        genericConstraints: [],
+        members: [],
+      },
+    });
+
+    expect(target).toEqual({
+      id: 'workspace://src/RateService.cs#class:RateService@L6',
+      name: 'RateService',
+      kind: 'class',
+      path: 'src/RateService.cs',
+      language: 'C#',
+      signature: 'public record RateService',
+      line: 6,
+      implementationStatus: 'unimplemented',
+    });
   });
 });

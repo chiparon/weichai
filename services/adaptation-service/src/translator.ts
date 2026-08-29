@@ -12,6 +12,7 @@ import type {
   TargetModuleContext,
 } from "@forexplore/contracts";
 import { completeWithDeepSeek } from "./deepseek-client";
+import type { DeepSeekModelConfig } from "./model-config";
 
 export type ApplicabilityLevel = SharedApplicabilityLevel;
 export type TranslatorAnalysisReport = AnalysisReport;
@@ -127,6 +128,7 @@ export interface RepairTranslationRequest extends AnalyzeTranslationRequest {
 export interface TranslatorModelOptions {
   apiKey: string;
   request?: typeof globalThis.fetch;
+  modelConfig?: DeepSeekModelConfig;
 }
 
 /**

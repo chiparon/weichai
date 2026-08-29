@@ -100,8 +100,8 @@ export function CandidatesStage({
         <div className="decision-fields">
           <div className="decision-static">
             <span>适配方式</span>
-            <strong>translate · 任意候选语言 → Java</strong>
-            <small>全部语言均参与检索，并可生成 Java 目标方法的适配实现。</small>
+            <strong>translate · 任意候选类 → {state.target?.language} 类</strong>
+            <small>候选必须能由语言服务器解析为完整 class 或 record。</small>
           </div>
           <label>
             <span>人工备注 / 额外约束</span>

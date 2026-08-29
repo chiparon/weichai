@@ -7,6 +7,7 @@ import {
   type WorkflowState,
 } from '@forexplore/workflow-core';
 import type { PanelInitPayload } from '../../src/protocol/messages';
+import type { TranslationAttempt } from '@forexplore/contracts';
 import { AdaptationStage } from './components/AdaptationStage';
 import { CandidatesStage } from './components/CandidatesStage';
 import { FooterStatus } from './components/FooterStatus';
@@ -23,6 +24,8 @@ export default function App() {
   const [repositoryStatuses, setRepositoryStatuses] = useState<RepositoryStatus[]>([]);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempts, setAttempts] = useState<TranslationAttempt[]>([]);
+  const [remainingMs, setRemainingMs] = useState(0);
   const pendingRef = useRef<WorkflowState['pending']>(null);
   pendingRef.current = state.pending;
 
@@ -42,6 +45,13 @@ export default function App() {
           break;
         case 'ADAPT_RESULT':
           dispatch({ type: 'ADAPT_SUCCESS', result: message.result });
+          break;
+        case 'TRANSLATION_ATTEMPT':
+          setAttempts((current) => [
+            ...current.filter((attempt) => attempt.index !== message.attempt.index),
+            message.attempt,
+          ].sort((left, right) => left.index - right.index));
+          setRemainingMs(message.remainingMs);
           break;
         case 'APPLY_RESULT':
           dispatch({ type: 'APPLY_SUCCESS', result: message.result });
@@ -65,6 +75,8 @@ export default function App() {
   function handleSearch(): void {
     if (!state.target) return;
     setError(null);
+    setAttempts([]);
+    setRemainingMs(0);
     dispatch({ type: 'SEARCH_START' });
     bus.post({
       type: 'START_SEARCH',
@@ -89,6 +101,11 @@ export default function App() {
     setError(null);
     dispatch({ type: 'APPLY_START' });
     bus.post({ type: 'APPLY_CURRENT_RUN' });
+  }
+
+  function handleValidator(): void {
+    setError(null);
+    bus.post({ type: 'SEND_TO_VALIDATOR' });
   }
 
   function handleCheckRepositories(): void {
@@ -154,7 +171,12 @@ export default function App() {
         ) : null}
 
         {state.stage === 'adaptation' ? (
-          <AdaptationStage state={state} candidate={candidate} />
+          <AdaptationStage
+            state={state}
+            candidate={candidate}
+            attempts={attempts}
+            remainingMs={remainingMs}
+          />
         ) : null}
 
         {(state.stage === 'patch' || state.stage === 'complete') && state.adaptation ? (
@@ -163,6 +185,7 @@ export default function App() {
             onApply={handleApply}
             onBack={() => dispatch({ type: 'RETURN_TO_CANDIDATES' })}
             onOpenTarget={handleOpenTarget}
+            onValidator={handleValidator}
           />
         ) : null}
       </main>

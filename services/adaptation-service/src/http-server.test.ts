@@ -171,7 +171,7 @@ describe('adaptation HTTP API', () => {
     expect(await response.json()).toEqual({ status: 'ok', provider: 'deepseek' });
   });
 
-  it('routes adaptation requests to the adapter', async () => {
+  it('disables HTTP adaptation in favor of the Extension Host LSP workflow', async () => {
     const adapter: CodeAdaptationPort = {
       adapt: vi.fn(async () => adaptationResult),
     };
@@ -183,12 +183,11 @@ describe('adaptation HTTP API', () => {
       body: JSON.stringify(adaptationRequest),
     });
 
-    expect(response.status).toBe(200);
-    expect(adapter.adapt).toHaveBeenCalledWith(
-      adaptationRequest,
-      expect.any(AbortSignal),
-    );
-    expect(await response.json()).toEqual(adaptationResult);
+    expect(response.status).toBe(410);
+    expect(adapter.adapt).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({
+      error: 'HTTP adaptation is disabled. Run class translation in the VS Code Extension Host with LanguageIntelligencePort.',
+    });
     expect(response.headers.get('access-control-allow-origin')).toBe(
       'http://localhost:4173',
     );
@@ -302,7 +301,7 @@ describe('adaptation HTTP API', () => {
     });
   });
 
-  it('rejects malformed adaptation requests', async () => {
+  it('does not parse malformed bodies on the retired adaptation route', async () => {
     const adapter: CodeAdaptationPort = { adapt: vi.fn() };
     const url = await listen(adapter);
 
@@ -312,11 +311,11 @@ describe('adaptation HTTP API', () => {
       body: JSON.stringify({ strategy: 'translate' }),
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(410);
     expect(adapter.adapt).not.toHaveBeenCalled();
   });
 
-  it('requires JSON content type and valid JSON', async () => {
+  it('retires the adaptation route regardless of content type', async () => {
     const adapter: CodeAdaptationPort = { adapt: vi.fn() };
     const url = await listen(adapter);
 
@@ -324,19 +323,18 @@ describe('adaptation HTTP API', () => {
       method: 'POST',
       body: JSON.stringify(adaptationRequest),
     });
-    expect(noContentType.status).toBe(415);
+    expect(noContentType.status).toBe(410);
 
     const invalidJson = await fetch(`${url}/v1/adapt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{',
     });
-    expect(invalidJson.status).toBe(400);
-    expect(await invalidJson.json()).toEqual({ error: 'Request body must be valid JSON.' });
+    expect(invalidJson.status).toBe(410);
     expect(adapter.adapt).not.toHaveBeenCalled();
   });
 
-  it('rejects oversized request bodies', async () => {
+  it('does not invoke the legacy adapter for oversized retired-route bodies', async () => {
     const adapter: CodeAdaptationPort = { adapt: vi.fn() };
     const url = await listen(adapter);
 
@@ -346,7 +344,7 @@ describe('adaptation HTTP API', () => {
       body: Buffer.alloc(2 * 1024 * 1024 + 1),
     });
 
-    expect(response.status).toBe(413);
+    expect(response.status).toBe(410);
     expect(adapter.adapt).not.toHaveBeenCalled();
   });
 
@@ -357,7 +355,7 @@ describe('adaptation HTTP API', () => {
     expect((await fetch(`${url}/v1/adapt`, { method: 'OPTIONS' })).status).toBe(204);
   });
 
-  it('returns 502 when the adapter throws', async () => {
+  it('does not invoke a throwing legacy adapter', async () => {
     const adapter: CodeAdaptationPort = {
       adapt: vi.fn(async () => {
         throw new Error('DeepSeek API timeout');
@@ -369,7 +367,7 @@ describe('adaptation HTTP API', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(adaptationRequest),
     });
-    expect(response.status).toBe(502);
-    expect((await response.json() as { error: string }).error).toBe('DeepSeek API timeout');
+    expect(response.status).toBe(410);
+    expect(adapter.adapt).not.toHaveBeenCalled();
   });
 });

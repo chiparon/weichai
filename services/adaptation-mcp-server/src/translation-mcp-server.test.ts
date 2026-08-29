@@ -137,17 +137,11 @@ async function connectedClient(
       unresolved: [],
     }) } }],
   }), { status: 200 })) as unknown as typeof globalThis.fetch;
-  const validator = {
-    compileStandalone: () => ({ success: false, errors: [".NET SDK not installed."], output: "" }),
-    compileIntegrated: () => ({ success: false, errors: [".NET SDK not installed."], output: "" }),
-    isUnavailable: () => true,
-  };
   const server = createAdaptationMcpServer({
     apiKey: "test-key",
     projectRoot,
     analyzer,
     translatorRequest,
-    validator,
     ...extraOptions,
   });
   const client = new Client({ name: "forexplore-test-client", version: "0.1.0" });
@@ -185,15 +179,53 @@ describe("ForeXplore adaptation MCP server", () => {
     const tools = await client.listTools();
 
     expect(tools.tools.map((tool) => tool.name)).toEqual([
+      "forexplore_resolve_containing_class",
+      "definition",
+      "references",
       "forexplore_collect_target_context",
       "forexplore_analyze_translation",
       "forexplore_validate_rerank",
       "forexplore_generate_translation",
       "forexplore_repair_translation",
-      "forexplore_validate_translation",
-      "forexplore_adapt_translation",
     ]);
     expect(tools.tools.map((tool) => tool.name)).not.toContain("forexplore_apply_patch");
+  });
+
+  it('routes definition and references through LanguageIntelligencePort and fails closed without it', async () => {
+    const withoutPort = await connectedClient();
+    const unavailable = await withoutPort.client.callTool({
+      name: 'definition',
+      arguments: { request: { uri: 'file:///workspace/Service.cs', position: { line: 1, character: 2 } } },
+    });
+    expect(isToolError(unavailable)).toBe(true);
+    expect(contentText(unavailable)).toContain('lsp_unavailable');
+
+    const definitions = vi.fn(async () => [{
+      uri: 'file:///workspace/Service.cs',
+      range: { start: { line: 1, character: 0 }, end: { line: 3, character: 1 } },
+    }]);
+    const references = vi.fn(async () => []);
+    const withPort = await connectedClient({
+      languageIntelligence: {
+        async resolveContainingClass() { throw new Error('not used'); },
+        definitions,
+        references,
+        async diagnose() { throw new Error('not used'); },
+      },
+    });
+    const definitionResult = await withPort.client.callTool({
+      name: 'definition',
+      arguments: { request: { uri: 'file:///workspace/Service.cs', position: { line: 1, character: 2 } } },
+    });
+    const referencesResult = await withPort.client.callTool({
+      name: 'references',
+      arguments: { request: { uri: 'file:///workspace/Service.cs', position: { line: 1, character: 2 } } },
+    });
+    expect(isToolError(definitionResult)).toBe(false);
+    expect(JSON.parse(contentText(definitionResult))).toHaveLength(1);
+    expect(isToolError(referencesResult)).toBe(false);
+    expect(definitions).toHaveBeenCalledOnce();
+    expect(references).toHaveBeenCalledOnce();
   });
 
   it("exposes module planning only with a server-owned snapshot and architecture port", async () => {
@@ -259,7 +291,7 @@ describe("ForeXplore adaptation MCP server", () => {
     expect(architecturePort.proposeModulePlan).not.toHaveBeenCalled();
   });
 
-  it("collects bounded target context and runs the full adaptation workflow", async () => {
+  it("collects bounded target context and runs independent analysis", async () => {
     const { analyzer, client } = await connectedClient();
 
     const contextResult = await client.callTool({
@@ -269,42 +301,14 @@ describe("ForeXplore adaptation MCP server", () => {
     const context = JSON.parse(contentText(contextResult)) as { target: { name: string } };
     expect(context.target.name).toBe("GetQuoteAsync");
 
-    const adaptationResult = await client.callTool({
-      name: "forexplore_adapt_translation",
+    const analysisResult = await client.callTool({
+      name: "forexplore_analyze_translation",
       arguments: { target, candidate, requirement, decisionNotes: "" },
     });
-    const adaptation = JSON.parse(contentText(adaptationResult)) as {
-      generatedCode: string;
-      files: unknown[];
-    };
-    expect(isToolError(adaptationResult)).toBe(false);
-    expect(adaptation.generatedCode).toBe(generatedCode);
-    expect(adaptation.files).toHaveLength(1);
+    const analysis = JSON.parse(contentText(analysisResult)) as { schemaVersion: string };
+    expect(isToolError(analysisResult)).toBe(false);
+    expect(analysis.schemaVersion).toBe('1.0');
     expect(analyzer.analyze).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses a required unverified verifier gate when no isolated verifier is injected", async () => {
-    const { client } = await connectedClient({
-      validator: {
-        compileStandalone: () => ({ success: true, errors: [], output: "" }),
-        compileIntegrated: () => ({ success: true, errors: [], output: "" }),
-        isUnavailable: () => false,
-      },
-    });
-
-    const result = await client.callTool({
-      name: "forexplore_adapt_translation",
-      arguments: { target, candidate, requirement, decisionNotes: "" },
-    });
-    const adaptation = JSON.parse(contentText(result)) as {
-      validation: Array<{ id: string; status: string; required: boolean }>;
-    };
-
-    expect(adaptation.validation).toContainEqual(expect.objectContaining({
-      id: "differential-verification",
-      status: "unverified",
-      required: true,
-    }));
   });
 
   it("returns an MCP tool error for a target path outside the configured project root", async () => {

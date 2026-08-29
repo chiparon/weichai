@@ -1,8 +1,8 @@
 # ForeXplore VS Code 扩展
 
-ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的目标方法或类上检索候选、由人明确选择候选、生成目标语言补丁，再展示独立验证证据和受保护的回填结果。
+ForeXplore 将企业已有实现作为迁移证据：把光标放在 Java 或 C# 类的任意成员中，扩展通过当前语言服务器定位完整类、检索完整类候选、生成目标类，并用 LSP 增量诊断驱动限时修复。
 
-当前真实自动迁移能力边界是 **`translate` 策略下的 Java → C#**。它不是通用代码生成器；候选排序分也不是正确率或兼容概率。
+当前写入边界是完整 `class` 或 `record`；`interface` 只作为契约上下文。候选排序分不是正确率或兼容概率。LSP 通过后只会生成 Validator handoff，业务验证通过前仍不能写回。
 
 ## 模块迁移计划
 
@@ -94,10 +94,10 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 
 1. 在仓库根目录运行 `npm run dev:extension`。脚本会启动 SeekDB、两个本地服务，并打开 Extension Development Host。
 2. 在开发宿主中打开目标工作区；默认夹具是 Java 工程 `fixtures/target-system/commons-fileupload-java-skeleton`。
-3. 在 `src/main/java/org/apache/commons/fileupload/FileUploadBase.java` 选择 `parseRequest(RequestContext)`、`getItemIterator(RequestContext)` 或其他待实现方法，运行 **ForeXplore: 开始代码翻译**。
-4. 输入需求并检索全部语料候选。任意已支持语言的候选均可继续生成目标语言补丁。
+3. 在 Java 或 C# 类的任意成员中放置光标，运行 **ForeXplore: 开始代码翻译**；不需要选中方法或类。
+4. 输入需求、选择完整类候选，查看 LSP 修复轮次，然后把通过的结果交给 Validator。
 
-插件只调用真实的 SeekDB 检索服务和语言无关的适配服务。任一服务不可用时，插件会报错，不会回退到本地样例。
+类翻译只调用真实 SeekDB 检索服务；Analyzer 和 Translator 在 Extension Host 中直接调用配置的模型 API。没有 mock、HTTP adaptation 或编译器回退。
 
 按目标语言安装对应的 VS Code 语言扩展即可；ForeXplore 本身不依赖某个语言扩展。
 
@@ -106,19 +106,9 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 运行插件需要一台具备以下条件的机器：
 
 - SeekDB 检索服务已经建立并加载完整的多语言 `code-corpus` 索引；
-- 适配服务具备 `DEEPSEEK_API_KEY` 和目标语言的编译器；
-- `ADAPTATION_PROJECT_ROOT` 指向与插件选中目标**相同内容**的工程；
-- `ADAPTATION_SKELETON_PROJECT_PATH` 对应同一目标工程，用于临时集成编译。
-
-适配服务环境示例：
-
-```bash
-# 服务端环境；密钥只保留在这里
-export DEEPSEEK_API_KEY='…'
-export ADAPTATION_PROJECT_ROOT='/absolute/path/to/commons-fileupload-java-skeleton'
-export ADAPTATION_SKELETON_PROJECT_PATH="$ADAPTATION_PROJECT_ROOT"
-npm run dev:adaptation
-```
+- Java/C# 语言扩展提供 document symbols、definition、references 和 diagnostics；
+- 使用 **ForeXplore: 配置模型密钥** 将密钥存入 VS Code `SecretStorage`；
+- Validator 扩展按需提供 `forexplore.validator.validateHandoff` 命令。
 
 插件默认使用以下 VS Code 配置：
 
@@ -126,7 +116,10 @@ npm run dev:adaptation
 {
   "forexplore.executionMode": "real",
   "forexplore.retrievalApiUrl": "http://127.0.0.1:8787",
-  "forexplore.adaptationApiUrl": "http://127.0.0.1:8788",
+  "forexplore.modelApiUrl": "https://api.deepseek.com/v1",
+  "forexplore.model": "deepseek-v4-flash",
+  "forexplore.translationTimeoutSeconds": 120,
+  "forexplore.maxTranslationAttempts": 4,
   "forexplore.repositoryPaths": [
     "E:/CS/devsys/weichai/fixtures/code-corpus"
   ]
@@ -144,7 +137,7 @@ npm run dev:adaptation
 - 写入建立持久恢复点。可使用 **ForeXplore: 恢复最近一次回填** 恢复；若文件随后又被编辑，恢复会拒绝覆盖该编辑。
 - HTTP `POST /v1/backfill` 已禁用。写回只能由经过用户确认的 VS Code 宿主执行。
 
-编译或集成编译通过仅代表相应工程检查通过；它不证明业务行为、并发、超时、取消或幂等语义正确。
+LSP 通过只代表候选类没有引入新的语言诊断；它不证明业务行为、并发、超时、取消或幂等语义正确。
 
 ## 开发与验证
 
@@ -164,8 +157,10 @@ npm run test:integration --workspace forexplore-vscode
 
 ## 消息协议
 
-Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`OPEN_TARGET`。
+Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`SEND_TO_VALIDATOR`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`OPEN_TARGET`。
 
-宿主 → Webview：`INIT`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`SERVICE_STATUS`、`ERROR`。
+宿主 → Webview：`INIT`、`SEARCH_RESULT`、`TRANSLATION_ATTEMPT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`SERVICE_STATUS`、`ERROR`。
+
+完整架构、诊断差异和迁移说明见仓库文档 `docs/lsp-class-translation.md`。
 
 共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。

@@ -12,6 +12,7 @@ describe('Webview message boundary', () => {
     ).toBe(true);
     expect(isWebviewToHostMessage({ type: 'SELECT_CANDIDATE', candidateId: 'java-quote-cache' })).toBe(true);
     expect(isWebviewToHostMessage({ type: 'APPLY_CURRENT_RUN' })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'SEND_TO_VALIDATOR' })).toBe(true);
   });
 
   it('rejects a Webview-supplied target, patch, file path, or old protocol action', () => {

@@ -1,21 +1,18 @@
-import type { SearchCandidate } from '@forexplore/contracts';
+import type { SearchCandidate, TranslationAttempt } from '@forexplore/contracts';
 import type { WorkflowState } from '@forexplore/workflow-core';
 
 export function AdaptationStage({
   state,
   candidate,
+  attempts,
+  remainingMs,
 }: {
   state: WorkflowState;
   candidate: SearchCandidate | null;
+  attempts: TranslationAttempt[];
+  remainingMs: number;
 }) {
-  const logs = [
-    '已读取目标契约与候选实现',
-    '正在生成接口映射（参数 / 返回 / 错误语义）',
-    '正在翻译源实现到目标语言',
-    '执行编译与集成编译（如服务已配置）',
-    '生成工作区补丁预览',
-  ];
-  const current = Math.min(logs.length - 1, state.pending === 'adapt' ? 3 : logs.length - 1);
+  const seconds = Math.max(0, Math.ceil(remainingMs / 1_000));
 
   return (
     <div className="processing">
@@ -24,16 +21,18 @@ export function AdaptationStage({
         <span />
         <span />
       </div>
-      <div className="eyebrow">CodeAdaptationPort</div>
-      <h2>正在生成接口映射与目标实现</h2>
-      <p>策略：translate · {candidate?.language ?? '?'} → {state.target?.language}</p>
-      <p className="muted-copy">编译结果是工程检查证据，不等同于业务行为正确性。</p>
+      <div className="eyebrow">LanguageIntelligencePort</div>
+      <h2>正在翻译完整目标类</h2>
+      <p>translate · {candidate?.language ?? '?'} class → {state.target?.language} class</p>
+      <p className="muted-copy">共享时限剩余 {seconds || '—'} 秒</p>
       <ol className="processing-log">
-        {logs.map((log, index) => (
-          <li key={log} className={index <= current ? 'is-active' : ''}>
-            {log}
+        <li className="is-active">Analyzer 已接收类级上下文、定义与引用</li>
+        {attempts.map((attempt) => (
+          <li key={attempt.index} className="is-active">
+            第 {attempt.index} 轮 · {attempt.outcome} · {attempt.diagnostics.length} 个新增错误 · {attempt.durationMs} ms
           </li>
         ))}
+        {attempts.length === 0 ? <li className="is-active">Translator 正在生成首个候选类</li> : null}
       </ol>
     </div>
   );

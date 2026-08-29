@@ -13,6 +13,14 @@ export type {
   AdaptationValidator,
 } from "./adaptation-adapter";
 
+export { ClassTranslationOrchestrator } from './class-translation-orchestrator';
+export type {
+  ClassTranslationModel,
+  ClassTranslationOrchestratorOptions,
+  ClassTranslationProgress,
+  ClassTranslationRequest,
+} from './class-translation-orchestrator';
+
 export { TranslationVerifierAdapter } from "./verification-adapter";
 export type {
   AdaptationVerifier,

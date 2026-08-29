@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
-import { AdaptationHttpAdapter } from '@forexplore/adaptation-http-adapter';
 import { withSeekDbSearch } from '@forexplore/seekdb-adapter';
-import type { WorkflowPorts } from '@forexplore/workflow-core';
+import type { CodeSearchPort, WorkflowPorts } from '@forexplore/workflow-core';
 import { checkServiceHealth } from './service-health';
 import { localFetch } from './local-fetch';
 import { loadSettings } from './settings';
@@ -10,7 +9,6 @@ import type { ExecutionMode, ServiceStatus } from './ui-types';
 export type ServiceKind = 'retrieval' | 'adaptation';
 
 export interface RuntimePorts {
-  ports: WorkflowPorts;
   searchProvider: 'SeekDB';
   adaptationProvider: 'DeepSeek';
   executionMode: ExecutionMode;
@@ -34,7 +32,7 @@ export class ServiceManager implements vscode.Disposable {
   }
 
   /** Display-only provider labels that do not create or replace any port. */
-  getRuntimePresentation(): Omit<RuntimePorts, 'ports'> {
+  getRuntimePresentation(): RuntimePorts {
     return {
       searchProvider: 'SeekDB',
       adaptationProvider: 'DeepSeek',
@@ -69,29 +67,16 @@ export class ServiceManager implements vscode.Disposable {
     return this.refresh();
   }
 
-  getRuntimePorts(): RuntimePorts {
+  /** Class translation needs only retrieval; model execution is local to the Extension Host. */
+  getSearchPort(): CodeSearchPort {
     const settings = loadSettings();
-    if (this.status.retrieval !== 'connected' || this.status.adaptation !== 'connected') {
-      throw new Error(this.status.message ?? '真实服务尚未就绪。');
+    if (this.status.retrieval !== 'connected') {
+      throw new Error(this.status.message ?? '真实检索服务尚未就绪。');
     }
-
-    let ports = withSeekDbSearch(realWorkflowPorts(), {
+    return withSeekDbSearch(realWorkflowPorts(), {
       baseUrl: settings.retrievalApiUrl,
       fetch: localFetch,
-    });
-    ports = {
-      ...ports,
-      adaptation: new AdaptationHttpAdapter({
-        baseUrl: settings.adaptationApiUrl,
-        fetch: localFetch,
-      }),
-    };
-    return {
-      ports,
-      searchProvider: 'SeekDB',
-      adaptationProvider: 'DeepSeek',
-      executionMode: 'real',
-    };
+    }).search;
   }
 
   dispose(): void {

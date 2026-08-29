@@ -27,11 +27,8 @@ export function FooterStatus({
       >
         检索 {serviceLabel(serviceStatus?.retrieval)}
       </span>
-      <span
-        className={serviceDot(serviceStatus?.adaptation)}
-        title={serviceStatus?.message ?? ''}
-      >
-        翻译 {serviceLabel(serviceStatus?.adaptation)}
+      <span className="status-dot is-connected" title="模型密钥存储在 VS Code SecretStorage">
+        翻译 Extension Host
       </span>
       <span className="footer-repo" title="forexplore.repositoryPaths">
         {repoLabel}

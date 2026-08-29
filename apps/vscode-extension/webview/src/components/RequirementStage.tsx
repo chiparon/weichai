@@ -51,7 +51,7 @@ export function RequirementStage({
           <span>第 {target.line} 行</span>
         </div>
         <p className="muted-copy">
-          目标由扩展宿主从已保存的编辑器选择建立快照。若要更换目标，请返回编辑器重新启动迁移。
+          目标范围由当前语言服务器从光标位置解析，并绑定到已保存的文档版本。
         </p>
       </section>
 

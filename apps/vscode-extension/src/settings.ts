@@ -13,6 +13,10 @@ export interface ExtensionSettings {
   repositoryPaths: string[];
   retrievalApiUrl: string;
   adaptationApiUrl: string;
+  modelApiUrl: string;
+  model: string;
+  translationTimeoutSeconds: number;
+  maxTranslationAttempts: number;
 }
 
 export function loadSettings(): ExtensionSettings {
@@ -26,7 +30,37 @@ export function loadSettings(): ExtensionSettings {
     adaptationApiUrl:
       config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL).trim() ||
       DEFAULT_ADAPTATION_API_URL,
+    modelApiUrl: normalizeHttpUrl(
+      config.get<string>('modelApiUrl', 'https://api.deepseek.com/v1'),
+      'forexplore.modelApiUrl',
+    ),
+    model: config.get<string>('model', 'deepseek-v4-flash').trim() || 'deepseek-v4-flash',
+    translationTimeoutSeconds: clamp(
+      config.get<number>('translationTimeoutSeconds', 120),
+      30,
+      300,
+    ),
+    maxTranslationAttempts: clamp(config.get<number>('maxTranslationAttempts', 4), 1, 4),
   };
+}
+
+function normalizeHttpUrl(value: string, setting: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${setting} 必须是有效的 HTTP(S) 地址。`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${setting} 必须使用 HTTP 或 HTTPS。`);
+  }
+  return trimmed;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.max(minimum, Math.min(maximum, Math.trunc(value)));
 }
 
 /**

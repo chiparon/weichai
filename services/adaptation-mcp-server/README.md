@@ -9,13 +9,14 @@ DeepSeek. The server never writes workspace files.
 
 | Tool | Purpose |
 | --- | --- |
+| `forexplore_resolve_containing_class` | Resolve a complete class through an injected language provider. |
+| `definition` | Resolve definitions through `LanguageIntelligencePort`. |
+| `references` | Resolve references through `LanguageIntelligencePort`. |
 | `forexplore_collect_target_context` | Read the selected target and bounded local context. |
 | `forexplore_analyze_translation` | Produce `AnalysisReport v1` for one candidate. |
 | `forexplore_validate_rerank` | Verify a reranking result includes every candidate ID exactly once. |
 | `forexplore_generate_translation` | Generate one target-language method or complete class from analysis. |
 | `forexplore_repair_translation` | Repair one method or complete class from structured validation feedback. |
-| `forexplore_validate_translation` | Run language-selected standalone or temporary integrated compilation. |
-| `forexplore_adapt_translation` | Run context collection through patch preview in one call. |
 | `forexplore_propose_module_plan` | Use a server-owned static-analysis snapshot to propose functional modules (read-only). |
 
 `apply` and checkpoint restore are deliberately absent. The VS Code extension
@@ -47,8 +48,8 @@ They are separate Claude Code sessions: the Analyzer calls
 `forexplore_analyze_translation`, then the Translator receives only the
 returned `AnalysisReport` artifact and calls
 `forexplore_generate_translation`. No Analyzer conversation is available to
-the Translator. The complete `forexplore_adapt_translation` tool applies the
-same two-agent artifact boundary for automation.
+the Translator. Class translation orchestration lives in the VS Code Extension
+Host, where a real language provider and editor-owned snapshot are available.
 
 `forexplore-reranker` is the corresponding retrieval Agent. It calls
 `forexplore_validate_rerank` after each DeepSeek ranking response and uses any
@@ -68,7 +69,11 @@ The project MCP configuration is:
 ```
 
 The MCP process inherits `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
-`ADAPTATION_PROJECT_ROOT`, `ADAPTATION_ANALYSIS_ROOT`, and optional `ADAPTATION_SKELETON_PROJECT_PATH`
+`ADAPTATION_PROJECT_ROOT` and `ADAPTATION_ANALYSIS_ROOT`
 from its environment or `services/adaptation-mcp-server/.env`. When the MCP
 file is absent, it falls back to the sibling `adaptation-service/.env` so the
 HTTP service, Claude Code, and MCP path use the same local credentials.
+
+The standalone stdio process has no VS Code language provider. Its LSP tools
+therefore return `lsp_unavailable` unless an embedding host injects a real
+`LanguageIntelligencePort`; no textual definition/reference fallback exists.

@@ -22,6 +22,7 @@ export interface StaticAnalysisSnapshotStore {
 }
 
 export interface HttpServerOptions {
+  /** @deprecated Kept for source compatibility; HTTP adaptation is disabled. */
   adapter: CodeAdaptationPort;
   /** Optional read-only module-planning endpoint. It has no write-back path. */
   architecturePort?: RepositoryArchitecturePort;
@@ -211,19 +212,10 @@ export function createHttpServer(options: HttpServerOptions): Server {
       }
 
       if (request.method === "POST" && request.url === "/v1/adapt") {
-        requireJson(request);
-        const body = await readBody(request);
-        if (!isAdaptationRequest(body)) {
-          json(
-            response,
-            400,
-            { error: "Invalid AdaptationRequest payload." },
-            options.corsOrigin,
-          );
-          return;
-        }
-        const result = await options.adapter.adapt(body, requestSignal(request));
-        json(response, 200, result, options.corsOrigin);
+        request.resume();
+        json(response, 410, {
+          error: "HTTP adaptation is disabled. Run class translation in the VS Code Extension Host with LanguageIntelligencePort.",
+        }, options.corsOrigin);
         return;
       }
 

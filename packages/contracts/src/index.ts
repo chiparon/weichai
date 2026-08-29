@@ -1,6 +1,7 @@
 export * from './adaptation';
 export * from './backfill';
 export * from './indexing';
+export * from './language-intelligence';
 export * from './module';
 export * from './module-migration';
 export * from './retrieval';

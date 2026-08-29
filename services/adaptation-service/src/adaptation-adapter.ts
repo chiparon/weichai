@@ -87,6 +87,7 @@ const defaultValidator: AdaptationValidator = {
   isUnavailable: isCompilerUnavailable,
 };
 
+/** @deprecated Offline compiler POC only. Production class translation uses ClassTranslationOrchestrator. */
 export class AdaptationAdapter implements CodeAdaptationPort {
   #skeletonProjectPath?: string;
   #projectRoot?: string;

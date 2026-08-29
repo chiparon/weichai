@@ -7,10 +7,11 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run src"
+    "test": "vitest run src --testTimeout=15000"
   },
   "exports": {
     ".": "./src/index.ts",
+    "./class-translation": "./src/class-translation-orchestrator.ts",
     "./git-wave-transaction": "./src/git-wave-transaction.ts",
     "./module-wave-execution": "./src/module-wave-execution.ts"
   },

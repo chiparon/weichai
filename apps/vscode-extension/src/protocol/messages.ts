@@ -4,6 +4,7 @@ import type {
   ModuleTarget,
   SearchCandidate,
 } from '@forexplore/contracts';
+import type { TranslationAttempt } from '@forexplore/contracts';
 import type { RepositoryStatus, ServiceStatus } from '../ui-types';
 
 /** Snapshot sent by the trusted extension host when the panel is created. */
@@ -21,6 +22,7 @@ export type HostToWebviewMessage =
   | { type: 'INIT'; payload: PanelInitPayload }
   | { type: 'SEARCH_RESULT'; candidates: SearchCandidate[] }
   | { type: 'ADAPT_RESULT'; result: AdaptationResult }
+  | { type: 'TRANSLATION_ATTEMPT'; attempt: TranslationAttempt; remainingMs: number }
   | { type: 'APPLY_RESULT'; result: ApplyResult }
   | { type: 'REPOSITORY_STATUS'; statuses: RepositoryStatus[] }
   | { type: 'SERVICE_STATUS'; status: ServiceStatus }
@@ -40,6 +42,7 @@ export type WebviewToHostMessage =
   | { type: 'SELECT_CANDIDATE'; candidateId: string }
   | { type: 'START_ADAPT'; decisionNotes: string }
   | { type: 'APPLY_CURRENT_RUN' }
+  | { type: 'SEND_TO_VALIDATOR' }
   | { type: 'CHECK_REPOSITORIES' }
   | { type: 'OPEN_TARGET' };
 
@@ -47,6 +50,7 @@ const hostMessageTypes = new Set<string>([
   'INIT',
   'SEARCH_RESULT',
   'ADAPT_RESULT',
+  'TRANSLATION_ATTEMPT',
   'APPLY_RESULT',
   'REPOSITORY_STATUS',
   'SERVICE_STATUS',
@@ -60,6 +64,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   switch (message.type) {
     case 'READY':
     case 'APPLY_CURRENT_RUN':
+    case 'SEND_TO_VALIDATOR':
     case 'CHECK_REPOSITORIES':
     case 'OPEN_TARGET':
       return hasOnlyKeys(message, ['type']);

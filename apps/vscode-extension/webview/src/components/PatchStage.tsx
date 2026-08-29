@@ -1,4 +1,4 @@
-import { Check, FilePlus2, FileSymlink, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { Check, FilePlus2, FileSymlink, Send, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { canApplyAdaptation, evaluateValidationGate, type WorkflowState } from '@forexplore/workflow-core';
 
 interface PatchStageProps {
@@ -6,9 +6,10 @@ interface PatchStageProps {
   onApply: () => void;
   onBack: () => void;
   onOpenTarget: () => void;
+  onValidator: () => void;
 }
 
-export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageProps) {
+export function PatchStage({ state, onApply, onBack, onOpenTarget, onValidator }: PatchStageProps) {
   const result = state.adaptation;
   if (!result) return null;
   const applying = state.pending === 'apply';
@@ -61,7 +62,7 @@ export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageP
           ))}
         </ul>
         <p className="muted-copy">
-          编译或集成编译通过仅表示相应工程检查通过，尚不证明业务行为、并发、超时或取消语义正确。
+          LSP 通过只表示候选类没有引入新的语言诊断；业务行为由 Validator 独立确认。
         </p>
         {!gate.allowed ? (
           <p className="validation-blocker" role="alert">
@@ -96,6 +97,20 @@ export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageP
               <li key={`${index}-${item}`}>{item}</li>
             ))}
           </ol>
+        </section>
+      ) : null}
+
+      {result.lspValidation ? (
+        <section className="card">
+          <h3 className="section-title"><ShieldCheck size={14} /> LSP 迭代</h3>
+          <ul className="mapping-list">
+            {result.lspValidation.attempts.map((attempt) => (
+              <li key={attempt.index}>
+                第 {attempt.index} 轮 · {attempt.outcome} · {attempt.diagnostics.length} 个新增错误 · {attempt.durationMs} ms
+              </li>
+            ))}
+          </ul>
+          {result.lspValidation.detail ? <p className="muted-copy">{result.lspValidation.detail}</p> : null}
         </section>
       ) : null}
 
@@ -134,6 +149,16 @@ export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageP
         <div className="action-row">
           <button type="button" className="secondary-action" onClick={onBack} disabled={applying}>
             返回方案选择
+          </button>
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={onValidator}
+            disabled={!result.validatorHandoff}
+            title={result.validatorHandoff ? '发送结构化 handoff 给 Validator' : 'LSP 尚未通过'}
+          >
+            <Send size={15} />
+            交给 Validator
           </button>
           <button
             type="button"

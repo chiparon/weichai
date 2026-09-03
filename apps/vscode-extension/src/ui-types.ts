@@ -49,6 +49,9 @@ export interface ModuleExplorerNode {
   implementationStatus?: ModuleImplementationStatus;
   targetId?: string;
   description?: string;
+  purpose?: string;
+  coreApis?: string[];
+  domain?: string;
   children: ModuleExplorerNode[];
 }
 

@@ -357,9 +357,10 @@ function HistoryOverview({
                   </span>
                   <strong>{module.name}</strong>
                   <span className="history-module-description">
-                    {module.description ?? `包含 ${summary.files} 个代码文件，可作为需求实现的检索范围。`}
+                    {module.purpose ?? module.description ?? `包含 ${summary.files} 个代码文件，可作为需求实现的检索范围。`}
                   </span>
                   <span className="history-module-card-footer">
+                    {module.domain ? <span>{module.domain}</span> : null}
                     <span>{summary.files} 文件</span>
                     <span>{summary.types} 类型</span>
                     <span>{summary.methods} 方法</span>
@@ -463,6 +464,7 @@ function HistorySelectionPreview({ node }: { node?: ModuleExplorerNode }) {
     );
   }
   const summary = summarizeModule(node);
+  const coreApis = node.coreApis?.slice(0, 6) ?? [];
   return (
     <section className="history-selection-preview" aria-label="当前选择">
       <div className="history-selection-heading">
@@ -473,14 +475,20 @@ function HistorySelectionPreview({ node }: { node?: ModuleExplorerNode }) {
         <span className="history-selection-icon"><NodeIcon node={node} /></span>
         <div>
           <strong>{node.name}</strong>
-          <p>{node.description ?? node.signature ?? '该项将作为历史代码检索与复用的参考范围。'}</p>
+          <p>{node.purpose ?? node.description ?? node.signature ?? '该项将作为历史代码检索与复用的参考范围。'}</p>
           <div className="history-selection-meta">
             {node.path ? <code title={node.path}>{node.path}</code> : null}
+            {node.domain ? <span>{node.domain}</span> : null}
             {node.language ? <span>{node.language}</span> : null}
             {summary.files > 0 ? <span>{summary.files} 文件</span> : null}
             {summary.types > 0 ? <span>{summary.types} 类型</span> : null}
             {summary.methods > 0 ? <span>{summary.methods} 方法</span> : null}
           </div>
+          {coreApis.length > 0 ? (
+            <div className="history-selection-apis" aria-label="核心 API">
+              {coreApis.map((api) => <code key={api}>{api}</code>)}
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

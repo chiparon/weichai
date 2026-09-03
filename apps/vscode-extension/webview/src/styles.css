@@ -2562,6 +2562,22 @@ button:disabled {
   font-size: 8px;
 }
 
+.history-selection-apis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.history-selection-apis code {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-2));
+  color: var(--fg);
+  font-size: 8px;
+}
+
 .history-analysis-fold {
   display: flex;
   align-items: center;

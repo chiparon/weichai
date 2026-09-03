@@ -294,6 +294,10 @@ export function workspacePresentationFromAnalysis(
     name: definition.name,
     kind: 'module' as const,
     description: definition.description,
+    purpose: definition.purpose,
+    coreApis: definition.coreApis,
+    language: definition.language,
+    domain: definition.domain,
     children: folderTree(
       definition.files
         .map((filePath) => fileNodes.get(filePath))
@@ -469,6 +473,10 @@ interface ModuleDefinition {
   id: string;
   name: string;
   description?: string;
+  purpose?: string;
+  coreApis?: string[];
+  language?: string;
+  domain?: string;
   files: string[];
 }
 
@@ -490,6 +498,10 @@ function moduleDefinitionsFor(
         id: module.id,
         name: module.name,
         description: module.description,
+        purpose: module.purpose,
+        coreApis: module.coreApis,
+        language: module.language,
+        domain: module.domain,
         files: moduleFiles,
       };
     });

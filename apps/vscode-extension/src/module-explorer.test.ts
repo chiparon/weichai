@@ -139,6 +139,12 @@ describe('module explorer host transform', () => {
       '订单模块',
     ]);
     expect(result.presentation.tree[0]?.description).toBe('支付业务边界');
+    expect(result.presentation.tree[0]).toMatchObject({
+      purpose: '负责支付发起、确认与退款复用入口',
+      coreApis: ['PaymentService.Pay'],
+      language: 'C#',
+      domain: '支付',
+    });
     expect(result.presentation.summary).toMatchObject({
       exists: true,
       planId: 'plan-ui',
@@ -208,6 +214,10 @@ function moduleSummary(): ModuleSummary {
           id: 'payments',
           name: '支付模块',
           description: '支付业务边界',
+          purpose: '负责支付发起、确认与退款复用入口',
+          coreApis: ['PaymentService.Pay'],
+          language: 'C#',
+          domain: '支付',
           sourceFiles: ['src/Payments/PaymentService.cs'],
         },
         {

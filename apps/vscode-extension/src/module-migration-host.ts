@@ -15,7 +15,9 @@ import {
   calculateModuleMigrationPlanHash,
   invalidatePlanForSnapshot,
   materializeModuleSummary,
+  moduleSummaryPath,
   recordModulePlanDecision,
+  serializeModuleSummary,
   validateModuleMigrationPlan,
 } from '@forexplore/workflow-core';
 import type { PreparedModuleWave } from '@forexplore/adaptation-service/module-wave-execution';
@@ -162,8 +164,8 @@ export interface ModuleMigrationHostOptions {
  * Trusted VS Code host flow for static module planning. It owns immutable
  * analysis artifacts, deterministic validation, and local plan review state;
  * the architecture HTTP endpoint can only return an untrusted proposal.
- * Source changes, run manifests, and module summaries belong to the wave
- * transaction coordinator and are never written by this planning host.
+ * Source changes and run manifests belong to the wave transaction coordinator.
+ * Approved module summaries are written here as the 01A/01B planning artifact.
  */
 export class ModuleMigrationHost {
   private readonly sessions = new Map<string, ModuleMigrationReviewSession>();
@@ -270,7 +272,7 @@ export class ModuleMigrationHost {
       ));
 
       const approved = await vscode.window.showWarningMessage(
-        '模块计划已在只读审阅文档中打开。审批会绑定当前静态快照和计划哈希，并仅记录在扩展的可信审阅状态中；受管摘要只能随波次事务提交。',
+        '模块计划已在只读审阅文档中打开。审批会绑定当前静态快照和计划哈希，并写入 .forexplore/module-summary.json。',
         { modal: true },
         '批准计划',
       );
@@ -592,9 +594,21 @@ export class ModuleMigrationHost {
     const decision = createPlanApprovalDecision(plan, actor, now);
     const approved = recordModulePlanDecision(plan, decision, session.analysis.snapshotId, now);
     session.plan = approved;
+    await this.writeApprovedModuleSummary(session, approved);
     await this.persistSession(session);
     this.setState({ stage: 'approved', session });
-    void vscode.window.showInformationMessage(`模块计划 ${approved.id} 已批准。`);
+    void vscode.window.showInformationMessage(`模块计划 ${approved.id} 已批准，并已写入 ${moduleSummaryPath}。`);
+  }
+
+  private async writeApprovedModuleSummary(
+    session: ModuleMigrationReviewSession,
+    plan: ModuleMigrationPlan,
+  ): Promise<void> {
+    const summary = materializeModuleSummary(plan);
+    const summaryUri = vscode.Uri.joinPath(session.workspaceFolder.uri, ...moduleSummaryPath.split('/'));
+    const summaryDirectoryUri = vscode.Uri.joinPath(session.workspaceFolder.uri, '.forexplore');
+    await vscode.workspace.fs.createDirectory(summaryDirectoryUri);
+    await vscode.workspace.fs.writeFile(summaryUri, Buffer.from(serializeModuleSummary(summary), 'utf8'));
   }
 
   private async loadSession(workspaceFolder: vscode.WorkspaceFolder): Promise<ModuleMigrationReviewSession> {

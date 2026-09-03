@@ -9,13 +9,13 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 模块级迁移计划由 VS Code 扩展宿主负责，不经 Webview 提交源码、计划或写入请求。当前提供六个受信任命令：
 
 - **ForeXplore: 索引模块迁移仓库**：对本地工作区执行 Java/C# 静态分析，并把不可变快照写入 `.forexplore/analysis/<snapshotId>.json`。默认收集可复现的语法证据；只有受信任的 JDK/Roslyn 绑定适配器明确确认的精确边才会标记为语义证据，编译器可用性探测不会提升证据等级。
-- **ForeXplore: 审阅模块迁移计划**：只向适配服务发送 `snapshotId`、目标和不可变约束；服务端从自己持有的分析制品读取证据。扩展宿主验证 Agenticodex 提案、确定性生成波次，并在只读文档中展示计划和证据。
+- **ForeXplore: 审阅模块迁移计划**：只向适配服务发送 `snapshotId`、目标和不可变约束；服务端从自己持有的分析制品读取证据。扩展宿主验证 Agenticodex 提案、确定性生成波次，并在只读文档中展示计划和证据；人工批准后写入 `.forexplore/module-summary.json`。
 - **ForeXplore: 审阅下一迁移波次**：只有整份计划已对同一快照审批后才会展示依赖已提交的下一波次。该命令只显示调度、静态证据和可供后续补丁审阅的范围；它不创建波次审批、不准备补丁，也不提交代码。
 - **ForeXplore: 导入并准备下一迁移波次**：从本机文件选择器读取严格的仅补丁 JSON，在隔离 worktree 中运行宿主范围检查和本地联合验证，并生成待审阅的 `preparedHash`。
 - **ForeXplore: 审批并提交已准备迁移波次**：把人工审批绑定到已审阅的 `preparedHash`，然后将该波次发布为受管迁移分支上的单个原子 Git 提交。
 - **ForeXplore: 恢复模块迁移审阅状态**：从扩展受信任存储和不可变快照恢复审阅状态；它不写入源码，也不把仓库中的摘要当作审批授权。
 
-计划审批绑定快照和计划哈希，并仅保存在扩展的受信任审阅状态中。执行协调器必须先在隔离 worktree 中生成精确补丁、完成波次联合验证并计算 `preparedHash`；人对该制品审批后，协调器才会把代码、`.forexplore/module-summary.json` 和运行清单放入同一个原子 Git 事务。扩展不会单独写入或覆盖摘要。模块计划服务必须将 `ADAPTATION_ANALYSIS_ROOT` 指向当前工作区的 `.forexplore/analysis`，以便 `/v1/module-plan` 只按快照标识读取服务端制品。
+计划审批绑定快照和计划哈希，并把模块摘要写入 `.forexplore/module-summary.json`，供 01A/01B 模块视图复用。执行协调器仍必须先在隔离 worktree 中生成精确补丁、完成波次联合验证并计算 `preparedHash`；人对该制品审批后，协调器才会把代码和运行清单放入同一个原子 Git 事务。模块计划服务必须将 `ADAPTATION_ANALYSIS_ROOT` 指向当前工作区的 `.forexplore/analysis`，以便 `/v1/module-plan` 只按快照标识读取服务端制品。
 
 ### 可信本地波次执行
 

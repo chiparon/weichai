@@ -138,3 +138,4 @@ export async function extractCorpus(
 }
 
 export { discoverRepositories, extractSymbols, resolveSourceRoot };
+export { extractModuleCorpus } from './module-index.js';

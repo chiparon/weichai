@@ -5,6 +5,9 @@ import type {
   Language,
   LanguageId,
   MigrationRuntimeCapabilitySnapshot,
+  ModuleSearchRequest,
+  ModuleSymbolSearchRequest,
+  ModuleTarget,
   SearchCandidateV2,
   SearchRequestV2,
   SearchRequest,
@@ -14,8 +17,8 @@ import {
   validateSourceImplementationBundleV2,
 } from '@forexplore/workflow-core';
 import { ModuleKnowledgeCasError } from './seekdb-module-knowledge-store.js';
-import { RepositoryScopeError, requireRepositoryScopes } from './repository-scope.js';
-import type { SearchEngine, SearchStore } from './types.js';
+import { normalizeRepositoryId, RepositoryScopeError, requireRepositoryScopes } from './repository-scope.js';
+import type { ModuleSearchEngine, SearchEngine, SearchStore } from './types.js';
 import type {
   ImplementationIndexActivationRequestV2,
   ImplementationIndexGenerationKeyV2,
@@ -42,6 +45,7 @@ import type {
 
 export interface HttpServerOptions {
   engine: SearchEngine;
+  candidateModuleEngine?: ModuleSearchEngine;
   store: SearchStore;
   corsOrigin: string;
   /** Deployment-owned allow-list. Never derive this from a client request. */
@@ -328,10 +332,76 @@ function isModuleQuery(value: unknown): value is ModuleKnowledgeQuery {
   );
 }
 
-function authorizedRequest(
-  request: SearchRequest,
+function isModuleTarget(value: unknown): value is ModuleTarget {
+  if (typeof value !== 'object' || value === null) return false;
+  const target = value as Partial<ModuleTarget>;
+  return (
+    typeof target.id === 'string' &&
+    typeof target.name === 'string' &&
+    typeof target.path === 'string' &&
+    typeof target.signature === 'string' &&
+    ['class', 'function'].includes(String(target.kind)) &&
+    typeof target.language === 'string' &&
+    languages.has(target.language as Language) &&
+    (target.documentation === undefined || typeof target.documentation === 'string')
+  );
+}
+
+function validSearchOptions(body: {
+  requirement?: unknown;
+  topK?: unknown;
+  repositoryScopes?: unknown;
+  candidateLanguages?: unknown;
+  rerank?: unknown;
+}): boolean {
+  return (
+    typeof body.requirement === 'string' &&
+    Number.isInteger(body.topK) && Number(body.topK) >= 1 && Number(body.topK) <= 50 &&
+    (body.repositoryScopes === undefined ||
+      (Array.isArray(body.repositoryScopes) && body.repositoryScopes.every((item) => typeof item === 'string'))) &&
+    (body.candidateLanguages === undefined ||
+      (Array.isArray(body.candidateLanguages) && body.candidateLanguages.length > 0 &&
+        body.candidateLanguages.every((item) => typeof item === 'string' && languages.has(item as Language)))) &&
+    (body.rerank === undefined || typeof body.rerank === 'boolean')
+  );
+}
+
+function isModuleSearchRequest(value: unknown): value is ModuleSearchRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const body = value as Partial<ModuleSearchRequest>;
+  const target = body.target as Partial<ModuleSearchRequest['target']> | undefined;
+  const moduleKinds = ['feature', 'shared-contract', 'infrastructure', 'integration', 'test-support', 'other'];
+  return Boolean(
+    validSearchOptions(body) &&
+    (body.excludeRepositories === undefined ||
+      (Array.isArray(body.excludeRepositories) && body.excludeRepositories.every(
+        (item) => typeof item === 'string' && normalizeRepositoryId(item) !== null,
+      ))) &&
+    target &&
+    typeof target.id === 'string' &&
+    typeof target.name === 'string' &&
+    typeof target.purpose === 'string' &&
+    typeof target.language === 'string' && languages.has(target.language as Language) &&
+    (target.kind === undefined || moduleKinds.includes(target.kind)) &&
+    (target.domain === undefined || typeof target.domain === 'string') &&
+    Array.isArray(target.coreApis) && target.coreApis.every((item) => typeof item === 'string') &&
+    Array.isArray(target.dependencies) && target.dependencies.every((item) => typeof item === 'string') &&
+    (target.focusSymbol === undefined || isModuleTarget(target.focusSymbol)) &&
+    (target.incompleteSymbols === undefined ||
+      (Array.isArray(target.incompleteSymbols) && target.incompleteSymbols.every(isModuleTarget)))
+  );
+}
+
+function isModuleSymbolSearchRequest(value: unknown): value is ModuleSymbolSearchRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const body = value as Partial<ModuleSymbolSearchRequest>;
+  return validSearchOptions(body) && typeof body.moduleId === 'string' && isModuleTarget(body.target);
+}
+
+function authorizedRequest<T extends { repositoryScopes?: string[] }>(
+  request: T,
   configuredRepositories: readonly string[],
-): SearchRequest {
+): T {
   let allowedRepositories: string[];
   try {
     allowedRepositories = requireRepositoryScopes(
@@ -779,6 +849,34 @@ export function createHttpServer(options: HttpServerOptions): Server {
         authorizeRepository(body.repositoryId, options.allowedRepositories);
         await moduleIndex.tombstone(body);
         json(response, 200, { status: 'tombstoned' }, options.corsOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && request.url === '/v1/module-search') {
+        if (!options.candidateModuleEngine) throw new HttpError(503, 'Module retrieval is not configured.');
+        const body = await readBody(request);
+        if (!isModuleSearchRequest(body)) {
+          json(response, 400, { error: 'Invalid ModuleSearchRequest payload.' }, options.corsOrigin);
+          return;
+        }
+        const candidates = await options.candidateModuleEngine.searchModules(
+          authorizedRequest(body, options.allowedRepositories),
+        );
+        json(response, 200, { candidates }, options.corsOrigin);
+        return;
+      }
+
+      if (request.method === 'POST' && request.url === '/v1/module-symbols') {
+        if (!options.candidateModuleEngine) throw new HttpError(503, 'Module retrieval is not configured.');
+        const body = await readBody(request);
+        if (!isModuleSymbolSearchRequest(body)) {
+          json(response, 400, { error: 'Invalid ModuleSymbolSearchRequest payload.' }, options.corsOrigin);
+          return;
+        }
+        const candidates = await options.candidateModuleEngine.searchModuleSymbols(
+          authorizedRequest(body, options.allowedRepositories),
+        );
+        json(response, 200, { candidates }, options.corsOrigin);
         return;
       }
 

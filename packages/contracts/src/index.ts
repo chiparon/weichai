@@ -8,6 +8,7 @@ export * from './migration-execution-v2';
 export * from './module';
 export * from './module-mapping';
 export * from './module-migration';
+export * from './module-retrieval';
 export * from './retrieval';
 export * from './rerank-validation';
 export * from './repository-ingestion';

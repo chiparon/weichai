@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import path from 'node:path';
 import { loadConfig } from './config.js';
-import { extractCorpus } from '@forexplore/code-indexer';
+import { extractCorpus, extractModuleCorpus } from '@forexplore/code-indexer';
 import { createRuntime } from './runtime.js';
-import type { IndexedCodeDocument } from '@forexplore/contracts';
+import type { IndexedCodeDocument, IndexedModuleDocument } from '@forexplore/contracts';
 
 function embeddingText(document: IndexedCodeDocument): string {
   return [
@@ -12,6 +12,20 @@ function embeddingText(document: IndexedCodeDocument): string {
     document.summary,
     document.content || document.preview,
     ...document.dependencies,
+  ].join('\n');
+}
+
+function moduleEmbeddingText(document: IndexedModuleDocument): string {
+  return [
+    document.name,
+    document.purpose,
+    document.domain,
+    document.kind,
+    ...document.coreApis,
+    ...document.dependencies,
+    ...document.representativeSymbols.map((symbol) =>
+      `${symbol.title}\n${symbol.signature}\n${symbol.summary}`,
+    ),
   ].join('\n');
 }
 
@@ -37,12 +51,25 @@ try {
   const documents = [
     ...new Map(indexedRoots.flat().map((document) => [document.id, document])).values(),
   ];
+  const indexedModuleRoots = await Promise.all(
+    corpusRoots.map(async (corpusRoot) => {
+      const modules = await extractModuleCorpus(corpusRoot);
+      console.log(`Extracted ${modules.length} modules from ${corpusRoot}.`);
+      return modules;
+    }),
+  );
+  const modules = [
+    ...new Map(indexedModuleRoots.flat().map((module) => [module.id, module])).values(),
+  ];
   if (documents.length === 0) {
     throw new Error(`No code symbols were extracted from ${corpusRoots.join(', ')}.`);
   }
   if (replace) {
     await store.clear();
+    await store.clearModules();
     console.log(`Cleared ${config.seekdb.database}.${config.seekdb.table}.`);
+  } else {
+    await store.clearModules([...new Set(modules.map((module) => module.repository))]);
   }
   const batchSize = 32;
   for (let offset = 0; offset < documents.length; offset += batchSize) {
@@ -62,8 +89,20 @@ try {
     );
     console.log(`Indexed ${Math.min(offset + batch.length, documents.length)}/${documents.length}`);
   }
+  for (let offset = 0; offset < modules.length; offset += batchSize) {
+    const batch = modules.slice(offset, offset + batchSize);
+    const vectors = await embeddings.embed(batch.map(moduleEmbeddingText));
+    await store.upsertModules(
+      batch.map((module, index) => {
+        const embedding = vectors[index];
+        if (!embedding) throw new Error(`Missing embedding for module ${module.id}.`);
+        return { ...module, embedding };
+      }),
+    );
+    console.log(`Indexed ${Math.min(offset + batch.length, modules.length)}/${modules.length} modules.`);
+  }
   await store.refreshIndex();
-  console.log(`Indexed ${documents.length} extracted symbols.`);
+  console.log(`Indexed ${documents.length} extracted symbols and ${modules.length} modules.`);
 } finally {
   await store.close();
 }

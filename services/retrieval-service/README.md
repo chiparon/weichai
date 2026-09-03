@@ -1,8 +1,10 @@
 # SeekDB Retrieval Service
 
-This service is the production `CodeSearchPort` boundary for ForeXplore. It
-stores code-symbol documents in [SeekDB](https://github.com/oceanbase/seekdb)
-and exposes the stable workflow search contract over HTTP.
+This service is the production retrieval boundary for ForeXplore. It stores
+both functional-module and code-symbol documents in
+[SeekDB](https://github.com/oceanbase/seekdb). Module search is the first-stage
+reuse workflow; symbol search remains available for compatibility and for the
+second-stage drill-down inside a selected module.
 
 It also owns a physically separate functional-module projection. Module Wiki
 documents never enter the class/function table: they are staged by immutable
@@ -11,16 +13,23 @@ generation is the active `(repositoryId, channel)` head.
 
 ## Hybrid retrieval
 
-The service always runs vector and full-text queries in parallel, fuses them with
-weighted reciprocal-rank fusion, and applies the deterministic contract-aware
-score. It retrieves a broader, bounded candidate pool before returning the
-requested result count. Optional LLM reranking can run after this hybrid recall.
+Symbol search runs vector and full-text queries in parallel. Module search runs
+three parallel channels: semantic vectors, full text, and structural/API text.
+Both pipelines use weighted reciprocal-rank fusion and deterministic scoring;
+optional LLM reranking runs only after bounded recall.
 
 Each query has one retrieval granularity. A class target retrieves only indexed
 class documents; a function target retrieves only indexed function documents.
 The kind restriction is pushed into both SeekDB queries and checked again after
 hybrid fusion. Consequently, the broad-recall pool, reranker input, and final
 Top-K list cannot mix classes and functions.
+
+Module retrieval deliberately does not apply that class/function restriction.
+It ranks a functional unit by purpose, API coverage, dependency shape,
+adaptability, implementation evidence, and risk. The returned Top-N is
+diversified so one repository or near-duplicate API surface does not crowd out
+all alternatives. After a module is selected, `/v1/module-symbols` restores the
+class/function restriction while searching only symbols owned by that module.
 
 When LLM reranking is enabled, hybrid RRF produces exactly 20 same-granularity
 candidates, the reranker scores those candidates, and the service returns the
@@ -145,13 +154,23 @@ request even when a rerank provider is configured globally.
 ## Index input
 
 By default, `index:corpus` scans `fixtures/code-corpus`. It extracts class,
-method, and function symbols from TypeScript, Python, Java, C#, Rust, and Go
-sources and indexes the resulting documents. Repositories with either
-`manifest.json` or `dataset-manifest.json` are discovered. The intentionally
-incomplete C# target workspace is not treated as a reusable implementation.
+method, and function symbols from TypeScript, Python, Java, C#, Rust, and Go,
+then builds functional-module candidates over those symbols. Repositories with
+either `manifest.json` or `dataset-manifest.json` are discovered. Target
+workspaces under `fixtures/target-system` are not indexed by default.
 
-Pass `--replace` to clear the dedicated code-symbol table first. To override
+An approved `.forexplore/module-summary.json` is authoritative. Otherwise the
+indexer uses a deterministic fallback: it removes the common language/package
+root and groups symbols by the next cohesive directory, falling back to one
+`core` module when the repository has no deeper boundary. Repository identity
+is always retained as the authorization and license boundary.
+
+Pass `--replace` to clear the code-symbol and module tables first. The module
+table name is the configured symbol table name plus `_modules`. To override
 the defaults, pass one or more explicit corpus roots after `--`.
+Incremental corpus indexing replaces module rows only for the repositories in
+the current input, preventing obsolete module boundaries from remaining
+searchable while leaving other authorized repositories intact.
 
 The lower-level `index` command accepts UTF-8 JSON Lines. Each line follows this shape:
 
@@ -244,6 +263,27 @@ The production runtime compares the active receipt with its current indexer
 identity and fails search closed until an incompatible generation is rebuilt
 and activated.
 
+- `POST /v1/module-search` accepts `ModuleSearchRequest` and returns
+  `{ "candidates": ModuleSearchCandidate[] }`.
+- `POST /v1/module-symbols` accepts `ModuleSymbolSearchRequest` and returns
+  the best `SearchCandidate[]` owned by one authorized module.
+
+### Module retrieval
+
+`ModuleSearchRequest.target` carries the target module purpose, domain, core
+APIs, dependencies, and optional focus/incomplete symbols. Recall uses weighted
+RRF (`0.45 semantic / 0.25 full text / 0.30 structural`) and then scores
+behavioral coverage, API coverage, structure, semantic similarity,
+cross-language adaptability, implementation evidence, lexical evidence, and
+risk. DeepSeek, when enabled, receives only the deterministic Top-20 module
+pool and must return every stable candidate ID exactly once. Invalid responses
+receive bounded repair attempts; exhaustion falls back to the verified
+deterministic module order.
+
+`excludeRepositories` normally contains the current target repository. It is
+an additional exclusion and never expands the deployment-owned repository
+allow-list.
+
 ### SearchRequest fields
 
 | Field | Type | Notes |
@@ -274,7 +314,7 @@ Every HTTP search is constrained by the deployment-owned,
 comma-separated `RETRIEVAL_ALLOWED_REPOSITORIES` setting. It defaults to an
 empty list, so an unconfigured service returns an error instead of querying
 every indexed repository. Configure exact IDs such as
-`forexplore-reference-java,swift-cache-ts` for local development. Empty,
+`fixture/forexplore-reference-java,fixture/swift-cache-ts` for local development. Empty,
 wildcard, malformed, or unauthorized request scopes are rejected; they never
 fall back to an unscoped query.
 

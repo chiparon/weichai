@@ -1,16 +1,27 @@
 import type {
   IndexedCodeDocument,
+  IndexedModuleDocument,
   Language,
+  ModuleSearchCandidate,
+  ModuleSearchRequest,
+  ModuleSymbolSearchRequest,
   SearchCandidate,
   SearchRequest,
 } from '@forexplore/contracts';
 
-export type { IndexedCodeDocument } from '@forexplore/contracts';
+export type { IndexedCodeDocument, IndexedModuleDocument } from '@forexplore/contracts';
 
 export interface RetrievedCodeDocument extends IndexedCodeDocument {
   semanticScore?: number;
   textScore?: number;
   /** Weighted reciprocal-rank fusion score, after any retrieval prior. */
+  hybridScore?: number;
+}
+
+export interface RetrievedModuleDocument extends IndexedModuleDocument {
+  semanticScore?: number;
+  textScore?: number;
+  structuralScore?: number;
   hybridScore?: number;
 }
 
@@ -47,6 +58,55 @@ export interface EmbeddingProvider {
 
 export interface SearchEngine {
   search(request: SearchRequest): Promise<SearchCandidate[]>;
+}
+
+export interface ModuleSearchFilters {
+  repositories: string[];
+  languages: Language[];
+  excludeRepositories: string[];
+}
+
+export interface ModuleSearchStore {
+  clearModules(repositories?: string[]): Promise<void>;
+  upsertModules(
+    documents: Array<IndexedModuleDocument & { embedding: number[] }>,
+  ): Promise<void>;
+  semanticModuleSearch(
+    embedding: number[],
+    filters: ModuleSearchFilters,
+    limit: number,
+  ): Promise<RetrievedModuleDocument[]>;
+  textModuleSearch(
+    query: string,
+    filters: ModuleSearchFilters,
+    limit: number,
+  ): Promise<RetrievedModuleDocument[]>;
+  structuralModuleSearch(
+    query: string,
+    filters: ModuleSearchFilters,
+    limit: number,
+  ): Promise<RetrievedModuleDocument[]>;
+  moduleById(id: string, repositories: string[]): Promise<RetrievedModuleDocument | null>;
+  symbolsByIds(ids: string[], repositories: string[]): Promise<RetrievedCodeDocument[]>;
+}
+
+export interface ModuleSearchEngine {
+  searchModules(request: ModuleSearchRequest): Promise<ModuleSearchCandidate[]>;
+  searchModuleSymbols(request: ModuleSymbolSearchRequest): Promise<SearchCandidate[]>;
+}
+
+export interface ModuleRerankResult {
+  id: string;
+  score: number;
+  reason: string;
+}
+
+export interface LlmModuleReranker {
+  readonly model: string;
+  rerankModules(
+    request: ModuleSearchRequest,
+    candidates: ModuleSearchCandidate[],
+  ): Promise<ModuleRerankResult[]>;
 }
 
 /** A single reranking result produced by the LLM. */

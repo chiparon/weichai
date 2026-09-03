@@ -28,4 +28,15 @@ describe('SeekDB SQL helpers', () => {
       }),
     ).toThrow('Repository scope must contain at least one repository.');
   });
+
+  it('builds fail-closed module filters with language and target-repository exclusion', () => {
+    expect(seekDbInternals.moduleFilterSql({
+      repositories: ['fixture/upload', 'fixture/audit'],
+      languages: ['Python'],
+      excludeRepositories: ['fixture/audit'],
+    })).toEqual({
+      sql: 'WHERE repository IN (?, ?) AND language IN (?) AND repository NOT IN (?)',
+      parameters: ['fixture/upload', 'fixture/audit', 'Python', 'fixture/audit'],
+    });
+  });
 });

@@ -4,6 +4,8 @@ import {
   OpenAiCompatibleEmbeddingProvider,
 } from './embedding.js';
 import { DeepSeekReranker } from './reranker.js';
+import { DeepSeekModuleReranker } from './module-reranker.js';
+import { SeekDbModuleSearchEngine } from './module-search-engine.js';
 import { RerankingSearchEngine } from './reranking-engine.js';
 import { SeekDbSearchEngine } from './search-engine.js';
 import { SeekDbStore } from './seekdb-store.js';
@@ -90,6 +92,22 @@ export function createRuntime(config: RetrievalConfig) {
   const moduleStore = new SeekDbModuleKnowledgeStore(config.seekdb, undefined, indexer);
   const moduleIndex = new DefaultModuleKnowledgeIndexService(moduleStore, embeddings, indexer);
   const moduleEngine = new HybridModuleKnowledgeSearchEngine(moduleStore, embeddings);
+  const moduleReranker = config.reranking.provider === 'deepseek'
+    ? new DeepSeekModuleReranker(
+        config.reranking.model,
+        config.reranking.url,
+        config.reranking.apiKey,
+        config.reranking.timeoutMs,
+        config.reranking.maxRetries,
+        config.reranking.validationRetries,
+      )
+    : undefined;
+  const candidateModuleEngine = new SeekDbModuleSearchEngine(
+    store,
+    embeddings,
+    moduleReranker,
+    reranker ?? undefined,
+  );
   const implementationStoreV2 = new SeekDbImplementationIndexStoreV2(config.seekdb);
   const runtimeCapabilitiesV2 = config.migrationRuntimeCapabilitySnapshot ??
     materializeMigrationRuntimeCapabilitySnapshot({
@@ -114,6 +132,7 @@ export function createRuntime(config: RetrievalConfig) {
     engine,
     moduleIndex,
     moduleEngine,
+    candidateModuleEngine,
     implementationIndexV2,
     implementationEngineV2,
     runtimeCapabilitiesV2,
@@ -136,6 +155,7 @@ export function createConfiguredHttpServer(
     corsOrigin: config.corsOrigin,
     allowedRepositories: config.allowedRepositories,
     moduleEngine: runtime.moduleEngine,
+    candidateModuleEngine: runtime.candidateModuleEngine,
     moduleIndex: runtime.moduleIndex,
     moduleStore: runtime.moduleStore,
     moduleIndexToken: config.moduleIndexToken,

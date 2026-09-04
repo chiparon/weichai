@@ -29,6 +29,7 @@ const languageByExtension = new Map<string, StaticAnalysisFile['language']>([
   ['.ts', 'TypeScript'], ['.tsx', 'TypeScript'], ['.js', 'TypeScript'], ['.jsx', 'TypeScript'],
   ['.py', 'Python'], ['.java', 'Java'], ['.cs', 'C#'], ['.rs', 'Rust'], ['.go', 'Go'],
 ]);
+const moduleSummaryLanguages = new Set(['TypeScript', 'Python', 'Java', 'C#', 'Rust', 'Go', 'Mixed', 'Unknown']);
 const configurationFilePattern = /(?:^|\/)(?:pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|[^/]+\.(?:csproj|sln))$/i;
 const maxExplorerFiles = 4_000;
 const maxExplorerFileBytes = 2 * 1024 * 1024;
@@ -53,21 +54,30 @@ export async function buildModuleExplorer(
   input: BuildModuleExplorerInput,
   options: { includeHistory?: boolean } = {},
 ): Promise<ModuleExplorerBuildResult> {
+  const workspaceRoot = path.resolve(input.workspaceRoot);
   const target = await analyzeWorkspace(
-    input.workspaceRoot,
+    workspaceRoot,
     input.workspaceName,
     'target',
     input.currentTarget,
+    workspacePresentationId('target', workspaceRoot),
   );
-  const distinctHistoryRoots = [...new Set(input.historyRoots.map((root) => path.resolve(root)))]
-    .filter((root) => root !== path.resolve(input.workspaceRoot));
+  const workspaceRootKey = workspaceIdentityKey(workspaceRoot);
+  const distinctHistoryRoots = distinctResolvedRoots(input.historyRoots)
+    .filter((root) => workspaceIdentityKey(root) !== workspaceRootKey);
   const history = options.includeHistory === false
     ? distinctHistoryRoots.map((root) => ({
       presentation: pendingWorkspacePresentation(root),
       targets: new Map<string, ModuleTarget>(),
     }))
     : await Promise.all(
-      distinctHistoryRoots.map((root) => analyzeWorkspace(root, path.basename(root), 'history')),
+      distinctHistoryRoots.map((root) => analyzeWorkspace(
+        root,
+        path.basename(root),
+        'history',
+        undefined,
+        workspacePresentationId('history', root),
+      )),
     );
   return {
     presentation: {
@@ -84,6 +94,7 @@ async function analyzeWorkspace(
   name: string,
   mode: 'target' | 'history',
   currentTarget?: ModuleTarget,
+  presentationId?: string,
 ): Promise<{ presentation: ModuleWorkspacePresentation; targets: Map<string, ModuleTarget> }> {
   try {
     const [{ analysis, contents }, summaryResult] = await Promise.all([
@@ -97,6 +108,7 @@ async function analyzeWorkspace(
       mode,
       name,
       rootLabel: path.basename(root),
+      presentationId,
       summary: summaryResult.summary,
     });
     if (summaryResult.error) transformed.presentation.summary.error = summaryResult.error;
@@ -104,7 +116,7 @@ async function analyzeWorkspace(
   } catch (error) {
     return {
       presentation: emptyWorkspacePresentation({
-        id: `${mode}:${path.basename(root)}`,
+        id: presentationId ?? `${mode}:${path.basename(root)}`,
         mode,
         name,
         rootLabel: path.basename(root),
@@ -266,6 +278,7 @@ interface WorkspaceTransformInput {
   currentTarget?: ModuleTarget;
   mode: 'target' | 'history';
   name: string;
+  presentationId?: string;
   rootLabel: string;
   summary?: ModuleSummary;
 }
@@ -294,6 +307,10 @@ export function workspacePresentationFromAnalysis(
     name: definition.name,
     kind: 'module' as const,
     description: definition.description,
+    purpose: definition.purpose,
+    coreApis: definition.coreApis,
+    language: definition.language,
+    domain: definition.domain,
     children: folderTree(
       definition.files
         .map((filePath) => fileNodes.get(filePath))
@@ -324,7 +341,7 @@ export function workspacePresentationFromAnalysis(
 
   return {
     presentation: {
-      id: `${input.mode}:${input.analysis.snapshotId}`,
+      id: input.presentationId ?? `${input.mode}:${input.analysis.snapshotId}`,
       mode: input.mode,
       name: input.name,
       rootLabel: input.rootLabel,
@@ -469,6 +486,10 @@ interface ModuleDefinition {
   id: string;
   name: string;
   description?: string;
+  purpose?: string;
+  coreApis?: string[];
+  language?: string;
+  domain?: string;
   files: string[];
 }
 
@@ -490,6 +511,10 @@ function moduleDefinitionsFor(
         id: module.id,
         name: module.name,
         description: module.description,
+        purpose: module.purpose,
+        coreApis: module.coreApis,
+        language: module.language,
+        domain: module.domain,
         files: moduleFiles,
       };
     });
@@ -653,12 +678,27 @@ function isModuleSummary(value: unknown): value is ModuleSummary {
       typeof module.id === 'string' &&
       typeof module.name === 'string' &&
       typeof module.description === 'string' &&
+      isOptionalString(module.purpose) &&
+      isOptionalString(module.domain) &&
+      isOptionalModuleSummaryLanguage(module.language) &&
+      (
+        module.coreApis === undefined ||
+        (Array.isArray(module.coreApis) && module.coreApis.every((item) => typeof item === 'string'))
+      ) &&
       Array.isArray(module.sourceFiles) &&
       module.sourceFiles.every((file) => typeof file === 'string'),
     ) &&
     Array.isArray(value.generated.executionWaves) &&
     typeof value.human.approvalsCurrent === 'boolean'
   );
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isOptionalModuleSummaryLanguage(value: unknown): value is string | undefined {
+  return value === undefined || (typeof value === 'string' && moduleSummaryLanguages.has(value));
 }
 
 function emptyWorkspacePresentation(
@@ -684,12 +724,31 @@ function emptyWorkspacePresentation(
 
 function pendingWorkspacePresentation(root: string): ModuleWorkspacePresentation {
   return emptyWorkspacePresentation({
-    id: `history:${path.basename(root)}`,
+    id: workspacePresentationId('history', root),
     mode: 'history',
     name: path.basename(root),
     rootLabel: path.basename(root),
     loading: true,
   });
+}
+
+function workspacePresentationId(mode: 'target' | 'history', root: string): string {
+  return `${mode}:${digest(workspaceIdentityKey(root)).slice(0, 16)}`;
+}
+
+function distinctResolvedRoots(roots: string[]): string[] {
+  const byKey = new Map<string, string>();
+  for (const root of roots) {
+    const resolved = path.resolve(root);
+    const key = workspaceIdentityKey(resolved);
+    if (!byKey.has(key)) byKey.set(key, resolved);
+  }
+  return [...byKey.values()];
+}
+
+function workspaceIdentityKey(root: string): string {
+  const resolved = path.resolve(root);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

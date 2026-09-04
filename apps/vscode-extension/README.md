@@ -4,6 +4,25 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 
 当前真实自动迁移能力边界是 **`translate` 策略下的 Java → C#**。它不是通用代码生成器；候选排序分也不是正确率或兼容概率。
 
+## 版本化代码智能索引
+
+扩展宿主将 `forexplore.repositoryPaths` 中的历史仓库和当前本地工作区目标工程注册到同一个版本化索引链路：`RepositoryRegistry → AnalysisCoordinator → Tree-sitter structural index → revision store → SemanticQueryPort`。运行 **ForeXplore: 刷新代码智能索引** 可增量复用未变文件；**ForeXplore: 重新索引检索仓库** 会显式创建全量 revision。索引构建完成前，读者继续看到上一个 active revision。
+
+设置面板只接收路径无关的仓库 ID、角色、索引状态、active revision、语言能力等级和 Summary 是否过期；不会接收索引数据库连接、源码或 `localPath`。它可切换查看宿主验证过的历史 revision，但此操作严格只读，绝不会改写 `activeRevision`；历史 Summary 会明确标为过期，不能当作当前结果。扩展宿主保留现有 Java/C# `RepositoryStaticAnalysis` 作为模块迁移兼容制品，不能把旧快照 Summary 强行标记为新结构索引 revision 的当前 Summary。新鲜的 Java/C# 编译器探测快照只有在其 Java/C# 文件哈希与 active structural revision 完全相符时，才由宿主绑定为该 revision 的专用语义证据；绑定失败不会影响旧迁移流程。
+
+生产环境将以下变量设置在启动 VS Code 的本机环境中，以让宿主使用 SeekDB 持久化独立的 `repositories`、`analysis_revisions`、`projects`、`files`、`symbols`、`dependency_edges`、`module_artifacts` 和 `search_documents` 表：
+
+```bash
+export CODE_INTELLIGENCE_SEEKDB_DATABASE='forexplore'
+export CODE_INTELLIGENCE_SEEKDB_HOST='127.0.0.1'       # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PORT='2881'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_USER='root'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PASSWORD='…'
+export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
+```
+
+没有 `CODE_INTELLIGENCE_SEEKDB_DATABASE` 时，只有 VS Code 开发/测试宿主会明确显示“内存开发存储”；它仅适用于本地试用，不提供跨重启持久性。已打包的生产扩展会报告配置错误并要求 SeekDB。Agent/MCP 只能使用宿主提供的只读 `SemanticQueryPort`，不能传入绝对路径、启动 LSP 或直接访问 SeekDB。
+
 ## 模块迁移计划
 
 模块级迁移计划由 VS Code 扩展宿主负责，不经 Webview 提交源码、计划或写入请求。当前提供六个受信任命令：
@@ -163,8 +182,8 @@ npm run test:integration --workspace forexplore-vscode
 
 ## 消息协议
 
-Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。模块树目标切换只提交 Host 已发布的 `targetId`，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
+Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_CODE_INTELLIGENCE_REVISION`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。模块树目标切换和 revision 查看只提交 Host 已发布的受限 ID，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
 
-宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`SETTINGS_UPDATED`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`SERVICE_STATUS`、`ERROR`。
+宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`SETTINGS_UPDATED`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`CODE_INTELLIGENCE_STATUS`、`SERVICE_STATUS`、`ERROR`。
 
 共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。

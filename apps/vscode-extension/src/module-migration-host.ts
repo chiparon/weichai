@@ -158,6 +158,14 @@ export interface ModuleMigrationHostOptions {
   pickWaveBundle?: (workspaceFolder: vscode.WorkspaceFolder) => Promise<ModuleWavePatchBundle | undefined>;
   /** Reads only a managed run artifact after Git proves publication. */
   runManifestReader?: ModuleWaveRunManifestReader;
+  /**
+   * Host-only compatibility bridge invoked after a fresh compiler-probe
+   * snapshot is persisted. Failures are isolated from the legacy workflow.
+   */
+  onCompilerProbeAnalysisReady?: (input: {
+    workspaceFolder: vscode.WorkspaceFolder;
+    analysis: RepositoryStaticAnalysis;
+  }) => Promise<void>;
 }
 
 /**
@@ -202,6 +210,7 @@ export class ModuleMigrationHost {
       };
       this.sessions.set(workspaceFolder.uri.toString(), session);
       await this.persistSession(session);
+      await this.notifyCompilerProbeAnalysisReady(session);
       this.setState({ stage: 'indexed', session });
       await this.options.previews.show('Static analysis snapshot', staticAnalysisPreview(session));
       void vscode.window.showInformationMessage(
@@ -609,6 +618,23 @@ export class ModuleMigrationHost {
     const summaryDirectoryUri = vscode.Uri.joinPath(session.workspaceFolder.uri, '.forexplore');
     await vscode.workspace.fs.createDirectory(summaryDirectoryUri);
     await vscode.workspace.fs.writeFile(summaryUri, Buffer.from(serializeModuleSummary(summary), 'utf8'));
+  }
+
+  private async notifyCompilerProbeAnalysisReady(session: ModuleMigrationReviewSession): Promise<void> {
+    const hook = this.options.onCompilerProbeAnalysisReady;
+    if (!hook) return;
+    try {
+      await hook({
+        workspaceFolder: session.workspaceFolder,
+        analysis: session.analysis,
+      });
+    } catch {
+      // The compatibility bridge is an optional semantic enhancement. A
+      // failed registration must not invalidate the persisted legacy snapshot.
+      this.options.output.appendLine(
+        '[forexplore] Java/C# compiler-probe semantic bridge skipped; legacy static analysis remains available.',
+      );
+    }
   }
 
   private async loadSession(workspaceFolder: vscode.WorkspaceFolder): Promise<ModuleMigrationReviewSession> {

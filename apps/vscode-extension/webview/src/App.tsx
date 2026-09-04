@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Settings2 } from 'lucide-react';
-import type { RepositoryStatus, ServiceStatus } from '../../src/ui-types';
+import type { CodeIntelligencePresentation, RepositoryStatus, ServiceStatus } from '../../src/ui-types';
 import type { ModuleExplorerMode, ModuleExplorerNode } from '../../src/ui-types';
 import {
   initialWorkflowState,
@@ -27,6 +27,7 @@ export default function App() {
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState);
   const [payload, setPayload] = useState<PanelInitPayload | null>(null);
   const [repositoryStatuses, setRepositoryStatuses] = useState<RepositoryStatus[]>([]);
+  const [codeIntelligence, setCodeIntelligence] = useState<CodeIntelligencePresentation | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [moduleExplorer, setModuleExplorer] = useState<PanelInitPayload['moduleExplorer'] | null>(null);
   const [explorerMode, setExplorerMode] = useState<ModuleExplorerMode>('target');
@@ -51,6 +52,7 @@ export default function App() {
           settingsRef.current = message.payload.settings;
           setPayload(message.payload);
           setRepositoryStatuses(message.payload.repositoryStatuses);
+          setCodeIntelligence(message.payload.codeIntelligence);
           setServiceStatus(message.payload.serviceStatus);
           setModuleExplorer(message.payload.moduleExplorer);
           setHistoryId((current) => current ?? message.payload.moduleExplorer.history[0]?.id ?? null);
@@ -72,6 +74,9 @@ export default function App() {
           break;
         case 'REPOSITORY_STATUS':
           setRepositoryStatuses(message.statuses);
+          break;
+        case 'CODE_INTELLIGENCE_STATUS':
+          setCodeIntelligence(message.presentation);
           break;
         case 'SERVICE_STATUS':
           setServiceStatus(message.status);
@@ -182,6 +187,20 @@ export default function App() {
     bus.post({ type: 'SAVE_SETTINGS', settings });
   }
 
+  function handleSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void {
+    setError(null);
+    bus.post({ type: 'SELECT_CODE_INTELLIGENCE_REVISION', repositoryId, analysisRevision });
+  }
+
+  function handleSelectCodeIntelligenceProject(
+    repositoryId: string,
+    analysisRevision: string,
+    projectId: string,
+  ): void {
+    setError(null);
+    bus.post({ type: 'SELECT_CODE_INTELLIGENCE_PROJECT', repositoryId, analysisRevision, projectId });
+  }
+
   function handleSelectWorkspaceTarget(targetId: string): void {
     if (targetId === state.target?.id) return;
     setError(null);
@@ -266,8 +285,11 @@ export default function App() {
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}
+            codeIntelligence={codeIntelligence}
             saving={settingsSaving}
             onCheckRepositories={handleCheckRepositories}
+            onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
+            onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}
             onSave={handleSaveSettings}
             onCancel={() => setSettingsOpen(false)}
           />
@@ -314,6 +336,7 @@ export default function App() {
       <FooterStatus
         serviceStatus={serviceStatus}
         repositoryStatuses={repositoryStatuses}
+        codeIntelligence={codeIntelligence}
         workspaceRoot={payload.workspaceRoot}
       />
     </div>

@@ -4,18 +4,37 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 
 当前真实自动迁移能力边界是 **`translate` 策略下的 Java → C#**。它不是通用代码生成器；候选排序分也不是正确率或兼容概率。
 
+## 版本化代码智能索引
+
+扩展宿主将 `forexplore.repositoryPaths` 中的历史仓库和当前本地工作区目标工程注册到同一个版本化索引链路：`RepositoryRegistry → AnalysisCoordinator → Tree-sitter structural index → revision store → SemanticQueryPort`。运行 **ForeXplore: 刷新代码智能索引** 可增量复用未变文件；**ForeXplore: 重新索引检索仓库** 会显式创建全量 revision。索引构建完成前，读者继续看到上一个 active revision。
+
+设置面板只接收路径无关的仓库 ID、角色、索引状态、active revision、语言能力等级和 Summary 是否过期；不会接收索引数据库连接、源码或 `localPath`。它可切换查看宿主验证过的历史 revision，但此操作严格只读，绝不会改写 `activeRevision`；历史 Summary 会明确标为过期，不能当作当前结果。扩展宿主保留现有 Java/C# `RepositoryStaticAnalysis` 作为模块迁移兼容制品，不能把旧快照 Summary 强行标记为新结构索引 revision 的当前 Summary。新鲜的 Java/C# 编译器探测快照只有在其 Java/C# 文件哈希与 active structural revision 完全相符时，才由宿主绑定为该 revision 的专用语义证据；绑定失败不会影响旧迁移流程。
+
+生产环境将以下变量设置在启动 VS Code 的本机环境中，以让宿主使用 SeekDB 持久化独立的 `repositories`、`analysis_revisions`、`projects`、`files`、`symbols`、`dependency_edges`、`module_artifacts` 和 `search_documents` 表：
+
+```bash
+export CODE_INTELLIGENCE_SEEKDB_DATABASE='forexplore'
+export CODE_INTELLIGENCE_SEEKDB_HOST='127.0.0.1'       # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PORT='2881'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_USER='root'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PASSWORD='…'
+export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
+```
+
+没有 `CODE_INTELLIGENCE_SEEKDB_DATABASE` 时，只有 VS Code 开发/测试宿主会明确显示“内存开发存储”；它仅适用于本地试用，不提供跨重启持久性。已打包的生产扩展会报告配置错误并要求 SeekDB。Agent/MCP 只能使用宿主提供的只读 `SemanticQueryPort`，不能传入绝对路径、启动 LSP 或直接访问 SeekDB。
+
 ## 模块迁移计划
 
 模块级迁移计划由 VS Code 扩展宿主负责，不经 Webview 提交源码、计划或写入请求。当前提供六个受信任命令：
 
 - **ForeXplore: 索引模块迁移仓库**：对本地工作区执行 Java/C# 静态分析，并把不可变快照写入 `.forexplore/analysis/<snapshotId>.json`。默认收集可复现的语法证据；只有受信任的 JDK/Roslyn 绑定适配器明确确认的精确边才会标记为语义证据，编译器可用性探测不会提升证据等级。
-- **ForeXplore: 审阅模块迁移计划**：只向适配服务发送 `snapshotId`、目标和不可变约束；服务端从自己持有的分析制品读取证据。扩展宿主验证 Agenticodex 提案、确定性生成波次，并在只读文档中展示计划和证据。
+- **ForeXplore: 审阅模块迁移计划**：只向适配服务发送 `snapshotId`、目标和不可变约束；服务端从自己持有的分析制品读取证据。扩展宿主验证 Agenticodex 提案、确定性生成波次，并在只读文档中展示计划和证据；人工批准后写入 `.forexplore/module-summary.json`。
 - **ForeXplore: 审阅下一迁移波次**：只有整份计划已对同一快照审批后才会展示依赖已提交的下一波次。该命令只显示调度、静态证据和可供后续补丁审阅的范围；它不创建波次审批、不准备补丁，也不提交代码。
 - **ForeXplore: 导入并准备下一迁移波次**：从本机文件选择器读取严格的仅补丁 JSON，在隔离 worktree 中运行宿主范围检查和本地联合验证，并生成待审阅的 `preparedHash`。
 - **ForeXplore: 审批并提交已准备迁移波次**：把人工审批绑定到已审阅的 `preparedHash`，然后将该波次发布为受管迁移分支上的单个原子 Git 提交。
 - **ForeXplore: 恢复模块迁移审阅状态**：从扩展受信任存储和不可变快照恢复审阅状态；它不写入源码，也不把仓库中的摘要当作审批授权。
 
-计划审批绑定快照和计划哈希，并仅保存在扩展的受信任审阅状态中。执行协调器必须先在隔离 worktree 中生成精确补丁、完成波次联合验证并计算 `preparedHash`；人对该制品审批后，协调器才会把代码、`.forexplore/module-summary.json` 和运行清单放入同一个原子 Git 事务。扩展不会单独写入或覆盖摘要。模块计划服务必须将 `ADAPTATION_ANALYSIS_ROOT` 指向当前工作区的 `.forexplore/analysis`，以便 `/v1/module-plan` 只按快照标识读取服务端制品。
+计划审批绑定快照和计划哈希，并把模块摘要写入 `.forexplore/module-summary.json`，供 01A/01B 模块视图复用。执行协调器仍必须先在隔离 worktree 中生成精确补丁、完成波次联合验证并计算 `preparedHash`；人对该制品审批后，协调器才会把代码和运行清单放入同一个原子 Git 事务。模块计划服务必须将 `ADAPTATION_ANALYSIS_ROOT` 指向当前工作区的 `.forexplore/analysis`，以便 `/v1/module-plan` 只按快照标识读取服务端制品。
 
 ### 可信本地波次执行
 
@@ -163,8 +182,8 @@ npm run test:integration --workspace forexplore-vscode
 
 ## 消息协议
 
-Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。模块树目标切换只提交 Host 已发布的 `targetId`，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
+Webview → 宿主：`READY`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_CODE_INTELLIGENCE_REVISION`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。模块树目标切换和 revision 查看只提交 Host 已发布的受限 ID，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
 
-宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`SETTINGS_UPDATED`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`SERVICE_STATUS`、`ERROR`。
+宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`SETTINGS_UPDATED`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`CODE_INTELLIGENCE_STATUS`、`SERVICE_STATUS`、`ERROR`。
 
 共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。

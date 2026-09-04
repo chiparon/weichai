@@ -1,5 +1,6 @@
 export * from './adaptation';
 export * from './backfill';
+export * from './code-intelligence';
 export * from './indexing';
 export * from './module';
 export * from './module-migration';

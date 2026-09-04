@@ -8,6 +8,7 @@ import type {
   ModuleExplorerPresentation,
   RepositoryStatus,
   ServiceStatus,
+  CodeIntelligencePresentation,
 } from '../ui-types';
 
 /** Snapshot sent by the trusted extension host when the panel is created. */
@@ -16,6 +17,8 @@ export interface PanelInitPayload {
   workspaceRoot: string;
   settings: PanelSettingsPresentation;
   repositoryStatuses: RepositoryStatus[];
+  /** Path-free status for the shared versioned structural/semantic index. */
+  codeIntelligence: CodeIntelligencePresentation;
   serviceStatus: ServiceStatus;
   moduleExplorer: ModuleExplorerPresentation;
   searchProvider: 'SeekDB';
@@ -34,6 +37,7 @@ export type HostToWebviewMessage =
   | { type: 'ADAPT_RESULT'; result: AdaptationResult }
   | { type: 'APPLY_RESULT'; result: ApplyResult }
   | { type: 'REPOSITORY_STATUS'; statuses: RepositoryStatus[] }
+  | { type: 'CODE_INTELLIGENCE_STATUS'; presentation: CodeIntelligencePresentation }
   | { type: 'SERVICE_STATUS'; status: ServiceStatus }
   | { type: 'MODULE_EXPLORER'; explorer: ModuleExplorerPresentation }
   | { type: 'TARGET_SELECTED'; target: ModuleTarget }
@@ -57,6 +61,12 @@ export type WebviewToHostMessage =
   | { type: 'CHECK_REPOSITORIES' }
   | { type: 'REFRESH_MODULE_EXPLORER' }
   | { type: 'SAVE_SETTINGS'; settings: PanelSettingsPresentation }
+  /**
+   * Opaque IDs only. The extension host verifies that the exact revision
+   * already belongs to the registered repository before using it read-only.
+   */
+  | { type: 'SELECT_CODE_INTELLIGENCE_REVISION'; repositoryId: string; analysisRevision: string }
+  | { type: 'SELECT_CODE_INTELLIGENCE_PROJECT'; repositoryId: string; analysisRevision: string; projectId: string }
   | { type: 'SELECT_WORKSPACE_TARGET'; targetId: string }
   | { type: 'COPY_TARGET_PATH' }
   | { type: 'REVEAL_TARGET_IN_EXPLORER' }
@@ -68,6 +78,7 @@ const hostMessageTypes = new Set<string>([
   'ADAPT_RESULT',
   'APPLY_RESULT',
   'REPOSITORY_STATUS',
+  'CODE_INTELLIGENCE_STATUS',
   'SERVICE_STATUS',
   'MODULE_EXPLORER',
   'TARGET_SELECTED',
@@ -117,6 +128,19 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         message.targetId.length > 0 &&
         message.targetId.length <= 512
       );
+    case 'SELECT_CODE_INTELLIGENCE_REVISION':
+      return (
+        hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision']) &&
+        isOpaqueIdentifier(message.repositoryId) &&
+        isOpaqueIdentifier(message.analysisRevision)
+      );
+    case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      return (
+        hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision', 'projectId']) &&
+        isOpaqueIdentifier(message.repositoryId) &&
+        isOpaqueIdentifier(message.analysisRevision) &&
+        isOpaqueIdentifier(message.projectId)
+      );
     case 'START_ADAPT':
       return (
         hasOnlyKeys(message, ['type', 'decisionNotes']) &&
@@ -126,6 +150,11 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     default:
       return false;
   }
+}
+
+/** IDs are looked up by the host; this rejects control data, not local paths. */
+function isOpaqueIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 function isPanelSettings(value: unknown): value is PanelSettingsPresentation {

@@ -7,6 +7,7 @@ import type {
   RepositoryStaticAnalysis,
   StaticAnalysisFile,
   StaticSymbol,
+  StructuralIndex,
 } from '@forexplore/contracts';
 import { extractSymbols } from '@forexplore/code-indexer';
 import type {
@@ -44,6 +45,8 @@ export interface BuildModuleExplorerInput {
   workspaceName: string;
   currentTarget: ModuleTarget;
   historyRoots: string[];
+  /** Active structural indexes from the shared code-intelligence host. */
+  structuralIndexes?: ReadonlyMap<string, StructuralIndex>;
 }
 
 /**
@@ -55,12 +58,13 @@ export async function buildModuleExplorer(
   options: { includeHistory?: boolean } = {},
 ): Promise<ModuleExplorerBuildResult> {
   const workspaceRoot = path.resolve(input.workspaceRoot);
-  const target = await analyzeWorkspace(
+  const target = await analyzeWorkspaceWithPreferredIndex(
     workspaceRoot,
     input.workspaceName,
     'target',
     input.currentTarget,
     workspacePresentationId('target', workspaceRoot),
+    input.structuralIndexes?.get(workspaceIdentityKey(workspaceRoot)),
   );
   const workspaceRootKey = workspaceIdentityKey(workspaceRoot);
   const distinctHistoryRoots = distinctResolvedRoots(input.historyRoots)
@@ -71,12 +75,13 @@ export async function buildModuleExplorer(
       targets: new Map<string, ModuleTarget>(),
     }))
     : await Promise.all(
-      distinctHistoryRoots.map((root) => analyzeWorkspace(
+      distinctHistoryRoots.map((root) => analyzeWorkspaceWithPreferredIndex(
         root,
         path.basename(root),
         'history',
         undefined,
         workspacePresentationId('history', root),
+        input.structuralIndexes?.get(workspaceIdentityKey(root)),
       )),
     );
   return {
@@ -87,6 +92,42 @@ export async function buildModuleExplorer(
     },
     targets: target.targets,
   };
+}
+
+async function analyzeWorkspaceWithPreferredIndex(
+  root: string,
+  name: string,
+  mode: 'target' | 'history',
+  currentTarget: ModuleTarget | undefined,
+  presentationId: string,
+  structuralIndex: StructuralIndex | undefined,
+): Promise<{ presentation: ModuleWorkspacePresentation; targets: Map<string, ModuleTarget> }> {
+  if (!structuralIndex) return analyzeWorkspace(root, name, mode, currentTarget, presentationId);
+  try {
+    const summaryResult = await readModuleSummarySafely(root);
+    const transformed = workspacePresentationFromStructuralIndex({
+      index: structuralIndex,
+      currentTarget,
+      mode,
+      name,
+      rootLabel: path.basename(root),
+      presentationId,
+      summary: summaryResult.summary,
+    });
+    if (summaryResult.error) transformed.presentation.summary.error = summaryResult.error;
+    return transformed;
+  } catch (error) {
+    return {
+      presentation: emptyWorkspacePresentation({
+        id: presentationId,
+        mode,
+        name,
+        rootLabel: path.basename(root),
+        error: error instanceof Error ? error.message : String(error),
+      }),
+      targets: new Map(),
+    };
+  }
 }
 
 async function analyzeWorkspace(
@@ -281,6 +322,157 @@ interface WorkspaceTransformInput {
   presentationId?: string;
   rootLabel: string;
   summary?: ModuleSummary;
+}
+
+export interface StructuralWorkspaceTransformInput {
+  index: StructuralIndex;
+  currentTarget?: ModuleTarget;
+  mode: 'target' | 'history';
+  name: string;
+  presentationId?: string;
+  rootLabel: string;
+  summary?: ModuleSummary;
+}
+
+/**
+ * Converts only the path-free structural index records needed by the existing
+ * tree renderer. The renderer no longer has to rescan the repository when an
+ * active shared index is available; the legacy adapter is retained only for
+ * hosts that have not indexed the root yet.
+ */
+export function workspacePresentationFromStructuralIndex(
+  input: StructuralWorkspaceTransformInput,
+): { presentation: ModuleWorkspacePresentation; targets: Map<string, ModuleTarget> } {
+  return workspacePresentationFromAnalysis({
+    analysis: staticAnalysisFromStructuralIndex(input.index),
+    currentTarget: input.currentTarget,
+    mode: input.mode,
+    name: input.name,
+    presentationId: input.presentationId,
+    rootLabel: input.rootLabel,
+    summary: input.summary,
+  });
+}
+
+function staticAnalysisFromStructuralIndex(index: StructuralIndex): RepositoryStaticAnalysis {
+  const projects = new Map(index.projects.map((project) => [project.projectId, project]));
+  const files: StaticAnalysisFile[] = index.files.map((file) => {
+    const language = file.languageId === undefined ? undefined : legacyLanguage(file.languageId);
+    const project = file.projectId === undefined ? undefined : projects.get(file.projectId);
+    return {
+      path: file.relativePath,
+      sha256: file.sha256,
+      role: file.role,
+      ...(language === undefined ? {} : { language }),
+      ...(project ? { project: project.relativePath || project.displayName || project.projectId } : {}),
+    };
+  });
+  const symbols: StaticSymbol[] = index.symbols.flatMap((symbol) => {
+    const language = legacyLanguage(symbol.languageId);
+    if (!language) return [];
+    const project = symbol.projectId === undefined ? undefined : projects.get(symbol.projectId);
+    return [{
+      id: symbol.symbolKey,
+      name: symbol.name,
+      qualifiedName: symbol.qualifiedName,
+      kind: legacySymbolKind(symbol.kind),
+      language,
+      path: symbol.relativePath,
+      range: {
+        path: symbol.relativePath,
+        startLine: symbol.sourceRange.startLine,
+        startColumn: symbol.sourceRange.startColumn,
+        endLine: symbol.sourceRange.endLine,
+        endColumn: symbol.sourceRange.endColumn,
+      },
+      ...(symbol.signature === undefined ? {} : { signature: symbol.signature }),
+      ...(project ? { project: project.relativePath || project.displayName || project.projectId } : {}),
+    }];
+  });
+  return {
+    schemaVersion: '1.0',
+    snapshotId: index.analysisRevision,
+    contentHash: index.analysisHash,
+    analyzerVersion: 'forexplore-structural-index/v1',
+    createdAt: new Date().toISOString(),
+    repository: { revision: index.analysisRevision },
+    files,
+    symbols,
+    dependencies: index.dependencyEdges.map((edge) => ({
+      id: edge.dependencyEdgeId,
+      ...(edge.sourceSymbolKey ? { sourceSymbolId: edge.sourceSymbolKey } : {}),
+      ...(edge.targetSymbolKey ? { targetSymbolId: edge.targetSymbolKey } : {}),
+      sourcePath: edge.sourceRelativePath,
+      ...(edge.targetRelativePath ? { targetPath: edge.targetRelativePath } : {}),
+      kind: legacyDependencyKind(edge.kind),
+      internal: edge.internal,
+      resolution: edge.resolution,
+      evidence: legacyEvidence(edge.evidenceLevel),
+      evidenceRanges: edge.evidenceRanges.map((range) => ({
+        path: edge.sourceRelativePath,
+        startLine: range.startLine,
+        startColumn: range.startColumn,
+        endLine: range.endLine,
+        endColumn: range.endColumn,
+      })),
+      snapshotId: index.analysisRevision,
+      ...(edge.targetReference ? { targetReference: edge.targetReference } : {}),
+    })),
+    diagnostics: index.diagnostics.map((diagnostic) => ({
+      id: diagnostic.diagnosticId,
+      severity: diagnostic.severity === 'warning' ? 'warn' : diagnostic.severity,
+      message: diagnostic.message,
+      ...(diagnostic.relativePath === null ? {} : { path: diagnostic.relativePath }),
+      ...(diagnostic.sourceRange === null || diagnostic.relativePath === null ? {} : {
+        range: {
+          path: diagnostic.relativePath,
+          startLine: diagnostic.sourceRange.startLine,
+          startColumn: diagnostic.sourceRange.startColumn,
+          endLine: diagnostic.sourceRange.endLine,
+          endColumn: diagnostic.sourceRange.endColumn,
+        },
+      }),
+      ...(diagnostic.code ? { code: diagnostic.code } : {}),
+    })),
+  };
+}
+
+function legacyLanguage(languageId: string): StaticAnalysisFile['language'] | undefined {
+  const languages: Record<string, NonNullable<StaticAnalysisFile['language']>> = {
+    typescript: 'TypeScript',
+    javascript: 'TypeScript',
+    python: 'Python',
+    java: 'Java',
+    csharp: 'C#',
+    go: 'Go',
+    rust: 'Rust',
+  };
+  return languages[languageId];
+}
+
+function legacySymbolKind(kind: string): StaticSymbol['kind'] {
+  const kinds = new Set<StaticSymbol['kind']>([
+    'project', 'package', 'namespace', 'class', 'interface', 'record', 'struct',
+    'enum', 'method', 'constructor', 'function', 'field', 'property', 'unknown',
+  ]);
+  return kinds.has(kind as StaticSymbol['kind']) ? kind as StaticSymbol['kind'] : 'unknown';
+}
+
+function legacyDependencyKind(kind: string): NonNullable<RepositoryStaticAnalysis['dependencies'][number]['kind']> {
+  const kinds = new Set<NonNullable<RepositoryStaticAnalysis['dependencies'][number]['kind']>>([
+    'import', 'project-reference', 'inheritance', 'implementation', 'type-reference',
+    'invocation', 'member-access', 'test-reference', 'unknown',
+  ]);
+  return kinds.has(kind as NonNullable<RepositoryStaticAnalysis['dependencies'][number]['kind']>)
+    ? kind as NonNullable<RepositoryStaticAnalysis['dependencies'][number]['kind']>
+    : 'unknown';
+}
+
+function legacyEvidence(level: string): NonNullable<RepositoryStaticAnalysis['dependencies'][number]['evidence']> {
+  if (level === 'semantic') return 'semantic';
+  if (level === 'ambiguous') return 'ambiguous';
+  if (level === 'unresolved') return 'unresolved';
+  return 'syntactic';
 }
 
 /** Pure transform kept exported for deterministic tree/status tests. */

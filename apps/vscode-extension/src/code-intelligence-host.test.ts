@@ -174,6 +174,9 @@ function createRuntime(options: { languageId?: 'typescript' | 'java' | 'csharp' 
         },
       };
     },
+    async listProjects() {
+      return { projects: [] };
+    },
   };
   return {
     store,

@@ -155,6 +155,7 @@ export interface ModulePlanHttpRequest {
 export interface SemanticModulePlanHttpRequest {
   repositoryId: string;
   analysisRevision: string;
+  projectId?: string;
   objective: string;
   immutableConstraints?: string[];
 }
@@ -201,13 +202,17 @@ function isModulePlanHttpRequest(value: unknown): value is ModulePlanHttpRequest
 function isSemanticModulePlanHttpRequest(value: unknown): value is SemanticModulePlanHttpRequest {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
-  const allowedKeys = new Set(["repositoryId", "analysisRevision", "objective", "immutableConstraints"]);
+  const allowedKeys = new Set(["repositoryId", "analysisRevision", "projectId", "objective", "immutableConstraints"]);
   if (Object.keys(body).some((key) => !allowedKeys.has(key))) return false;
   if (
     typeof body.repositoryId !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.repositoryId) ||
     typeof body.analysisRevision !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.analysisRevision) ||
+    (body.projectId !== undefined && (
+      typeof body.projectId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.projectId)
+    )) ||
     typeof body.objective !== "string" ||
     !body.objective.trim() ||
     body.objective.length > maxPlanningObjectiveChars
@@ -331,7 +336,7 @@ export function createHttpServer(options: HttpServerOptions): Server {
           json(
             response,
             400,
-            { error: "Invalid semantic module planning payload. Submit only repositoryId, analysisRevision, objective, and immutableConstraints." },
+            { error: "Invalid semantic module planning payload. Submit only repositoryId, analysisRevision, projectId, objective, and immutableConstraints." },
             options.corsOrigin,
           );
           return;
@@ -340,6 +345,7 @@ export function createHttpServer(options: HttpServerOptions): Server {
           schemaVersion: moduleMigrationSchemaVersion,
           repositoryId: body.repositoryId,
           analysisRevision: body.analysisRevision,
+          ...(body.projectId === undefined ? {} : { projectId: body.projectId }),
           objective: body.objective,
           ...(body.immutableConstraints === undefined ? {} : { immutableConstraints: body.immutableConstraints }),
         };

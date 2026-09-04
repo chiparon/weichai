@@ -192,6 +192,15 @@ export default function App() {
     bus.post({ type: 'SELECT_CODE_INTELLIGENCE_REVISION', repositoryId, analysisRevision });
   }
 
+  function handleSelectCodeIntelligenceProject(
+    repositoryId: string,
+    analysisRevision: string,
+    projectId: string,
+  ): void {
+    setError(null);
+    bus.post({ type: 'SELECT_CODE_INTELLIGENCE_PROJECT', repositoryId, analysisRevision, projectId });
+  }
+
   function handleSelectWorkspaceTarget(targetId: string): void {
     if (targetId === state.target?.id) return;
     setError(null);
@@ -280,6 +289,7 @@ export default function App() {
             saving={settingsSaving}
             onCheckRepositories={handleCheckRepositories}
             onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
+            onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}
             onSave={handleSaveSettings}
             onCancel={() => setSettingsOpen(false)}
           />

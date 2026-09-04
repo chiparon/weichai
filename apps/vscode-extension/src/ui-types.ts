@@ -46,6 +46,14 @@ export interface CodeIntelligenceLanguagePresentation {
   fileCount: number;
 }
 
+export interface CodeIntelligenceProjectPresentation {
+  projectId: string;
+  displayName: string;
+  kind: string;
+  relativePath: string;
+  languageIds: string[];
+}
+
 /**
  * A revision that remains available through the read-only SemanticQueryPort.
  * It intentionally contains metadata only: no local paths, database details,
@@ -73,6 +81,8 @@ export interface CodeIntelligenceRepositoryPresentation {
   /** All revisions which the host verified are safe for read-only queries. */
   revisions: CodeIntelligenceRevisionPresentation[];
   languages: CodeIntelligenceLanguagePresentation[];
+  projects: CodeIntelligenceProjectPresentation[];
+  selectedProjectId: string | null;
   summary: CodeIntelligenceSummaryPresentation;
 }
 

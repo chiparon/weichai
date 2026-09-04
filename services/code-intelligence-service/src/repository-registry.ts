@@ -132,6 +132,11 @@ export class RepositoryRegistry {
     return this.store.listRepositories();
   }
 
+  async unregister(repositoryId: RepositoryId): Promise<void> {
+    if (!await this.store.getRepository(repositoryId)) return;
+    await this.store.removeRepository(repositoryId);
+  }
+
   async getLocalPath(repositoryId: RepositoryId): Promise<string> {
     const repository = await this.store.getRepository(repositoryId);
     if (!repository) throw new Error(`Repository ${repositoryId} is not registered.`);

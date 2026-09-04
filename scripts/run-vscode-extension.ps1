@@ -62,6 +62,10 @@ function Start-DevWindow {
 }
 
 Start-DevWindow -Command 'npm run dev:retrieval'
+# The adaptation planner is revision-scoped in the rebuilt flow. It receives
+# only this loopback SemanticQueryPort and never gets repository paths.
+$env:ADAPTATION_SEMANTIC_INDEX_ENABLED = 'true'
+$env:SEMANTIC_QUERY_PORT_URL = 'http://127.0.0.1:8790'
 Start-DevWindow -Command 'npm run dev:adaptation'
 
 & code ('--extensionDevelopmentPath={0}' -f $extensionRoot)

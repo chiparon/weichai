@@ -12,6 +12,7 @@ describe('SettingsPanel', () => {
         saving={false}
         onCheckRepositories={vi.fn()}
         onSelectCodeIntelligenceRevision={vi.fn()}
+        onSelectCodeIntelligenceProject={vi.fn()}
         onSave={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -34,6 +35,7 @@ describe('SettingsPanel', () => {
         saving={false}
         onCheckRepositories={vi.fn()}
         onSelectCodeIntelligenceRevision={vi.fn()}
+        onSelectCodeIntelligenceProject={vi.fn()}
         onSave={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -78,6 +80,8 @@ describe('SettingsPanel', () => {
               },
             ],
             languages: [{ languageId: 'typescript', capabilityLevel: 'structural', fileCount: 4 }],
+            projects: [],
+            selectedProjectId: null,
             summary: {
               status: 'stale',
               analysisRevision: 'revision-history',
@@ -89,6 +93,7 @@ describe('SettingsPanel', () => {
         saving={false}
         onCheckRepositories={vi.fn()}
         onSelectCodeIntelligenceRevision={vi.fn()}
+        onSelectCodeIntelligenceProject={vi.fn()}
         onSave={vi.fn()}
         onCancel={vi.fn()}
       />,

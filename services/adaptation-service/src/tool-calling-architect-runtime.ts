@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   isValidModuleId,
   moduleMigrationSchemaVersion,
+  type ProjectId,
   type FunctionalModuleKind,
   type ModuleSummaryLanguage,
   type RepositoryRevisionScope,
@@ -29,6 +30,7 @@ const MAX_SEMANTIC_SOURCE_EXCERPT_CHARS = 32_000;
  */
 export interface ToolCallingArchitectRequest extends RepositoryRevisionScope {
   schemaVersion: typeof moduleMigrationSchemaVersion;
+  projectId?: ProjectId;
   objective: string;
   immutableConstraints?: string[];
 }
@@ -218,6 +220,14 @@ export class ToolCallingArchitectRuntime {
     const overview = await this.#queryPort.getRepositoryOverview(scope, signal);
     const analysisHash = analysisHashFromOverview(overview, scope);
     const evidence = createEvidenceCatalog();
+    if (request.projectId !== undefined) {
+      const projects = await this.#queryPort.listProjects(scope, signal);
+      assertNestedEvidenceScope(projects, scope);
+      collectEvidenceFacts(projects, evidence);
+      if (!projects.projects.some((project) => project.value.projectId === request.projectId)) {
+        throw new Error("Tool-calling architect projectId is not present in the selected revision.");
+      }
+    }
     const messages = buildToolCallingArchitectMessages(request, scope, analysisHash);
     let toolCallCount = 0;
 
@@ -377,6 +387,12 @@ export function buildToolCallingArchitectMessages(
         "",
         "[PLANNING_OBJECTIVE]",
         request.objective,
+        ...(request.projectId === undefined ? [] : [
+          "",
+          "[SELECTED_PROJECT_ID]",
+          request.projectId,
+          "Do not use files outside this project unless a tool result proves that the project boundary requires them.",
+        ]),
         "",
         "[IMMUTABLE_CONSTRAINTS]",
         JSON.stringify(request.immutableConstraints ?? [], null, 2),
@@ -512,7 +528,7 @@ function validateToolCallingArchitectRequest(value: unknown): asserts value is T
   if (!isRecord(value)) throw new Error("Tool-calling architect request must be an object.");
   assertOnlyKeys(
     value,
-    ["schemaVersion", "repositoryId", "analysisRevision", "objective", "immutableConstraints"],
+    ["schemaVersion", "repositoryId", "analysisRevision", "projectId", "objective", "immutableConstraints"],
     "Tool-calling architect request",
   );
   if (value.schemaVersion !== moduleMigrationSchemaVersion) {
@@ -520,6 +536,9 @@ function validateToolCallingArchitectRequest(value: unknown): asserts value is T
   }
   if (!isStableId(value.repositoryId) || !isStableId(value.analysisRevision)) {
     throw new Error("Tool-calling architect requires stable repositoryId and analysisRevision values.");
+  }
+  if (value.projectId !== undefined && !isStableId(value.projectId)) {
+    throw new Error("Tool-calling architect projectId must be a stable identifier.");
   }
   assertNonEmptyString(value.objective, "Tool-calling architect objective");
   if (value.immutableConstraints !== undefined) {

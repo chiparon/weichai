@@ -66,6 +66,7 @@ export type WebviewToHostMessage =
    * already belongs to the registered repository before using it read-only.
    */
   | { type: 'SELECT_CODE_INTELLIGENCE_REVISION'; repositoryId: string; analysisRevision: string }
+  | { type: 'SELECT_CODE_INTELLIGENCE_PROJECT'; repositoryId: string; analysisRevision: string; projectId: string }
   | { type: 'SELECT_WORKSPACE_TARGET'; targetId: string }
   | { type: 'COPY_TARGET_PATH' }
   | { type: 'REVEAL_TARGET_IN_EXPLORER' }
@@ -132,6 +133,13 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision']) &&
         isOpaqueIdentifier(message.repositoryId) &&
         isOpaqueIdentifier(message.analysisRevision)
+      );
+    case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      return (
+        hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision', 'projectId']) &&
+        isOpaqueIdentifier(message.repositoryId) &&
+        isOpaqueIdentifier(message.analysisRevision) &&
+        isOpaqueIdentifier(message.projectId)
       );
     case 'START_ADAPT':
       return (

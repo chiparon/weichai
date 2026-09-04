@@ -14,6 +14,8 @@ interface SettingsPanelProps extends PanelSettingsPresentation {
   onCheckRepositories(): void;
   /** Selects only a host-verified opaque repository/revision pair for read-only display. */
   onSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void;
+  /** Selects only a project inside the host-verified revision. */
+  onSelectCodeIntelligenceProject(repositoryId: string, analysisRevision: string, projectId: string): void;
   onSave(settings: PanelSettingsPresentation): void;
   onCancel(): void;
 }
@@ -26,6 +28,7 @@ export function SettingsPanel({
   saving,
   onCheckRepositories,
   onSelectCodeIntelligenceRevision,
+  onSelectCodeIntelligenceProject,
   onSave,
   onCancel,
 }: SettingsPanelProps) {
@@ -128,6 +131,31 @@ export function SettingsPanel({
                   <span>{repository.languages.length
                     ? repository.languages.map((language) => `${language.languageId} · ${language.capabilityLevel}`).join('，')
                     : '尚无语言能力数据'}</span>
+                  {repository.projects.length ? (
+                    <label className="code-intelligence-revision-picker">
+                      <span>目标项目</span>
+                      <select
+                        aria-label={`${repository.displayName} 的目标项目`}
+                        value={repository.selectedProjectId ?? ''}
+                        onChange={(event) => {
+                          if (event.target.value && repository.selectedRevision) {
+                            onSelectCodeIntelligenceProject(
+                              repository.repositoryId,
+                              repository.selectedRevision,
+                              event.target.value,
+                            );
+                          }
+                        }}
+                      >
+                        <option value="">请选择项目</option>
+                        {repository.projects.map((project) => (
+                          <option key={project.projectId} value={project.projectId}>
+                            {project.displayName} · {project.kind}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <span className={`summary-status is-${repository.summary.status}`}>
                     {summaryLabel(repository.summary.status)}
                   </span>

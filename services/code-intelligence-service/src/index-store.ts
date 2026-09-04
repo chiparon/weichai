@@ -27,6 +27,8 @@ export interface IndexStore {
   putRepository(repository: RepositoryRecord): Promise<void>;
   getRepository(repositoryId: RepositoryId): Promise<RepositoryRecord | null>;
   listRepositories(): Promise<RepositoryRecord[]>;
+  /** Removes a repository and all of its revision-scoped records. */
+  removeRepository(repositoryId: RepositoryId): Promise<void>;
 
   putRevision(revision: AnalysisRevisionRecord): Promise<void>;
   getRevision(scope: RepositoryRevisionScope): Promise<AnalysisRevisionRecord | null>;
@@ -429,6 +431,17 @@ export class InMemoryIndexStore implements IndexStore {
     return [...this.#repositories.values()]
       .map(clone)
       .sort((left, right) => left.repositoryId.localeCompare(right.repositoryId));
+  }
+
+  async removeRepository(repositoryId: RepositoryId): Promise<void> {
+    this.#repositories.delete(repositoryId);
+    const prefix = `${repositoryId}\u0000`;
+    for (const key of [...this.#revisions.keys()]) {
+      if (key.startsWith(prefix)) this.#revisions.delete(key);
+    }
+    for (const key of [...this.#contents.keys()]) {
+      if (key.startsWith(prefix)) this.#contents.delete(key);
+    }
   }
 
   async putRevision(revision: AnalysisRevisionRecord): Promise<void> {

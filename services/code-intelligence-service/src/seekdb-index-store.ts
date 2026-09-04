@@ -636,6 +636,25 @@ export class SeekDbIndexStore implements IndexStore {
     return rows.map(toRepository);
   }
 
+  async removeRepository(repositoryId: RepositoryId): Promise<void> {
+    await withTransaction(this.pool, async (connection) => {
+      const tables = [
+        this.#tables.searchDocuments,
+        this.#tables.moduleArtifacts,
+        this.#tables.dependencyEdges,
+        this.#tables.symbols,
+        this.#tables.files,
+        this.#tables.projects,
+        this.#tables.diagnostics,
+        this.#tables.analysisRevisions,
+        this.#tables.repositories,
+      ];
+      for (const table of tables) {
+        await connection.query(`DELETE FROM ${table} WHERE repository_id = ?`, [repositoryId]);
+      }
+    });
+  }
+
   async putRevision(revision: AnalysisRevisionRecord): Promise<void> {
     await withTransaction(this.pool, async (connection) => {
       const [repositories] = await connection.query<RepositoryRow[]>(`

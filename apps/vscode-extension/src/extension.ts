@@ -6,8 +6,10 @@ import type {
   FilePatch,
   ModuleTarget,
   SearchCandidate,
+  StructuralIndex,
   ValidationRecord,
 } from '@forexplore/contracts';
+import { requestSemanticModuleMigrationProposal } from './module-plan-client';
 import {
   applyHunksStrict,
   canApplyAdaptation,
@@ -131,6 +133,31 @@ export function activate(context: vscode.ExtensionContext): void {
           ? `[forexplore] Java/C# compiler-probe evidence bound to ${binding.repositoryId}/${binding.analysisRevision}.`
           : '[forexplore] Java/C# compiler-probe evidence was not bound to the active structural revision.',
       );
+      publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await codeIntelligence.presentation() });
+    },
+    semanticPlan: async ({ workspaceFolder, objective, immutableConstraints }) => {
+      const scope = await codeIntelligence.activeScopeForPath(workspaceFolder.uri.fsPath);
+      const projectId = await codeIntelligence.selectedProjectForPath(workspaceFolder.uri.fsPath);
+      await codeIntelligence.startSemanticQueryServer({
+        port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
+        bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
+      });
+      const settings = loadSettings();
+      return requestSemanticModuleMigrationProposal(settings.adaptationApiUrl, {
+        ...scope,
+        ...(projectId ? { projectId } : {}),
+        objective,
+        ...(immutableConstraints.length ? { immutableConstraints } : {}),
+      });
+    },
+    onSemanticPlanApproved: async ({ workspaceFolder, result }) => {
+      const scope = await codeIntelligence.activeScopeForPath(workspaceFolder.uri.fsPath);
+      await codeIntelligence.publishModuleSummary({
+        ...scope,
+        analysisHash: result.evidence.analysisHash,
+        planHash: result.evidence.planHash,
+        payload: result.proposal,
+      });
       publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await codeIntelligence.presentation() });
     },
   });
@@ -293,6 +320,10 @@ async function startTranslation(
     services.refresh(),
     synchronizeCodeIntelligence(codeIntelligence),
   ]);
+  const structuralIndexes = await structuralIndexesForRoots(codeIntelligence, [
+    workspaceFolder.uri.fsPath,
+    ...settings.repositoryPaths,
+  ]);
   const [statuses, moduleExplorer] = await Promise.all([
     refreshRepositoryStatus(services, health),
     buildModuleExplorer({
@@ -300,6 +331,7 @@ async function startTranslation(
       workspaceName: workspaceFolder.name,
       currentTarget: target,
       historyRoots: settings.repositoryPaths,
+      structuralIndexes,
     }, { includeHistory: false }),
   ]);
   moduleExplorerTargets = moduleExplorer.targets;
@@ -378,6 +410,9 @@ async function handlePanelMessage(
     case 'SELECT_CODE_INTELLIGENCE_REVISION':
       await selectCodeIntelligenceRevision(host.codeIntelligence, message);
       return;
+    case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      await selectCodeIntelligenceProject(host.codeIntelligence, message);
+      return;
     case 'SELECT_WORKSPACE_TARGET':
       await selectWorkspaceTarget(message.targetId);
       return;
@@ -413,6 +448,18 @@ async function selectCodeIntelligenceRevision(
   }
 }
 
+async function selectCodeIntelligenceProject(
+  codeIntelligence: CodeIntelligenceHost,
+  selection: Extract<WebviewToHostMessage, { type: 'SELECT_CODE_INTELLIGENCE_PROJECT' }>,
+): Promise<void> {
+  try {
+    const presentation = await codeIntelligence.selectProjectForDisplay(selection);
+    publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
+  } catch (error) {
+    publishError(errorMessage(error, '切换目标项目失败'));
+  }
+}
+
 async function updatePanelSettings(
   host: ExtensionHost,
   settings: Extract<WebviewToHostMessage, { type: 'SAVE_SETTINGS' }>['settings'],
@@ -428,15 +475,20 @@ async function updatePanelSettings(
   publish({ type: 'SETTINGS_UPDATED', settings: saved });
   try {
     const run = requireActiveRun();
-    const [statuses, explorer, codeIntelligence] = await Promise.all([
+    const codeIntelligence = await synchronizeCodeIntelligence(host.codeIntelligence);
+    const structuralIndexes = await structuralIndexesForRoots(host.codeIntelligence, [
+      run.workspaceFolder.uri.fsPath,
+      ...saved.repositoryPaths,
+    ]);
+    const [statuses, explorer] = await Promise.all([
       refreshRepositoryStatus(host.services, host.health),
       buildModuleExplorer({
         workspaceRoot: run.workspaceFolder.uri.fsPath,
         workspaceName: run.workspaceFolder.name,
         currentTarget: run.target,
         historyRoots: saved.repositoryPaths,
+        structuralIndexes,
       }, { includeHistory: false }),
-      synchronizeCodeIntelligence(host.codeIntelligence),
     ]);
     moduleExplorerTargets = explorer.targets;
     publish({ type: 'REPOSITORY_STATUS', statuses });
@@ -450,15 +502,19 @@ async function updatePanelSettings(
 async function refreshModuleExplorer(codeIntelligence: CodeIntelligenceHost): Promise<void> {
   try {
     const run = requireActiveRun();
-    const [result, presentation] = await Promise.all([
-      buildModuleExplorer({
-        workspaceRoot: run.workspaceFolder.uri.fsPath,
-        workspaceName: run.workspaceFolder.name,
-        currentTarget: run.target,
-        historyRoots: loadSettings().repositoryPaths,
-      }),
-      synchronizeCodeIntelligence(codeIntelligence),
+    const settings = loadSettings();
+    const presentation = await synchronizeCodeIntelligence(codeIntelligence);
+    const structuralIndexes = await structuralIndexesForRoots(codeIntelligence, [
+      run.workspaceFolder.uri.fsPath,
+      ...settings.repositoryPaths,
     ]);
+    const result = await buildModuleExplorer({
+      workspaceRoot: run.workspaceFolder.uri.fsPath,
+      workspaceName: run.workspaceFolder.name,
+      currentTarget: run.target,
+      historyRoots: settings.repositoryPaths,
+      structuralIndexes,
+    });
     moduleExplorerTargets = result.targets;
     publish({ type: 'MODULE_EXPLORER', explorer: result.presentation });
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
@@ -847,6 +903,24 @@ async function synchronizeCodeIntelligence(
   return result.presentation;
 }
 
+async function structuralIndexesForRoots(
+  host: CodeIntelligenceHost,
+  roots: readonly string[],
+): Promise<Map<string, StructuralIndex>> {
+  const entries = await Promise.all(roots.map(async (root) => ({
+    key: workspaceRootKey(root),
+    index: await host.structuralIndexForPath(root),
+  })));
+  return new Map(entries
+    .filter((entry): entry is { key: string; index: StructuralIndex } => entry.index !== null)
+    .map((entry) => [entry.key, entry.index]));
+}
+
+function workspaceRootKey(root: string): string {
+  const normalized = path.resolve(root).replaceAll('\\', '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
 function publish(message: HostToWebviewMessage): void {
   TranslationPanel.current?.post(message);
 }
@@ -881,4 +955,10 @@ function sha256(bytes: Uint8Array): string {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? `${fallback}：${error.message}` : fallback;
+}
+
+function positiveEnvironmentPort(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) return fallback;
+  const port = Number(value);
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
 }

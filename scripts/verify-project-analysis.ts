@@ -33,7 +33,10 @@ async function main() {
     user: process.env.CODE_INTELLIGENCE_SEEKDB_USER ?? 'root',
     password: process.env.CODE_INTELLIGENCE_SEEKDB_PASSWORD ?? '', database,
   });
-  const runtime = await createCodeIntelligenceRuntime({ store });
+  const runtime = await createCodeIntelligenceRuntime({ store }).catch(async (error) => {
+    await store.close();
+    throw error;
+  });
   // Refuse to reconcile a real user's registry with the acceptance fixture paths.
   assert.equal((await runtime.registry.list()).length, 0, 'Acceptance database must contain no registered repositories.');
   const root = await mkdtemp(path.join(tmpdir(), 'forexplore-live-analysis-'));

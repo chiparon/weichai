@@ -196,7 +196,7 @@ export class ProjectAnalysisCoordinator implements ProjectAnalysisPort {
       repositoryId: record.repositoryId, analysisRevision: record.analysisRevision,
       moduleArtifactId: identity(record, kind), kind: kind === 'summary' ? 'module-summary' : 'other',
       status: 'current', analysisHash: index.analysisHash, planHash: record.planHash,
-      contentHash: projectPlanHash(record), createdAt: now, updatedAt: now, payload: structuredClone(record),
+      contentHash: createHash('sha256').update(canonical(record)).digest('hex'), createdAt: now, updatedAt: now, payload: structuredClone(record),
     };
   }
 }

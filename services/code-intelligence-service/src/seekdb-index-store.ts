@@ -488,6 +488,8 @@ export class SeekDbIndexStore implements IndexStore {
         PRIMARY KEY (repository_id, analysis_revision, project_id)
       ) ORGANIZATION = HEAP
     `);
+    // Full utf8mb4 paths exceed SeekDB's key limit. The prefix accelerates
+    // lookup; validateStructuralIndex enforces full-path uniqueness before writes.
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS ${this.#tables.files} (
         repository_id VARCHAR(256) NOT NULL,
@@ -502,7 +504,7 @@ export class SeekDbIndexStore implements IndexStore {
         project_id VARCHAR(256) NULL,
         source_text LONGTEXT NULL,
         PRIMARY KEY (repository_id, analysis_revision, file_id),
-        UNIQUE KEY uq_files_path (repository_id, analysis_revision, relative_path)
+        INDEX idx_files_path (repository_id, analysis_revision, relative_path(512))
       ) ORGANIZATION = HEAP
     `);
     await this.pool.query(`

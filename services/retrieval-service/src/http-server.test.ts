@@ -1,8 +1,8 @@
 import type { AddressInfo } from 'node:net';
-import type { SearchCandidate, SearchRequest } from '@forexplore/contracts';
+import type { ModuleSearchRequest, SearchCandidate, SearchRequest } from '@forexplore/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHttpServer } from './http-server.js';
-import type { SearchEngine, SearchStore } from './types.js';
+import type { ModuleSearchEngine, SearchEngine, SearchStore } from './types.js';
 
 const servers: ReturnType<typeof createHttpServer>[] = [];
 
@@ -34,9 +34,11 @@ async function listen(
   engine: SearchEngine,
   searchStore: SearchStore,
   allowedRepositories: readonly string[] = ['demo/cache'],
+  candidateModuleEngine?: ModuleSearchEngine,
 ): Promise<string> {
   const server = createHttpServer({
     engine,
+    candidateModuleEngine,
     store: searchStore,
     corsOrigin: 'http://localhost:4173',
     allowedRepositories,
@@ -240,5 +242,64 @@ describe('retrieval HTTP API', () => {
 
     expect(response.status).toBe(503);
     expect(engine.search).not.toHaveBeenCalled();
+  });
+
+  it('serves module search and authorizes its repository scope', async () => {
+    const engine: SearchEngine = { search: vi.fn(async () => []) };
+    const moduleEngine: ModuleSearchEngine = {
+      searchModules: vi.fn(async () => []),
+      searchModuleSymbols: vi.fn(async () => []),
+    };
+    const url = await listen(engine, store(), ['fixture/upload'], moduleEngine);
+    const moduleRequest: ModuleSearchRequest = {
+      target: {
+        id: 'target-module', name: 'Multipart', language: 'Java', kind: 'feature',
+        purpose: 'Parse multipart uploads.', coreApis: ['parseRequest()'], dependencies: [],
+      },
+      requirement: 'preserve field order',
+      topK: 4,
+    };
+
+    const response = await fetch(`${url}/v1/module-search`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(moduleRequest),
+    });
+
+    expect(response.status).toBe(200);
+    expect(moduleEngine.searchModules).toHaveBeenCalledWith({
+      ...moduleRequest,
+      repositoryScopes: ['fixture/upload'],
+    });
+  });
+
+  it('serves module-scoped symbol retrieval and rejects malformed targets', async () => {
+    const engine: SearchEngine = { search: vi.fn(async () => []) };
+    const moduleEngine: ModuleSearchEngine = {
+      searchModules: vi.fn(async () => []),
+      searchModuleSymbols: vi.fn(async () => []),
+    };
+    const url = await listen(engine, store(), ['fixture/upload'], moduleEngine);
+    const valid = {
+      moduleId: 'fixture/upload:multipart',
+      target: request.target,
+      requirement: 'parse multipart body',
+      topK: 5,
+    };
+
+    const response = await fetch(`${url}/v1/module-symbols`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(valid),
+    });
+    const invalid = await fetch(`${url}/v1/module-symbols`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...valid, target: { name: 'missing contract' } }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(invalid.status).toBe(400);
+    expect(moduleEngine.searchModuleSymbols).toHaveBeenCalledWith({
+      ...valid,
+      repositoryScopes: ['fixture/upload'],
+    });
   });
 });

@@ -6,7 +6,7 @@ import {
   type ModuleRefinement, type ProjectAnalysisScope, type ProjectModule, type ProjectModuleProposal,
   type StructuralIndex, type SymbolRecord,
 } from '@forexplore/contracts';
-import { parseModuleHierarchyDecision } from './module-hierarchy-planner.js';
+import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision } from './module-hierarchy-planner.js';
 import type { IndexStore } from './index-store.js';
 
 export const adaptiveModuleAlgorithm = 'adaptive-module-tree/v1' as const;
@@ -208,10 +208,10 @@ export async function buildAdaptiveModuleProposal(
         source = 'model'; modelDecisionCount++;
         if (!work.node) projectSummary = decision.description;
         if (decision.action === 'stop' && decision.stopReason === 'insufficient-evidence') deferredReason = decision.reason;
-      } catch {
+      } catch (error) {
         options.signal?.throwIfAborted();
         decision = undefined;
-        deferredReason ??= 'Model decision was unavailable or invalid; further functional refinement remains pending.';
+        deferredReason ??= error instanceof ModuleHierarchyDecisionError ? error.message : 'Model decision was unavailable or invalid; further functional refinement remains pending.';
         risks.add(deferredReason);
       }
     } else if (options.planner && (modelCalls >= maxModelCalls || remainingMs <= 0)) {

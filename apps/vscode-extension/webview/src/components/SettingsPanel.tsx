@@ -8,6 +8,9 @@ import type {
 } from '../../../src/ui-types';
 
 interface SettingsPanelProps extends PanelSettingsPresentation {
+  modelKeyStatus?: { configured: boolean; message?: string };
+  onConfigureModelKey?(): void;
+  onClearModelKey?(): void;
   repositoryStatuses: RepositoryStatus[];
   codeIntelligence?: CodeIntelligencePresentation | null;
   saving: boolean;
@@ -21,6 +24,9 @@ interface SettingsPanelProps extends PanelSettingsPresentation {
 }
 
 export function SettingsPanel({
+  modelKeyStatus,
+  onConfigureModelKey,
+  onClearModelKey,
   topK,
   repositoryPaths,
   repositoryStatuses,
@@ -64,9 +70,21 @@ export function SettingsPanel({
         <span className="settings-glyph"><Settings2 size={18} /></span>
         <div>
           <h1>设置</h1>
-          <p>配置候选方案数量和用于模块检索的参考工程。</p>
+          <p>配置 AI 服务、候选方案数量和用于模块检索的参考工程。</p>
         </div>
       </div>
+
+      <section className="card settings-section" aria-label="DeepSeek API Key">
+        <div className="card-heading"><span>DeepSeek API Key</span><strong>{modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</strong></div>
+        <p className="settings-intro">通过 VS Code 密码输入框录入并加密保存，立即用于本地 AI 后端。插件未保存时使用后端 .env 中的配置。</p>
+        <div className="settings-actions">
+          <button type="button" className="secondary-action" onClick={onConfigureModelKey} disabled={!onConfigureModelKey}>
+            {modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}
+          </button>
+          <button type="button" className="text-button" onClick={onClearModelKey} disabled={!modelKeyStatus?.configured || !onClearModelKey}>清除保存的 Key</button>
+        </div>
+        {modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
+      </section>
 
       <section className="card settings-section">
         <div className="card-heading"><span>返回方案数</span><strong>Top {draftTopK}</strong></div>

@@ -46,6 +46,7 @@ export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: stri
 
 /** Messages the extension host posts into the Webview. */
 export type HostToWebviewMessage =
+  | { type: 'MODEL_KEY_STATUS'; configured: boolean; message?: string }
   | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean } }
   | { type: 'WORKSPACE_TRANSLATION_ERROR'; requestId: string; message: string }
   | { type: 'INIT'; payload: PanelInitPayload }
@@ -70,6 +71,8 @@ export type HostToWebviewMessage =
  * candidate objects, validation evidence, or patches to be written.
  */
 export type WebviewToHostMessage =
+  | { type: 'CONFIGURE_MODEL_KEY' }
+  | { type: 'CLEAR_MODEL_KEY' }
   | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string }
   | { type: 'READY' }
   | { type: 'START_TASK_SEARCH'; requestId: string; targetScope: TaskSearchTargetScope; request: TaskSearchIntent }
@@ -101,6 +104,7 @@ export type WebviewToHostMessage =
   | { type: 'OPEN_TARGET' };
 
 const hostMessageTypes = new Set<string>([
+  'MODEL_KEY_STATUS',
   'WORKSPACE_TRANSLATION_RESULT',
   'WORKSPACE_TRANSLATION_ERROR',
   'INIT',
@@ -153,6 +157,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'ADD_TARGET_WORKSPACE':
       return hasOnlyKeys(message, ['type', 'mode']) && typeof message.mode === 'string' && ['browse', 'input', 'workspace'].includes(message.mode);
     case 'READY':
+    case 'CONFIGURE_MODEL_KEY':
+    case 'CLEAR_MODEL_KEY':
     case 'APPLY_CURRENT_RUN':
     case 'CHECK_REPOSITORIES':
     case 'REFRESH_MODULE_EXPLORER':

@@ -65,7 +65,6 @@ export class TranslationPanel {
       if (!isWebviewToHostMessage(message)) return;
       if (message.type === 'READY') {
         instance.post({ type: 'INIT', payload: instance.payload });
-        return;
       }
       instance.handlers.onMessage(message);
     });

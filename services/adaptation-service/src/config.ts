@@ -45,10 +45,7 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServiceConfig {
   const apiKey = env.DEEPSEEK_API_KEY?.trim() ?? "";
-  if (!apiKey) {
-    throw new Error("DEEPSEEK_API_KEY is required to start the adaptation service.");
-  }
-
+  // A local IDE can supply its encrypted credential on each model request.
   const skeletonProjectPath = resolveConfiguredPath(
     env.ADAPTATION_SKELETON_PROJECT_PATH?.trim() ||
       env.ADAPTATION_SKELETON_PATH?.trim(),

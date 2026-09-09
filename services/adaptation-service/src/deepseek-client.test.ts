@@ -50,7 +50,7 @@ describe("DeepSeek chat-completions client", () => {
         [{ role: "user", content: "Translate this method." }],
         { apiKey: "test-key", request: request as unknown as typeof globalThis.fetch },
       ),
-    ).rejects.toThrow("DeepSeek API error 401: invalid key");
+    ).rejects.toThrow(/^DeepSeek API error 401$/);
   });
 
   it("serializes declared functions and returns provider tool calls without executing them", async () => {

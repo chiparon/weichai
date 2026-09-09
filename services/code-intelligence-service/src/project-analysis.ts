@@ -254,7 +254,8 @@ export class ProjectAnalysisCoordinator implements ProjectAnalysisPort {
           });
           await saving;
           if (!this.options.allowStructuralFallback && !proposal.hierarchy!.modelDecisionCount) {
-            throw new Error('Agent 未能完成有效的功能模块分析，请检查模型服务后重试。');
+            const reason = proposal.risks?.find(risk => risk.startsWith('Invalid module hierarchy decision:'));
+            throw new Error(reason ? `模块分析校验失败：${reason} 请重试模块分析。` : 'Agent 未能完成有效的功能模块分析，请检查模型服务后重试。');
           }
           result = { proposal, evidence: { ...scope, analysisHash: index.analysisHash, planHash: projectPlanHash(proposal),
             evidenceIds: [...new Set([...proposal.modules.flatMap((module) => module.evidenceIds),

@@ -54,6 +54,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [modelKeyStatus, setModelKeyStatus] = useState<{ configured: boolean; message?: string }>({ configured: false });
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef<WorkflowState['pending']>(null);
   const targetIdRef = useRef<string | null>(null);
@@ -130,6 +131,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           dispatch({ type: 'SET_TOP_K', value: message.settings.topK });
           setSettingsSaving(false);
           setSettingsOpen(false);
+          break;
+        case 'MODEL_KEY_STATUS':
+          setModelKeyStatus({ configured: message.configured, message: message.message });
           break;
         case 'ERROR': {
           setError(message.message);
@@ -335,6 +339,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         </div>
         {settingsOpen ? (
           <SettingsPanel
+            modelKeyStatus={modelKeyStatus}
+            onConfigureModelKey={() => bus.post({ type: 'CONFIGURE_MODEL_KEY' })}
+            onClearModelKey={() => bus.post({ type: 'CLEAR_MODEL_KEY' })}
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}

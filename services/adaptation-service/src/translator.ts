@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 /**
  * Translator helpers for target-contract code adaptation.
  *
@@ -128,7 +129,7 @@ export interface RepairTranslationRequest extends AnalyzeTranslationRequest {
 }
 
 export interface TranslatorModelOptions {
-  apiKey: string;
+  apiKey: ModelApiKey;
   request?: typeof globalThis.fetch;
 }
 

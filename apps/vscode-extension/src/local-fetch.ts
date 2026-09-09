@@ -11,11 +11,20 @@ import type { RequestInfo, RequestInit } from 'undici-types';
  * consult proxy variables, so local service calls stay on the loopback
  * interface regardless of the surrounding proxy configuration.
  */
-export function localFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+let modelCredential: ((url: URL) => Promise<string | undefined>) | undefined;
+
+export function setModelCredentialProvider(provider: typeof modelCredential): void {
+  modelCredential = provider;
+}
+
+export async function localFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
   const url =
     typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
   const method = init?.method ?? 'GET';
   const headers = new Headers(init?.headers);
+  headers.delete('x-recast-model-key');
+  const credential = await modelCredential?.(url);
+  if (credential) headers.set('x-recast-model-key', credential);
   const headerRecord: Record<string, string> = {};
   headers.forEach((value, key) => {
     headerRecord[key] = value;

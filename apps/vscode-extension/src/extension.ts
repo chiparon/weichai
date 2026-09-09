@@ -1,3 +1,5 @@
+import { createModelCredentialProvider, modelCredentialId, validateModelKey } from './model-credential';
+import { setModelCredentialProvider } from './local-fetch';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -90,6 +92,14 @@ let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
+  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl));
+  context.subscriptions.push({ dispose: () => setModelCredentialProvider(undefined) });
+  context.subscriptions.push(
+    context.secrets.onDidChange(() => { void publishModelKeyStatus(context); }),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('forexplore.adaptationApiUrl')) void publishModelKeyStatus(context);
+    }),
+  );
   const output = vscode.window.createOutputChannel('RECAST');
   const services = new ServiceManager(output);
   const health = new RepositoryHealthCheck();
@@ -272,6 +282,35 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 }
 
+async function publishModelKeyStatus(context: vscode.ExtensionContext, message?: string): Promise<void> {
+  let configured = false;
+  try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl))); }
+  catch { message ??= '当前后端地址不支持插件 API Key；仅支持本机地址。'; }
+  publish({ type: 'MODEL_KEY_STATUS', configured, ...(message ? { message } : {}) });
+}
+
+async function configureModelKey(context: vscode.ExtensionContext, clear: boolean): Promise<void> {
+  try {
+    const endpoint = loadSettings().adaptationApiUrl;
+    const id = modelCredentialId(endpoint);
+    if (clear) {
+      await context.secrets.delete(id);
+      await publishModelKeyStatus(context, '已清除插件保存的 Key；后端 .env 配置仍可使用。');
+      return;
+    }
+    const value = await vscode.window.showInputBox({
+      title: 'RECAST · DeepSeek API Key', password: true, ignoreFocusOut: true,
+      prompt: `保存到 VS Code 加密凭据存储，仅用于本地 AI 后端 ${new URL(endpoint).origin}`,
+      validateInput: validateModelKey,
+    });
+    if (value === undefined) return;
+    await context.secrets.store(id, value.trim());
+    await publishModelKeyStatus(context, 'API Key 已保存，下次模型请求立即生效。');
+  } catch {
+    await publishModelKeyStatus(context, 'API Key 操作失败，请检查本地后端地址和 VS Code 凭据存储。');
+  }
+}
+
 export function deactivate(): void {
   activeTaskSearch?.controller.abort();
   activeTaskSearch = null;
@@ -354,6 +393,11 @@ async function handlePanelMessage(
       }
       return;
     case 'READY':
+      await publishModelKeyStatus(host.context);
+      return;
+    case 'CONFIGURE_MODEL_KEY':
+    case 'CLEAR_MODEL_KEY':
+      await configureModelKey(host.context, message.type === 'CLEAR_MODEL_KEY');
       return;
     case 'START_SEARCH':
       await startSearch(host, message);

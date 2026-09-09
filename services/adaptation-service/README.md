@@ -86,7 +86,16 @@ is never modified during validation.
 The DeepSeek endpoint and model name are loaded by `src/model-config.ts` so the
 agents do not own provider configuration. `DEEPSEEK_MODEL` defaults to
 `deepseek-v4-flash`; `DEEPSEEK_API_BASE` can override the compatible endpoint.
-Callers must still pass the server-side DeepSeek API key to `AdaptationAdapter`.
+`AdaptationAdapter` accepts a key or a lazy key getter. The server resolves the
+credential when a model request begins, so it can start before a key is configured.
+
+The VS Code plugin's **Settings → DeepSeek API Key** entry stores a credential in
+SecretStorage and sends it only to the configured loopback backend on model routes.
+The backend accepts `x-recast-model-key` only from a loopback peer with a loopback
+Host and no browser Origin. AsyncLocalStorage isolates concurrent requests; no key
+is persisted or returned to the UI. Requests without this header use
+`DEEPSEEK_API_KEY` from the backend environment. Workspace translation still
+requires its separate authorization token. Provider error bodies are not exposed.
 
 ## Extension service quick start
 

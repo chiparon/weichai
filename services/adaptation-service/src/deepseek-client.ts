@@ -1,3 +1,4 @@
+import { resolveModelApiKey, type ModelApiKey } from './model-credential';
 import { deepSeekModelConfig, type DeepSeekModelConfig } from "./model-config";
 
 export interface DeepSeekMessage {
@@ -6,7 +7,7 @@ export interface DeepSeekMessage {
 }
 
 export interface DeepSeekClientOptions {
-  apiKey: string;
+  apiKey: ModelApiKey;
   modelConfig?: DeepSeekModelConfig;
   request?: typeof globalThis.fetch;
   temperature?: number;
@@ -48,8 +49,7 @@ export async function completeWithDeepSeek(
   options: DeepSeekClientOptions,
   signal?: AbortSignal,
 ): Promise<string> {
-  const apiKey = options.apiKey.trim();
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required for DeepSeek requests.");
+  const apiKey = resolveModelApiKey(options.apiKey);
 
   const modelConfig = options.modelConfig ?? deepSeekModelConfig;
   const request = options.request ?? globalThis.fetch.bind(globalThis);
@@ -71,7 +71,7 @@ export async function completeWithDeepSeek(
 
   const raw = await response.text();
   if (!response.ok) {
-    throw new Error(`DeepSeek API error ${response.status}: ${raw}`);
+    throw new Error(`DeepSeek API error ${response.status}`);
   }
 
   let data: unknown;
@@ -97,8 +97,7 @@ export async function completeWithDeepSeekTools(
   options: DeepSeekClientOptions,
   signal?: AbortSignal,
 ): Promise<DeepSeekToolCompletion> {
-  const apiKey = options.apiKey.trim();
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY is required for DeepSeek requests.");
+  const apiKey = resolveModelApiKey(options.apiKey);
 
   const modelConfig = options.modelConfig ?? deepSeekModelConfig;
   const request = options.request ?? globalThis.fetch.bind(globalThis);
@@ -130,7 +129,7 @@ export async function completeWithDeepSeekTools(
 
   const raw = await response.text();
   if (!response.ok) {
-    throw new Error(`DeepSeek API error ${response.status}: ${raw}`);
+    throw new Error(`DeepSeek API error ${response.status}`);
   }
   let data: unknown;
   try {

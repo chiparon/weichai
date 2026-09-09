@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 /**
  * CodeAdaptationPort orchestration:
  * collect context -> analyze -> translate -> compile/repair -> patch preview.
@@ -44,7 +45,7 @@ const STANDALONE_CLASS_NAME = "ForeXploreStandalone";
 
 export interface AdaptationAdapterOptions {
   /** DeepSeek API key used by the specialized translation agents */
-  apiKey: string;
+  apiKey: ModelApiKey;
   /** Target skeleton project root (optional; enables integrated compilation). */
   skeletonProjectPath?: string;
   /** 目标项目根目录（可选，有则生成定点 context patch 而非全量替换） */

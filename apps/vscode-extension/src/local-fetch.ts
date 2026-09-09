@@ -1,3 +1,4 @@
+import type { ModelRequestContext } from './model-credential';
 import http from 'node:http';
 import https from 'node:https';
 import type { RequestInfo, RequestInit } from 'undici-types';
@@ -11,7 +12,7 @@ import type { RequestInfo, RequestInit } from 'undici-types';
  * consult proxy variables, so local service calls stay on the loopback
  * interface regardless of the surrounding proxy configuration.
  */
-let modelCredential: ((url: URL) => Promise<string | undefined>) | undefined;
+let modelCredential: ((url: URL) => Promise<string | ModelRequestContext | undefined>) | undefined;
 
 export function setModelCredentialProvider(provider: typeof modelCredential): void {
   modelCredential = provider;
@@ -24,7 +25,12 @@ export async function localFetch(input: RequestInfo, init?: RequestInit): Promis
   const headers = new Headers(init?.headers);
   headers.delete('x-recast-model-key');
   const credential = await modelCredential?.(url);
-  if (credential) headers.set('x-recast-model-key', credential);
+  headers.delete('x-recast-model-config');
+  if (typeof credential === 'string') headers.set('x-recast-model-key', credential);
+  else if (credential) {
+    if (credential.apiKey) headers.set('x-recast-model-key', credential.apiKey);
+    headers.set('x-recast-model-config', encodeURIComponent(JSON.stringify(credential.settings)));
+  }
   const headerRecord: Record<string, string> = {};
   headers.forEach((value, key) => {
     headerRecord[key] = value;

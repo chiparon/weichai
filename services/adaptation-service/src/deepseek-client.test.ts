@@ -30,6 +30,7 @@ describe("DeepSeek chat-completions client", () => {
     const init = request.mock.calls[0]?.[1];
     expect(JSON.parse(String(init?.body))).toEqual({
       model: "deepseek-test",
+      max_tokens: 8192,
       messages: [
         { role: "system", content: "Keep the target contract." },
         { role: "user", content: "Translate this method." },

@@ -3255,3 +3255,10 @@ button:disabled {
 .workspace-translation details { margin: 12px 0; }
 .translation-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
 .translation-actions label { display: grid; gap: 6px; }
+
+.recast-logo { flex-shrink: 0; }
+.model-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.model-settings-grid label { display: flex; flex-direction: column; gap: 7px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+.model-settings-grid input, .model-settings-grid select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--vscode-input-border, #405363); border-radius: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+.model-settings-grid .model-endpoint { grid-column: 1 / -1; }
+@media (max-width: 600px) { .model-settings-grid { grid-template-columns: 1fr; } }

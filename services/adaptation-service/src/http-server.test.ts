@@ -1,6 +1,8 @@
 import type { AddressInfo } from 'node:net';
 import { ModuleHierarchyDecisionError } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { resolveModelApiKey } from './model-credential';
+import { DEFAULT_LLM_SETTINGS } from '@forexplore/contracts';
+import { modelSettingsScope } from './model-request';
 import type {
   AdaptationRequest,
   AdaptationResult,
@@ -201,6 +203,26 @@ const semanticModulePlan: ToolCallingArchitectPlanResult = {
 };
 
 describe('adaptation HTTP API', () => {
+  it('carries validated model settings through concurrent HTTP calls and rejects browser config overrides', async () => {
+    const observed: number[] = [];
+    const adapter: CodeAdaptationPort = { adapt: vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      observed.push(modelSettingsScope.getStore()?.maxOutputTokens ?? 0);
+      return adaptationResult;
+    }) };
+    const url = await listen(adapter);
+    const send = (limit: number, extra: Record<string, string> = {}) => fetch(`${url}/v1/adapt`, {
+      method: 'POST', body: JSON.stringify(adaptationRequest), headers: {
+        'content-type': 'application/json',
+        'x-recast-model-config': encodeURIComponent(JSON.stringify({ ...DEFAULT_LLM_SETTINGS, maxOutputTokens: limit })), ...extra,
+      },
+    });
+    expect((await Promise.all([send(1024), send(4096)])).map(r => r.status)).toEqual([200, 200]);
+    expect(observed.sort((a, b) => a - b)).toEqual([1024, 4096]);
+    expect((await send(4096, { origin: 'http://localhost' })).status).toBe(403);
+    expect((await send(0)).status).toBe(403);
+    expect(adapter.adapt).toHaveBeenCalledTimes(2);
+  });
   it('keeps request credentials isolated and rejects browser overrides before model execution', async () => {
     const observed: string[] = [];
     const adapter: CodeAdaptationPort = { adapt: vi.fn(async () => {

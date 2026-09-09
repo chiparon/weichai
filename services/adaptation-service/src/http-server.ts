@@ -1,3 +1,4 @@
+import { modelSettingsScope, requestModelSettings } from './model-request';
 import { modelCredentialScope, requestModelCredential } from './model-credential';
 import {
   createServer,
@@ -456,8 +457,9 @@ export function createHttpServer(options: HttpServerOptions): Server {
   };
   return createServer((request, response) => {
     let credential: string | undefined;
-    try { credential = requestModelCredential(request); }
+    let modelSettings;
+    try { credential = requestModelCredential(request); modelSettings = requestModelSettings(request); }
     catch { json(response, 403, { error: 'Invalid local IDE credential request.' }, options.corsOrigin); return; }
-    void modelCredentialScope.run(credential, () => handleRequest(request, response));
+    void modelSettingsScope.run(modelSettings, () => modelCredentialScope.run(credential, () => handleRequest(request, response)));
   });
 }

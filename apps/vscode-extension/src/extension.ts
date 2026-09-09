@@ -92,12 +92,12 @@ let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
-  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl));
+  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm));
   context.subscriptions.push({ dispose: () => setModelCredentialProvider(undefined) });
   context.subscriptions.push(
     context.secrets.onDidChange(() => { void publishModelKeyStatus(context); }),
     vscode.workspace.onDidChangeConfiguration(event => {
-      if (event.affectsConfiguration('forexplore.adaptationApiUrl')) void publishModelKeyStatus(context);
+      if (event.affectsConfiguration('forexplore.adaptationApiUrl') || event.affectsConfiguration('forexplore.llm')) void publishModelKeyStatus(context);
     }),
   );
   const output = vscode.window.createOutputChannel('RECAST');
@@ -284,23 +284,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 async function publishModelKeyStatus(context: vscode.ExtensionContext, message?: string): Promise<void> {
   let configured = false;
-  try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl))); }
+  try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl, loadSettings().llm))); }
   catch { message ??= '当前后端地址不支持插件 API Key；仅支持本机地址。'; }
   publish({ type: 'MODEL_KEY_STATUS', configured, ...(message ? { message } : {}) });
 }
 
 async function configureModelKey(context: vscode.ExtensionContext, clear: boolean): Promise<void> {
   try {
-    const endpoint = loadSettings().adaptationApiUrl;
-    const id = modelCredentialId(endpoint);
+    const { adaptationApiUrl: endpoint, llm } = loadSettings();
+    const id = modelCredentialId(endpoint, llm);
     if (clear) {
       await context.secrets.delete(id);
-      await publishModelKeyStatus(context, '已清除插件保存的 Key；后端 .env 配置仍可使用。');
+      await publishModelKeyStatus(context, '已清除当前服务的 Key。默认 DeepSeek 地址仍可使用后端环境配置。');
       return;
     }
     const value = await vscode.window.showInputBox({
-      title: 'RECAST · DeepSeek API Key', password: true, ignoreFocusOut: true,
-      prompt: `保存到 VS Code 加密凭据存储，仅用于本地 AI 后端 ${new URL(endpoint).origin}`,
+      title: `RECAST · ${llm.provider} API Key`, password: true, ignoreFocusOut: true,
+      prompt: `保存到 VS Code 加密凭据存储，由本地 AI 后端用于 ${llm.apiBase}`,
       validateInput: validateModelKey,
     });
     if (value === undefined) return;
@@ -344,7 +344,7 @@ async function showPanel(
         stats: { modules: 0, files: 0, types: 0, methods: 0, implemented: 0, unimplemented: 0, unknown: 0, dependencies: 0 },
         summary: { exists: false, path: '.forexplore/module-summary.json' },
       },
-    }, searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek',
+    }, searchProvider: 'SeekDB', adaptationProvider: settings.llm.provider,
   }, { onMessage: (message) => { void handlePanelMessage({ context, services, health, codeIntelligence }, message); } });
   void (async () => {
     try {
@@ -390,6 +390,17 @@ async function handlePanelMessage(
         if (await addTargetWorkspace(message.mode)) await refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true });
       } catch (error) {
         publishError(errorMessage(error, '添加目标工程失败'));
+      }
+      return;
+    case 'BROWSE_REFERENCE_FOLDERS':
+      try {
+        const folders = await vscode.window.showOpenDialog({
+          title: '选择参考工程文件夹', openLabel: '添加参考工程',
+          canSelectFiles: false, canSelectFolders: true, canSelectMany: true,
+        });
+        publish({ type: 'REFERENCE_FOLDERS_SELECTED', requestId: message.requestId, paths: (folders ?? []).filter(uri => uri.scheme === 'file').map(uri => uri.fsPath) });
+      } catch {
+        publish({ type: 'REFERENCE_FOLDERS_SELECTED', requestId: message.requestId, paths: [], error: '无法打开目录选择器，请重试或手动输入路径。' });
       }
       return;
     case 'READY':
@@ -529,6 +540,7 @@ async function updatePanelSettings(
   }
 
   publish({ type: 'SETTINGS_UPDATED', settings: saved });
+  await publishModelKeyStatus(host.context);
   try {
     const codeIntelligence = await synchronizeCodeIntelligence(host.codeIntelligence, { scanNewOnly: true, scanRoles: ['history'] });
     const [statuses, explorer] = await Promise.all([

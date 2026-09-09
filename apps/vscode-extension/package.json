@@ -110,7 +110,9 @@
       "properties": {
         "forexplore.executionMode": {
           "type": "string",
-          "enum": ["real"],
+          "enum": [
+            "real"
+          ],
           "default": "real",
           "description": "使用扩展内置的 SeekDB 模块检索和语言无关的适配服务。"
         },
@@ -124,7 +126,9 @@
         },
         "forexplore.targetRepositoryPaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "通过目标工程选择器明确选择的目录。只有同时位于当前工作区中的目录会作为目标工程索引。"
         },
@@ -147,17 +151,86 @@
           "description": "仅由本地 VS Code 宿主在隔离波次 worktree 中执行的联合验证命令。未配置时模块波次准备会被阻止。",
           "items": {
             "type": "object",
-            "required": ["id", "label", "executable"],
+            "required": [
+              "id",
+              "label",
+              "executable"
+            ],
             "properties": {
-              "id": { "type": "string" },
-              "label": { "type": "string" },
-              "executable": { "type": "string" },
-              "args": { "type": "array", "items": { "type": "string" } },
-              "cwd": { "type": "string" },
-              "required": { "type": "boolean" },
-              "timeoutMs": { "type": "number" }
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "executable": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "timeoutMs": {
+                "type": "number"
+              }
             },
             "additionalProperties": false
+          }
+        },
+        "forexplore.llm": {
+          "type": "object",
+          "scope": "machine",
+          "description": "AI 服务配置（仅使用用户设置）。API Key 通过 RECAST 设置面板加密保存。",
+          "default": {
+            "provider": "deepseek",
+            "apiBase": "https://api.deepseek.com/v1",
+            "model": "deepseek-v4-flash",
+            "maxOutputTokens": 8192
+          },
+          "required": [
+            "provider",
+            "apiBase",
+            "model",
+            "maxOutputTokens"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "deepseek",
+                "openai",
+                "anthropic",
+                "gemini",
+                "qwen",
+                "custom"
+              ]
+            },
+            "apiBase": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "maxOutputTokens": {
+              "type": "integer",
+              "enum": [
+                1024,
+                2048,
+                4096,
+                8192,
+                16384,
+                32768
+              ]
+            }
           }
         }
       }
@@ -196,5 +269,6 @@
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"
-  }
+  },
+  "icon": "media/recast-logo.png"
 }

@@ -1,3 +1,4 @@
+import { parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
 import type {
   WorkspaceTranslationRun,
   AdaptationResult,
@@ -28,10 +29,11 @@ export interface PanelInitPayload {
   serviceStatus: ServiceStatus;
   moduleExplorer: ModuleExplorerPresentation;
   searchProvider: 'SeekDB';
-  adaptationProvider: 'DeepSeek';
+  adaptationProvider: string;
 }
 
 export interface PanelSettingsPresentation {
+  llm?: LlmSettings;
   repositoryPaths: string[];
   topK: number;
 }
@@ -46,6 +48,7 @@ export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: stri
 
 /** Messages the extension host posts into the Webview. */
 export type HostToWebviewMessage =
+  | { type: 'REFERENCE_FOLDERS_SELECTED'; requestId: string; paths: string[]; error?: string }
   | { type: 'MODEL_KEY_STATUS'; configured: boolean; message?: string }
   | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean } }
   | { type: 'WORKSPACE_TRANSLATION_ERROR'; requestId: string; message: string }
@@ -71,6 +74,7 @@ export type HostToWebviewMessage =
  * candidate objects, validation evidence, or patches to be written.
  */
 export type WebviewToHostMessage =
+  | { type: 'BROWSE_REFERENCE_FOLDERS'; requestId: string }
   | { type: 'CONFIGURE_MODEL_KEY' }
   | { type: 'CLEAR_MODEL_KEY' }
   | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string }
@@ -104,6 +108,7 @@ export type WebviewToHostMessage =
   | { type: 'OPEN_TARGET' };
 
 const hostMessageTypes = new Set<string>([
+  'REFERENCE_FOLDERS_SELECTED',
   'MODEL_KEY_STATUS',
   'WORKSPACE_TRANSLATION_RESULT',
   'WORKSPACE_TRANSLATION_ERROR',
@@ -152,6 +157,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'START_TASK_SEARCH':
       return hasOnlyKeys(message, ['type', 'requestId', 'targetScope', 'request']) &&
         isOpaqueIdentifier(message.requestId) && isTaskSearchScope(message.targetScope) && isTaskSearchIntent(message.request);
+    case 'BROWSE_REFERENCE_FOLDERS':
     case 'CANCEL_TASK_SEARCH':
       return hasOnlyKeys(message, ['type', 'requestId']) && isOpaqueIdentifier(message.requestId);
     case 'ADD_TARGET_WORKSPACE':
@@ -250,7 +256,8 @@ function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
   if (typeof value !== 'object' || value === null) return false;
   const settings = value as Record<string, unknown>;
   return (
-    hasOnlyKeys(settings, ['repositoryPaths', 'topK']) &&
+    (hasOnlyKeys(settings, ['repositoryPaths', 'topK']) || hasOnlyKeys(settings, ['repositoryPaths', 'topK', 'llm'])) &&
+    (settings.llm === undefined || isLlmSettings(settings.llm)) &&
     Array.isArray(settings.repositoryPaths) &&
     settings.repositoryPaths.length <= 20 &&
     settings.repositoryPaths.every(
@@ -261,6 +268,10 @@ function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
     settings.topK >= 1 &&
     settings.topK <= 10
   );
+}
+
+function isLlmSettings(value: unknown): value is LlmSettings {
+  try { parseLlmSettings(value); return true; } catch { return false; }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {

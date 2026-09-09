@@ -171,7 +171,7 @@ it('opens without a method, saves two history paths, displays durable summaries 
   expect(sent).toContainEqual({ type: 'CLEAR_MODEL_KEY' });
   await act(async () => post({ type: 'MODEL_KEY_STATUS', configured: false }));
   expect(container.textContent).toContain('插件未保存');
-  await clickText('添加第一个路径');
+  await clickText('手动添加路径');
   const enter = async (index: number, value: string) => act(async () => {
     const input = container.querySelectorAll<HTMLInputElement>('.repository-path-fields input')[index]!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
@@ -182,7 +182,7 @@ it('opens without a method, saves two history paths, displays durable summaries 
     container.querySelector('.settings-panel')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await Promise.all(pending);
   });
-  expect(sent).toContainEqual({ type: 'SAVE_SETTINGS', settings: { repositoryPaths: paths.slice(0, 2), topK: 4 } });
+  expect(sent).toContainEqual({ type: 'SAVE_SETTINGS', settings: expect.objectContaining({ repositoryPaths: paths.slice(0, 2), topK: 4 }) });
   expect(plan).toHaveBeenCalledTimes(3);
   const history = (await host.presentation()).repositories.find((r) => r.displayName === 'history-b')!;
   await act(async () => {

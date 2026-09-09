@@ -260,3 +260,17 @@ npm run test:project-analysis:live
 ~~~
 
 该脚本建立两个参考工程和一个目标工程，通过实际 HTTP 查询与 Agent 工具调用发布 Summary，验证无变更刷新与重开宿主复用，最后移除本次测试仓库记录。单元和 Webview 链路测试运行 npm test；VS Code 集成测试运行 npm run test:integration --workspace forexplore-vscode。
+
+## AI 服务与输出预算
+
+在 RECAST 面板右上角打开“设置”，选择 DeepSeek、OpenAI、Anthropic / Claude、Google Gemini、通义千问或自定义 OpenAI 兼容接口。预设会填入 API Base URL 与模型名称；模型可按账号实际开通权限修改。Claude 使用原生 `/messages` 和工具调用协议，其余使用 `/chat/completions`。
+
+1. 选择服务商，填写模型名称及 API Base URL（包含版本路径，不包含最终的 `/messages` 或 `/chat/completions`）。
+2. 选择“每次最大输出 Token”：1,024 / 2,048 / 4,096 / 8,192 / 16,384 / 32,768，默认 8,192。它限制每次模型请求的输出；输入 Token 和多步骤任务的累计用量不计入此限制。所选模型必须支持相应上限，输出截断会提示提高上限。
+3. 保存设置后，点击“配置 API Key”，在 VS Code 原生密码框输入。密钥不会进入 Webview、工作区设置或日志。密钥按服务商、API Base URL 与本地后端地址分别保存；切换服务后须配置对应 Key。
+
+普通模型设置存入用户级 `forexplore.llm`，不读取仓库提供的同名设置。模型请求携带当次配置快照，经本地 IDE 后端独立路由。只有默认 DeepSeek 服务可以继续使用后端 `DEEPSEEK_API_KEY`；其他服务和自定义地址缺少对应 Key 时会明确报错。自定义兼容服务即使不验证鉴权，也需要填写非空占位 Key。
+
+参考工程路径可通过“浏览文件夹（可多选）”调用系统文件夹选择器，仍可手动输入。选择仅更新当前草稿，保存后才登记与索引；取消选择保留草稿。支持最多 20 个工程，并对 Windows 路径的大小写和斜杠差异去重。
+
+Logo 源文件为 `media/recast-logo.svg`，扩展列表使用 `media/recast-logo.png`，活动栏使用同一图形的单色版本。

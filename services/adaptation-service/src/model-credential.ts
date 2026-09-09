@@ -1,3 +1,5 @@
+import { modelSettingsScope } from './model-request';
+import { deepSeekModelConfig } from './model-config';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingMessage } from 'node:http';
 
@@ -5,8 +7,10 @@ export type ModelApiKey = string | (() => string);
 export const modelCredentialScope = new AsyncLocalStorage<string | undefined>();
 
 export function resolveModelApiKey(fallback: ModelApiKey): string {
-  const key = (modelCredentialScope.getStore() ?? (typeof fallback === 'function' ? fallback() : fallback)).trim();
-  if (!key) throw new Error('请在 RECAST 设置面板配置 DeepSeek API Key，或设置后端 DEEPSEEK_API_KEY。');
+  const settings = modelSettingsScope.getStore();
+  const allowFallback = !settings || (settings.provider === 'deepseek' && settings.apiBase === deepSeekModelConfig.apiBase);
+  const key = (modelCredentialScope.getStore() ?? (allowFallback ? (typeof fallback === 'function' ? fallback() : fallback) : '')).trim();
+  if (!key) throw new Error('请在 RECAST 设置面板配置当前 AI 服务的 API Key（默认 DeepSeek 也可使用后端 DEEPSEEK_API_KEY）。');
   return key;
 }
 

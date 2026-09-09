@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, type LlmSettings } from '@forexplore/contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createModelCredentialProvider, modelCredentialId, validateModelKey } from './model-credential';
@@ -7,6 +8,22 @@ import { localFetch, setModelCredentialProvider } from './local-fetch';
 afterEach(() => setModelCredentialProvider(undefined));
 
 describe('model credential boundary', () => {
+  it('separates keys by provider and API base while snapshotting settings before async key lookup', async () => {
+    const endpoint = 'http://127.0.0.1:8788';
+    let settings: LlmSettings = { ...DEFAULT_LLM_SETTINGS };
+    const secrets = new Map([[modelCredentialId(endpoint, settings), 'deepseek-key']]);
+    const storage = { get: vi.fn(async (id: string) => secrets.get(id)), store: vi.fn(), delete: vi.fn() };
+    const provider = createModelCredentialProvider(storage, () => endpoint, () => settings);
+    const first = provider(new URL(endpoint + '/v1/adapt'));
+    settings = { ...settings, provider: 'openai', apiBase: LLM_PRESETS.openai.apiBase, model: LLM_PRESETS.openai.model };
+    expect(await first).toEqual({ settings: DEFAULT_LLM_SETTINGS, apiKey: 'deepseek-key' });
+    expect(await provider(new URL(endpoint + '/v1/adapt'))).toEqual({ settings });
+    secrets.set(modelCredentialId(endpoint, settings), 'openai-key');
+    expect(await provider(new URL(endpoint + '/v1/adapt'))).toEqual({ settings, apiKey: 'openai-key' });
+    settings = { ...settings, apiBase: 'https://other.example/v1' };
+    expect(await provider(new URL(endpoint + '/v1/adapt'))).toEqual({ settings });
+    expect(await provider(new URL(endpoint + '/health'))).toBeUndefined();
+  });
   it('scopes saved credentials to the configured loopback origin and model routes', async () => {
     const storage = { get: vi.fn(async () => 'test-key'), store: vi.fn(), delete: vi.fn() };
     let endpoint = 'http://127.0.0.1:8788';

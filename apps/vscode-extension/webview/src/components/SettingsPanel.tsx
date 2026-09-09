@@ -1,3 +1,5 @@
+import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, OUTPUT_TOKEN_LIMITS, parseLlmSettings, type LlmProvider } from '@forexplore/contracts';
+import { mergeReferencePaths } from '../reference-folder-picker';
 import { FolderPlus, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { PanelSettingsPresentation } from '../../../src/protocol/messages';
@@ -9,6 +11,7 @@ import type {
 
 interface SettingsPanelProps extends PanelSettingsPresentation {
   modelKeyStatus?: { configured: boolean; message?: string };
+  onBrowseReferenceFolders?(): Promise<string[]>;
   onConfigureModelKey?(): void;
   onClearModelKey?(): void;
   repositoryStatuses: RepositoryStatus[];
@@ -24,6 +27,8 @@ interface SettingsPanelProps extends PanelSettingsPresentation {
 }
 
 export function SettingsPanel({
+  llm = DEFAULT_LLM_SETTINGS,
+  onBrowseReferenceFolders,
   modelKeyStatus,
   onConfigureModelKey,
   onClearModelKey,
@@ -38,6 +43,12 @@ export function SettingsPanel({
   onSave,
   onCancel,
 }: SettingsPanelProps) {
+  const [draftLlm, setDraftLlm] = useState(llm);
+  const [browsing, setBrowsing] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const credentialChanged = draftLlm.provider !== llm.provider || draftLlm.apiBase !== llm.apiBase;
+  useEffect(() => { setDraftLlm(llm); }, [llm]);
+
   const [draftTopK, setDraftTopK] = useState(topK);
   const [draftPaths, setDraftPaths] = useState<string[]>(repositoryPaths);
 
@@ -47,7 +58,7 @@ export function SettingsPanel({
   }, [topK, repositoryPaths]);
 
   const normalizedPaths = useMemo(
-    () => [...new Set(draftPaths.map((path) => path.trim()).filter(Boolean))],
+    () => mergeReferencePaths(draftPaths, []),
     [draftPaths],
   );
 
@@ -61,7 +72,28 @@ export function SettingsPanel({
 
   function submit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    onSave({ topK: draftTopK, repositoryPaths: normalizedPaths });
+    try {
+      const model = parseLlmSettings(draftLlm);
+      setFormError(null);
+      onSave({ topK: draftTopK, repositoryPaths: normalizedPaths, llm: model });
+    } catch (error) { setFormError(error instanceof Error ? error.message : 'AI 配置无效。'); }
+  }
+
+  async function browse(): Promise<void> {
+    if (!onBrowseReferenceFolders || browsing) return;
+    setBrowsing(true); setFormError(null);
+    try {
+      const selected = await onBrowseReferenceFolders();
+      if (selected.length) setDraftPaths(current => {
+        const merged = mergeReferencePaths(current, selected);
+        if (merged.length > 20 || merged.some(p => p.length > 1000)) {
+          setFormError('最多添加 20 个参考工程，每个路径不超过 1000 字符。请减少选择后重试。');
+          return current;
+        }
+        return merged;
+      });
+    } catch (error) { setFormError(error instanceof Error ? error.message : '目录选择失败。'); }
+    finally { setBrowsing(false); }
   }
 
   return (
@@ -74,15 +106,36 @@ export function SettingsPanel({
         </div>
       </div>
 
-      <section className="card settings-section" aria-label="DeepSeek API Key">
-        <div className="card-heading"><span>DeepSeek API Key</span><strong>{modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</strong></div>
-        <p className="settings-intro">通过 VS Code 密码输入框录入并加密保存，立即用于本地 AI 后端。插件未保存时使用后端 .env 中的配置。</p>
+      <section className="card settings-section" aria-label="AI 服务">
+        <div className="card-heading"><span>AI 服务</span><strong>{LLM_PRESETS[draftLlm.provider].label}</strong></div>
+        <div className="model-settings-grid">
+          <label>服务商<select aria-label="AI 服务商" value={draftLlm.provider} disabled={saving}
+            onChange={event => { const provider = event.target.value as LlmProvider; setDraftLlm(current => ({ ...current, provider, apiBase: LLM_PRESETS[provider].apiBase, model: LLM_PRESETS[provider].model })); }}>
+            {Object.entries(LLM_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
+          </select></label>
+          <label>模型名称<input aria-label="模型名称" value={draftLlm.model} maxLength={200} required disabled={saving}
+            onChange={event => setDraftLlm(current => ({ ...current, model: event.target.value }))} /></label>
+          <label className="model-endpoint">API Base URL<input aria-label="API Base URL" type="url" value={draftLlm.apiBase} maxLength={1000} required disabled={saving}
+            onChange={event => setDraftLlm(current => ({ ...current, apiBase: event.target.value }))} /></label>
+          <label>每次最大输出 Token<select aria-label="每次最大输出 Token" value={draftLlm.maxOutputTokens} disabled={saving}
+            onChange={event => setDraftLlm(current => ({ ...current, maxOutputTokens: Number(event.target.value) }))}>
+            {OUTPUT_TOKEN_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}
+          </select></label>
+        </div>
+        <p className="settings-intro">限制每次模型调用的最大输出，不包含输入 Token；多步骤任务会多次调用。模型须支持所选上限，模型名称可按账号权限修改。</p>
+        <p className="muted-copy">{draftLlm.provider === 'anthropic' ? '使用 Claude Messages 原生接口，支持工具调用。' : '使用 Chat Completions 兼容接口，支持工具调用。'} API 地址填写到版本路径，不含 /messages 或 /chat/completions。</p>
+      </section>
+
+      <section className="card settings-section" aria-label="API Key">
+        <div className="card-heading"><span>{LLM_PRESETS[llm.provider].label} API Key</span><strong>{modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</strong></div>
+        <p className="settings-intro">通过 VS Code 密码输入框加密保存，按服务商与 API 地址隔离。只有默认 DeepSeek 地址可回退到后端环境配置。</p>
         <div className="settings-actions">
-          <button type="button" className="secondary-action" onClick={onConfigureModelKey} disabled={!onConfigureModelKey}>
+          <button type="button" className="secondary-action" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
             {modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}
           </button>
-          <button type="button" className="text-button" onClick={onClearModelKey} disabled={!modelKeyStatus?.configured || !onClearModelKey}>清除保存的 Key</button>
+          <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || credentialChanged || !modelKeyStatus?.configured || !onClearModelKey}>清除保存的 Key</button>
         </div>
+        {credentialChanged ? <p role="status" className="muted-copy">请先保存服务商和 API 地址，再配置对应的 Key。</p> : null}
         {modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
       </section>
 
@@ -200,14 +253,17 @@ export function SettingsPanel({
             onClick={() => setDraftPaths((current) => current.length < 20 ? [...current, ''] : current)}
             disabled={draftPaths.length >= 20 || saving}
           >
-            <FolderPlus size={13} /> 添加路径
+            <FolderPlus size={13} /> 手动添加路径
           </button>
         </div>
+        <button type="button" className="secondary-action" onClick={() => void browse()} disabled={saving || browsing || !onBrowseReferenceFolders || draftPaths.length >= 20}>
+          <FolderPlus size={14} /> {browsing ? '正在选择…' : '浏览文件夹（可多选）'}
+        </button>
         <p className="settings-intro">可添加多个本地参考工程。保存后，它们会分别出现在左侧“参考工程”列表中。</p>
         {draftPaths.length === 0 ? (
           <div className="settings-empty">
             <span>尚未添加参考工程路径</span>
-            <button type="button" className="secondary-action" onClick={() => setDraftPaths([''])}>
+            <button type="button" className="secondary-action" onClick={() => onBrowseReferenceFolders ? void browse() : setDraftPaths([''])} disabled={saving || browsing}>
               <FolderPlus size={13} /> 添加第一个路径
             </button>
           </div>
@@ -259,11 +315,12 @@ export function SettingsPanel({
         </button>
       </section>
 
+      {formError ? <p role="alert" className="error-banner">{formError}</p> : null}
       <div className="settings-actions">
         <button type="button" className="secondary-action" onClick={onCancel} disabled={saving}>
           <X size={14} /> 取消
         </button>
-        <button type="submit" className="primary-action settings-save" disabled={saving}>
+        <button type="submit" className="primary-action settings-save" disabled={saving || browsing}>
           {saving ? <span className="spinner" /> : <Save size={14} />}
           {saving ? '正在保存…' : '保存设置'}
         </button>

@@ -1,3 +1,6 @@
+import { LLM_PRESETS } from '@forexplore/contracts';
+import { browseReferenceFolders } from './reference-folder-picker';
+import { RecastLogo } from './components/RecastLogo';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { GitBranch, Search, Settings2 } from 'lucide-react';
 import { createTranslationProvider } from './workspace-translation-provider';
@@ -130,7 +133,6 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           setPayload((current) => current ? { ...current, settings: message.settings } : current);
           dispatch({ type: 'SET_TOP_K', value: message.settings.topK });
           setSettingsSaving(false);
-          setSettingsOpen(false);
           break;
         case 'MODEL_KEY_STATUS':
           setModelKeyStatus({ configured: message.configured, message: message.message });
@@ -268,7 +270,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="brand-glyph">RC</span>
+          <RecastLogo />
           <strong>RECAST</strong>
         </div>
         <nav className="workbench-modes" aria-label="工作模式">
@@ -339,6 +341,8 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         </div>
         {settingsOpen ? (
           <SettingsPanel
+            llm={payload.settings.llm}
+            onBrowseReferenceFolders={() => browseReferenceFolders(bus)}
             modelKeyStatus={modelKeyStatus}
             onConfigureModelKey={() => bus.post({ type: 'CONFIGURE_MODEL_KEY' })}
             onClearModelKey={() => bus.post({ type: 'CLEAR_MODEL_KEY' })}
@@ -373,7 +377,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
               <CandidatesStage
                 state={state}
                 dispatch={dispatch}
-                adaptationProvider={payload.adaptationProvider}
+                adaptationProvider={LLM_PRESETS[payload.settings.llm?.provider ?? 'deepseek'].label}
                 onSelectCandidate={handleSelectCandidate}
                 onAdapt={handleAdapt}
               />

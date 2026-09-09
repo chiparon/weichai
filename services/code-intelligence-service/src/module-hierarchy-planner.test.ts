@@ -27,11 +27,57 @@ function split() {
   ] };
 }
 
+function wireDecision(value: ReturnType<typeof stop> | ReturnType<typeof split>) {
+  const groups = ['api', 'parser', 'storage'];
+  const evidence = ['file:api', 'file:parser', 'file:storage', 'dependency:1', 'symbol:parser'];
+  return JSON.parse(JSON.stringify(value, (key, item) =>
+    key === 'groupIds' ? item.map((id: string) => `g${groups.indexOf(id) + 1}`) :
+    key === 'evidenceIds' ? item.map((id: string) => `e${evidence.indexOf(id) + 1}`) : item));
+}
+
 describe('model module hierarchy decisions', () => {
+  it('reports all missing, duplicate and unknown assignments without echoing invented values', async () => {
+    const broken = wireDecision(split());
+    broken.children[0].groupIds = ['g1', 'g1', 'private-credential'];
+    const complete = vi.fn().mockResolvedValueOnce(JSON.stringify(broken)).mockResolvedValueOnce(JSON.stringify(wireDecision(split())));
+    await expect(new ModelModuleHierarchyPlanner({ complete, maxRepairs: 1 }).decide(request())).resolves.toEqual(split());
+    const feedback = complete.mock.calls[1]![0].at(-1).content;
+    expect(feedback).toContain('missing [g2]');
+    expect(feedback).toContain('duplicate [g1]');
+    expect(feedback).toContain('unknown positions [0:2]');
+    expect(feedback).not.toContain('private-credential');
+  });
+
+  it('round-trips a 44-file snapshot without losing or inventing real group and evidence IDs', async () => {
+    const input = request();
+    input.candidates = Array.from({ length: 44 }, (_, i) => ({ ...input.candidates[0]!,
+      id: `file-group-${i}-long-hash`, relativePath: `src/file${i}.ts`, evidenceIds: [`file:evidence-${i}`] }));
+    input.dependencies = [];
+    input.excerpts = [];
+    const planner = new ModelModuleHierarchyPlanner({ complete: async (messages) => {
+      const wire = JSON.parse(messages[1]!.content) as ModuleHierarchyDecisionRequest;
+      expect(wire.candidates.map(c => c.id)).toEqual(Array.from({ length: 44 }, (_, i) => `g${i + 1}`));
+      return JSON.stringify({ ...wireDecision(split()), evidenceIds: ['e1'], children: [
+        { ...split().children[0], groupIds: wire.candidates.slice(0, 22).map(c => c.id), evidenceIds: ['e1'] },
+        { ...split().children[1], groupIds: wire.candidates.slice(22).map(c => c.id), evidenceIds: ['e23'] },
+      ] });
+    } });
+    const result = await planner.decide(input);
+    expect(result.action).toBe('split');
+    if (result.action !== 'split') throw new Error('Expected split');
+    expect(result.children.flatMap(c => c.groupIds)).toEqual(input.candidates.map(c => c.id));
+    expect(result.children.map(c => c.evidenceIds)).toEqual([['file:evidence-0'], ['file:evidence-22']]);
+  });
   it('accepts a semantic stop at the root and subsystem leaves at arbitrary depth', () => {
     expect(parseModuleHierarchyDecision(JSON.stringify(stop()), request())).toMatchObject({ action: 'stop', nodeKind: 'module' });
     expect(parseModuleHierarchyDecision({ ...stop(), nodeKind: 'subsystem' }, { ...request(), depth: 7 }))
       .toMatchObject({ action: 'stop', nodeKind: 'subsystem' });
+  });
+
+  it('canonicalizes an empty stop child list without accepting hidden child assignments', () => {
+    expect(parseModuleHierarchyDecision({ ...stop(), children: [] }, request())).toEqual({ ...stop(), stopReason: 'cohesive' });
+    expect(() => parseModuleHierarchyDecision({ ...stop(), children: null }, request())).toThrow('stop cannot');
+    expect(() => parseModuleHierarchyDecision({ ...split(), action: 'stop' }, request())).toThrow('stop cannot');
   });
 
   it('distinguishes cohesive stops from insufficient evidence and rejects unknown stop reasons', () => {
@@ -72,7 +118,7 @@ describe('model module hierarchy decisions', () => {
   });
 
   it('sends a bounded data snapshot and forwards cancellation to the injected transport', async () => {
-    const complete = vi.fn(async () => JSON.stringify(split()));
+    const complete = vi.fn(async () => JSON.stringify(wireDecision(split())));
     const planner = new ModelModuleHierarchyPlanner({ complete });
     const input = request();
     const original = structuredClone(input);
@@ -82,12 +128,16 @@ describe('model module hierarchy decisions', () => {
     expect(messages.map((message) => message.role)).toEqual(['system', 'user']);
     expect(messages[0]!.content).toContain('untrusted data');
     expect(messages[0]!.content).toContain('Depth never determines nodeKind');
-    expect(JSON.parse(messages[1]!.content)).toEqual(input);
+    const wire = JSON.parse(messages[1]!.content);
+    expect(wire.candidates.map((group: { id: string }) => group.id)).toEqual(['g1', 'g2', 'g3']);
+    expect(wire.candidates.map((group: { relativePath: string }) => group.relativePath)).toEqual(input.candidates.map(group => group.relativePath));
+    expect(wire.dependencies).toEqual([{ sourceId: 'g1', targetId: 'g2', count: 1, evidenceIds: ['e4'] }]);
+    expect(wire.excerpts[0].evidenceId).toBe('e5');
     expect(signal).toBeInstanceOf(AbortSignal);
   });
 
   it('rejects oversized or ambiguous input before any model request', async () => {
-    const complete = vi.fn(async () => JSON.stringify(stop()));
+    const complete = vi.fn(async () => JSON.stringify(wireDecision(stop())));
     const planner = new ModelModuleHierarchyPlanner({ complete, maxInputChars: 4_000 });
     await expect(planner.decide({ ...request(), excerpts: [{ ...request().excerpts[0]!, content: 'x'.repeat(4_000) }] })).rejects.toThrow('input budget');
     await expect(planner.decide({ ...request(), candidates: Array.from({ length: 65 }, (_, id) => ({ ...request().candidates[0]!, id: String(id) })) })).rejects.toThrow('64');
@@ -110,7 +160,7 @@ describe('model module hierarchy decisions', () => {
   });
 
   it('bounds output and optional repairs under one signal without echoing invalid model output', async () => {
-    const complete = vi.fn().mockResolvedValueOnce('{"credential":"private"}').mockResolvedValueOnce(JSON.stringify(stop()));
+    const complete = vi.fn().mockResolvedValueOnce('{"credential":"private"}').mockResolvedValueOnce(JSON.stringify(wireDecision(stop())));
     const planner = new ModelModuleHierarchyPlanner({ complete, maxRepairs: 1 });
     await expect(planner.decide(request())).resolves.toEqual({ ...stop(), stopReason: 'cohesive' });
     expect(complete).toHaveBeenCalledTimes(2);
@@ -122,11 +172,11 @@ describe('model module hierarchy decisions', () => {
 
   it('does not invoke or accept model work after cancellation', async () => {
     const cancelled = AbortSignal.abort(new Error('cancelled by caller'));
-    const complete = vi.fn(async () => JSON.stringify(stop()));
+    const complete = vi.fn(async () => JSON.stringify(wireDecision(stop())));
     await expect(new ModelModuleHierarchyPlanner({ complete }).decide(request(), cancelled)).rejects.toThrow('cancelled by caller');
     expect(complete).not.toHaveBeenCalled();
     const controller = new AbortController();
-    const late = new ModelModuleHierarchyPlanner({ complete: async () => { controller.abort(new Error('cancelled during call')); return JSON.stringify(stop()); } });
+    const late = new ModelModuleHierarchyPlanner({ complete: async () => { controller.abort(new Error('cancelled during call')); return JSON.stringify(wireDecision(stop())); } });
     await expect(late.decide(request(), controller.signal)).rejects.toThrow('cancelled during call');
   });
 });

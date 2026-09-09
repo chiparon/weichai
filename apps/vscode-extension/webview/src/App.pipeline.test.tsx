@@ -161,7 +161,14 @@ it('opens without a method, saves two history paths, displays durable summaries 
     const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes(text));
     expect(button).toBeDefined(); button!.click();
   });
-  await clickText('添加第一个路径');
+  const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+  expect(keyInput.placeholder).toBe('无');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(keyInput, 'test-inline-key');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(sent.some(message => message.type === 'SAVE_SETTINGS')).toBe(false);
+  await clickText('手动添加路径');
   const enter = async (index: number, value: string) => act(async () => {
     const input = container.querySelectorAll<HTMLInputElement>('.repository-path-fields input')[index]!;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
@@ -169,10 +176,13 @@ it('opens without a method, saves two history paths, displays durable summaries 
   });
   await enter(0, paths[0]!); await clickText('添加路径'); await enter(1, paths[1]!);
   await act(async () => {
-    container.querySelector('.settings-panel')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    post({ type: 'REQUEST_SETTINGS_SAVE' });
     await Promise.all(pending);
   });
-  expect(sent).toContainEqual({ type: 'SAVE_SETTINGS', settings: { repositoryPaths: paths.slice(0, 2), topK: 4 } });
+  expect(sent).toContainEqual({ type: 'SAVE_SETTINGS', modelKey: 'test-inline-key', settings: expect.objectContaining({ repositoryPaths: paths.slice(0, 2), topK: 4 }) });
+  expect(keyInput.value).toBe('');
+  const savedMessage = sent.find(message => message.type === 'SAVE_SETTINGS')!;
+  expect(JSON.stringify('settings' in savedMessage && savedMessage.settings)).not.toContain('test-inline-key');
   expect(plan).toHaveBeenCalledTimes(3);
   const history = (await host.presentation()).repositories.find((r) => r.displayName === 'history-b')!;
   await act(async () => {

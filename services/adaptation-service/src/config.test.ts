@@ -84,8 +84,8 @@ describe("adaptation service config", () => {
     expect(config.corsOrigin).toBe("https://example.com");
   });
 
-  it("fails fast when the DeepSeek key is missing", () => {
-    expect(() => loadConfig({})).toThrow("DEEPSEEK_API_KEY is required");
+  it("allows startup without a key so the IDE can supply a request credential", () => {
+    expect(loadConfig({}).apiKey).toBe("");
   });
 
   it("rejects invalid ports", () => {

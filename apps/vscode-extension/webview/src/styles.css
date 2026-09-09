@@ -2182,6 +2182,7 @@ button:disabled {
   gap: 10px;
   max-width: 720px;
   margin: 0 auto;
+  padding-bottom: 92px;
 }
 
 .settings-heading {
@@ -2408,6 +2409,32 @@ button:disabled {
 .settings-save {
   width: auto;
   min-width: 108px;
+}
+
+.settings-save-dock {
+  position: fixed;
+  right: 20px;
+  bottom: 44px;
+  z-index: 50;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px #00000040;
+}
+
+.settings-save kbd { margin-left: 8px; font: inherit; font-size: 10px; opacity: .75; }
+.settings-save-error, .settings-save-notice { margin: 0 0 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.settings-save-error { color: var(--error); }
+.settings-save-notice { color: var(--muted); text-align: right; }
+.model-key-section { display: grid; gap: 7px; min-width: 0; align-content: start; }
+.model-key-controls { display: flex; align-items: center; gap: 8px; }
+.model-key-controls input { flex: 1; min-width: 0; }
+.model-key-controls .icon-button { flex-shrink: 0; height: 36px; }
+@media (max-width: 420px) {
+  .settings-save-dock { right: 12px; max-width: calc(100vw - 24px); }
+  .settings-save kbd { display: none; }
 }
 
 .overview-glyph {
@@ -3255,3 +3282,13 @@ button:disabled {
 .workspace-translation details { margin: 12px 0; }
 .translation-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
 .translation-actions label { display: grid; gap: 6px; }
+
+.recast-logo { flex-shrink: 0; }
+.model-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.model-settings-grid label { display: flex; flex-direction: column; gap: 7px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+.model-settings-grid input, .model-settings-grid select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--vscode-input-border, #405363); border-radius: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+.model-settings-grid .model-endpoint { grid-column: 1 / -1; }
+@media (max-width: 600px) { .model-settings-grid { grid-template-columns: 1fr; } }
+
+.model-settings-grid label { line-height: 18px; }
+.model-settings-grid input, .model-settings-grid select { height: 36px; }

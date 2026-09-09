@@ -30,6 +30,7 @@ describe("DeepSeek chat-completions client", () => {
     const init = request.mock.calls[0]?.[1];
     expect(JSON.parse(String(init?.body))).toEqual({
       model: "deepseek-test",
+      max_tokens: 8192,
       messages: [
         { role: "system", content: "Keep the target contract." },
         { role: "user", content: "Translate this method." },
@@ -50,7 +51,7 @@ describe("DeepSeek chat-completions client", () => {
         [{ role: "user", content: "Translate this method." }],
         { apiKey: "test-key", request: request as unknown as typeof globalThis.fetch },
       ),
-    ).rejects.toThrow("DeepSeek API error 401: invalid key");
+    ).rejects.toThrow(/^DeepSeek API error 401$/);
   });
 
   it("serializes declared functions and returns provider tool calls without executing them", async () => {

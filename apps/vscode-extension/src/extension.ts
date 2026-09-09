@@ -1,3 +1,5 @@
+import { createModelCredentialProvider, modelCredentialId, validateModelKey, saveWithModelCredential } from './model-credential';
+import { setModelCredentialProvider } from './local-fetch';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -90,6 +92,14 @@ let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
+  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm));
+  context.subscriptions.push({ dispose: () => setModelCredentialProvider(undefined) });
+  context.subscriptions.push(
+    context.secrets.onDidChange(() => { void publishModelKeyStatus(context); }),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('forexplore.adaptationApiUrl') || event.affectsConfiguration('forexplore.llm')) void publishModelKeyStatus(context);
+    }),
+  );
   const output = vscode.window.createOutputChannel('RECAST');
   const services = new ServiceManager(output);
   const health = new RepositoryHealthCheck();
@@ -179,6 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     output,
+    vscode.commands.registerCommand('forexplore.savePanelSettings', () => { publish({ type: 'REQUEST_SETTINGS_SAVE' }); }),
     services,
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
@@ -272,6 +283,35 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 }
 
+async function publishModelKeyStatus(context: vscode.ExtensionContext, message?: string): Promise<void> {
+  let configured = false;
+  try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl, loadSettings().llm))); }
+  catch { message ??= '当前后端地址不支持插件 API Key；仅支持本机地址。'; }
+  publish({ type: 'MODEL_KEY_STATUS', configured, ...(message ? { message } : {}) });
+}
+
+async function configureModelKey(context: vscode.ExtensionContext, clear: boolean): Promise<void> {
+  try {
+    const { adaptationApiUrl: endpoint, llm } = loadSettings();
+    const id = modelCredentialId(endpoint, llm);
+    if (clear) {
+      await context.secrets.delete(id);
+      await publishModelKeyStatus(context, '已清除当前服务在插件中保存的 Key。');
+      return;
+    }
+    const value = await vscode.window.showInputBox({
+      title: `RECAST · ${llm.provider} API Key`, password: true, ignoreFocusOut: true,
+      prompt: `保存到 VS Code 加密凭据存储，由本地 AI 后端用于 ${llm.apiBase}`,
+      validateInput: validateModelKey,
+    });
+    if (value === undefined) return;
+    await context.secrets.store(id, value.trim());
+    await publishModelKeyStatus(context, 'API Key 已保存，下次模型请求立即生效。');
+  } catch {
+    await publishModelKeyStatus(context, 'API Key 操作失败，请检查本地后端地址和 VS Code 凭据存储。');
+  }
+}
+
 export function deactivate(): void {
   activeTaskSearch?.controller.abort();
   activeTaskSearch = null;
@@ -305,7 +345,7 @@ async function showPanel(
         stats: { modules: 0, files: 0, types: 0, methods: 0, implemented: 0, unimplemented: 0, unknown: 0, dependencies: 0 },
         summary: { exists: false, path: '.forexplore/module-summary.json' },
       },
-    }, searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek',
+    }, searchProvider: 'SeekDB', adaptationProvider: settings.llm.provider,
   }, { onMessage: (message) => { void handlePanelMessage({ context, services, health, codeIntelligence }, message); } });
   void (async () => {
     try {
@@ -353,7 +393,26 @@ async function handlePanelMessage(
         publishError(errorMessage(error, '添加目标工程失败'));
       }
       return;
+    case 'SETTINGS_VISIBILITY_CHANGED':
+      await vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', message.open);
+      return;
+    case 'BROWSE_REFERENCE_FOLDERS':
+      try {
+        const folders = await vscode.window.showOpenDialog({
+          title: '选择参考工程文件夹', openLabel: '添加参考工程',
+          canSelectFiles: false, canSelectFolders: true, canSelectMany: true,
+        });
+        publish({ type: 'REFERENCE_FOLDERS_SELECTED', requestId: message.requestId, paths: (folders ?? []).filter(uri => uri.scheme === 'file').map(uri => uri.fsPath) });
+      } catch {
+        publish({ type: 'REFERENCE_FOLDERS_SELECTED', requestId: message.requestId, paths: [], error: '无法打开目录选择器，请重试或手动输入路径。' });
+      }
+      return;
     case 'READY':
+      await publishModelKeyStatus(host.context);
+      return;
+    case 'CONFIGURE_MODEL_KEY':
+    case 'CLEAR_MODEL_KEY':
+      await configureModelKey(host.context, message.type === 'CLEAR_MODEL_KEY');
       return;
     case 'START_SEARCH':
       await startSearch(host, message);
@@ -384,7 +443,7 @@ async function handlePanelMessage(
       await publishProjectView(host.codeIntelligence);
       return;
     case 'SAVE_SETTINGS':
-      await updatePanelSettings(host, message.settings);
+      await updatePanelSettings(host, message.settings, message.modelKey);
       return;
     case 'SELECT_CODE_INTELLIGENCE_REVISION':
       await selectCodeIntelligenceRevision(host.codeIntelligence, message);
@@ -475,16 +534,19 @@ async function selectCodeIntelligenceProject(
 async function updatePanelSettings(
   host: ExtensionHost,
   settings: Extract<WebviewToHostMessage, { type: 'SAVE_SETTINGS' }>['settings'],
+  modelKey?: string | null,
 ): Promise<void> {
   let saved: Awaited<ReturnType<typeof savePanelSettings>>;
   try {
-    saved = await savePanelSettings(settings);
+    const current = loadSettings();
+    saved = await saveWithModelCredential(host.context.secrets, current.adaptationApiUrl, settings.llm ?? current.llm, modelKey, () => savePanelSettings(settings));
   } catch (error) {
     publishError(errorMessage(error, '保存设置失败'));
     return;
   }
 
   publish({ type: 'SETTINGS_UPDATED', settings: saved });
+  await publishModelKeyStatus(host.context);
   try {
     const codeIntelligence = await synchronizeCodeIntelligence(host.codeIntelligence, { scanNewOnly: true, scanRoles: ['history'] });
     const [statuses, explorer] = await Promise.all([

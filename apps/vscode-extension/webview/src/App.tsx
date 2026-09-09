@@ -1,3 +1,6 @@
+import { LLM_PRESETS } from '@forexplore/contracts';
+import { browseReferenceFolders } from './reference-folder-picker';
+import { RecastLogo } from './components/RecastLogo';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { GitBranch, Search, Settings2 } from 'lucide-react';
 import { createTranslationProvider } from './workspace-translation-provider';
@@ -54,6 +57,12 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  useEffect(() => {
+    bus.post({ type: 'SETTINGS_VISIBILITY_CHANGED', open: settingsOpen });
+    setSettingsSaveMessage('');
+  }, [bus, settingsOpen]);
+  const [modelKeyStatus, setModelKeyStatus] = useState<{ configured: boolean; message?: string }>({ configured: false });
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef<WorkflowState['pending']>(null);
   const targetIdRef = useRef<string | null>(null);
@@ -65,6 +74,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     bus.post({ type: 'READY' });
     return bus.subscribe((message) => {
       switch (message.type) {
+        case 'REQUEST_SETTINGS_SAVE':
+          window.dispatchEvent(new Event('recast-save-settings'));
+          break;
         case 'INIT':
           settingsRef.current = message.payload.settings;
           setPayload(message.payload);
@@ -125,11 +137,14 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           setVisibleStep('target');
           break;
         case 'SETTINGS_UPDATED':
+          setSettingsSaveMessage('设置已保存');
           settingsRef.current = message.settings;
           setPayload((current) => current ? { ...current, settings: message.settings } : current);
           dispatch({ type: 'SET_TOP_K', value: message.settings.topK });
           setSettingsSaving(false);
-          setSettingsOpen(false);
+          break;
+        case 'MODEL_KEY_STATUS':
+          setModelKeyStatus({ configured: message.configured, message: message.message });
           break;
         case 'ERROR': {
           setError(message.message);
@@ -204,10 +219,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     bus.post({ type: 'REFRESH_MODULE_EXPLORER' });
   }
 
-  function handleSaveSettings(settings: PanelSettingsPresentation): void {
+  function handleSaveSettings(settings: PanelSettingsPresentation, modelKey?: string | null): void {
     setError(null);
     setSettingsSaving(true);
-    bus.post({ type: 'SAVE_SETTINGS', settings });
+    setSettingsSaveMessage('');
+    bus.post({ type: 'SAVE_SETTINGS', settings, ...(modelKey !== undefined ? { modelKey } : {}) });
   }
 
   function handleSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void {
@@ -264,7 +280,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="brand-glyph">RC</span>
+          <RecastLogo />
           <strong>RECAST</strong>
         </div>
         <nav className="workbench-modes" aria-label="工作模式">
@@ -335,11 +351,15 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         </div>
         {settingsOpen ? (
           <SettingsPanel
+            llm={payload.settings.llm}
+            onBrowseReferenceFolders={() => browseReferenceFolders(bus)}
+            modelKeyStatus={modelKeyStatus}
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}
             codeIntelligence={codeIntelligence}
             saving={settingsSaving}
+            saveMessage={settingsSaveMessage}
             onCheckRepositories={handleCheckRepositories}
             onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
             onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}
@@ -366,7 +386,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
               <CandidatesStage
                 state={state}
                 dispatch={dispatch}
-                adaptationProvider={payload.adaptationProvider}
+                adaptationProvider={LLM_PRESETS[payload.settings.llm?.provider ?? 'deepseek'].label}
                 onSelectCandidate={handleSelectCandidate}
                 onAdapt={handleAdapt}
               />

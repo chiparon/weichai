@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { isWebviewToHostMessage } from './messages';
 
 describe('Webview message boundary', () => {
+  it('allows key configuration intent but never accepts a key or backend address from the Webview', () => {
+    for (const type of ['CONFIGURE_MODEL_KEY', 'CLEAR_MODEL_KEY']) {
+      expect(isWebviewToHostMessage({ type })).toBe(true);
+      expect(isWebviewToHostMessage({ type, apiKey: 'secret' })).toBe(false);
+      expect(isWebviewToHostMessage({ type, endpoint: 'https://external.example' })).toBe(false);
+    }
+  });
   it('accepts only scoped bounded module page intent without filesystem overrides', () => {
     const message = { type: 'LOAD_MODULE_CHILDREN', requestId: 'page-1', request: {
       repositoryId: 'repo-1', analysisRevision: 'revision-1', projectId: 'project-1', nodeId: 'file:src/index.ts', offset: 80,

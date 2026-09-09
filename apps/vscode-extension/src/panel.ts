@@ -56,6 +56,7 @@ export class TranslationPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
       },
     );
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'recast-logo.svg');
 
     const instance = new TranslationPanel(panel, context, payload, handlers);
     TranslationPanel.current = instance;
@@ -65,11 +66,11 @@ export class TranslationPanel {
       if (!isWebviewToHostMessage(message)) return;
       if (message.type === 'READY') {
         instance.post({ type: 'INIT', payload: instance.payload });
-        return;
       }
       instance.handlers.onMessage(message);
     });
     panel.onDidDispose(() => {
+      void vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', false);
       if (TranslationPanel.current === instance) TranslationPanel.current = undefined;
     });
     panel.webview.html = await buildHtml(panel.webview, context.extensionUri);

@@ -1,4 +1,8 @@
 import type { AddressInfo } from 'node:net';
+import { ModuleHierarchyDecisionError } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
+import { resolveModelApiKey } from './model-credential';
+import { DEFAULT_LLM_SETTINGS } from '@forexplore/contracts';
+import { modelSettingsScope } from './model-request';
 import type {
   AdaptationRequest,
   AdaptationResult,
@@ -199,6 +203,57 @@ const semanticModulePlan: ToolCallingArchitectPlanResult = {
 };
 
 describe('adaptation HTTP API', () => {
+  it('carries validated model settings through concurrent HTTP calls and rejects browser config overrides', async () => {
+    const observed: number[] = [];
+    const adapter: CodeAdaptationPort = { adapt: vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      observed.push(modelSettingsScope.getStore()?.maxOutputTokens ?? 0);
+      return adaptationResult;
+    }) };
+    const url = await listen(adapter);
+    const send = (limit: number, extra: Record<string, string> = {}) => fetch(`${url}/v1/adapt`, {
+      method: 'POST', body: JSON.stringify(adaptationRequest), headers: {
+        'content-type': 'application/json',
+        'x-recast-model-config': encodeURIComponent(JSON.stringify({ ...DEFAULT_LLM_SETTINGS, maxOutputTokens: limit })), ...extra,
+      },
+    });
+    expect((await Promise.all([send(1024), send(4096)])).map(r => r.status)).toEqual([200, 200]);
+    expect(observed.sort((a, b) => a - b)).toEqual([1024, 4096]);
+    expect((await send(4096, { origin: 'http://localhost' })).status).toBe(403);
+    expect((await send(0)).status).toBe(403);
+    expect(adapter.adapt).toHaveBeenCalledTimes(2);
+  });
+  it('keeps request credentials isolated and rejects browser overrides before model execution', async () => {
+    const observed: string[] = [];
+    const adapter: CodeAdaptationPort = { adapt: vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      observed.push(resolveModelApiKey('backend-key'));
+      return adaptationResult;
+    }) };
+    const url = await listen(adapter);
+    const send = (headers: Record<string, string>) => fetch(`${url}/v1/adapt`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(adaptationRequest),
+    });
+    const responses = await Promise.all([send({ 'x-recast-model-key': 'first-key' }), send({ 'x-recast-model-key': 'second-key' }), send({})]);
+    expect(responses.map(response => response.status)).toEqual([200, 200, 200]);
+    expect(observed.sort()).toEqual(['backend-key', 'first-key', 'second-key']);
+    expect((await send({ 'x-recast-model-key': 'browser-key', origin: 'http://localhost:4173' })).status).toBe(403);
+    expect(adapter.adapt).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns typed hierarchy validation details without leaking generic provider failures', async () => {
+    const snapshot = { repositoryId: 'repo', analysisRevision: 'rev', projectId: 'project', analysisHash: 'hash',
+      nodeId: 'root', name: 'Root', depth: 0, metrics: { fileCount: 0, sourceBytes: 0, symbolCount: 0 },
+      candidates: [], dependencies: [], excerpts: [] };
+    const detail = 'group assignment: missing [g1]; duplicate []; unknown positions [0:1]. Each candidate must be assigned exactly once.';
+    const decide = vi.fn().mockRejectedValueOnce(new ModuleHierarchyDecisionError(detail)).mockRejectedValueOnce(new Error('private-provider-body'));
+    const url = await listen({ adapt: vi.fn() }, { moduleHierarchyPlanner: { decide } });
+    const send = () => fetch(`${url}/module-hierarchy/decision`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(snapshot) });
+    const failed = await send();
+    expect(failed.status).toBe(502);
+    expect(await failed.json()).toEqual({ code: 'MODULE_DECISION_INVALID', detail });
+    expect(await (await send()).text()).not.toContain('private-provider-body');
+  });
   it('serves health check', async () => {
     const adapter: CodeAdaptationPort = { adapt: vi.fn() };
     const url = await listen(adapter);

@@ -1,3 +1,5 @@
+import { validateModelKey } from '../model-credential';
+import { parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
 import type {
   WorkspaceTranslationRun,
   AdaptationResult,
@@ -28,10 +30,11 @@ export interface PanelInitPayload {
   serviceStatus: ServiceStatus;
   moduleExplorer: ModuleExplorerPresentation;
   searchProvider: 'SeekDB';
-  adaptationProvider: 'DeepSeek';
+  adaptationProvider: string;
 }
 
 export interface PanelSettingsPresentation {
+  llm?: LlmSettings;
   repositoryPaths: string[];
   topK: number;
 }
@@ -46,6 +49,9 @@ export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: stri
 
 /** Messages the extension host posts into the Webview. */
 export type HostToWebviewMessage =
+  | { type: 'REQUEST_SETTINGS_SAVE' }
+  | { type: 'REFERENCE_FOLDERS_SELECTED'; requestId: string; paths: string[]; error?: string }
+  | { type: 'MODEL_KEY_STATUS'; configured: boolean; message?: string }
   | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean } }
   | { type: 'WORKSPACE_TRANSLATION_ERROR'; requestId: string; message: string }
   | { type: 'INIT'; payload: PanelInitPayload }
@@ -70,6 +76,10 @@ export type HostToWebviewMessage =
  * candidate objects, validation evidence, or patches to be written.
  */
 export type WebviewToHostMessage =
+  | { type: 'SETTINGS_VISIBILITY_CHANGED'; open: boolean }
+  | { type: 'BROWSE_REFERENCE_FOLDERS'; requestId: string }
+  | { type: 'CONFIGURE_MODEL_KEY' }
+  | { type: 'CLEAR_MODEL_KEY' }
   | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string }
   | { type: 'READY' }
   | { type: 'START_TASK_SEARCH'; requestId: string; targetScope: TaskSearchTargetScope; request: TaskSearchIntent }
@@ -87,7 +97,7 @@ export type WebviewToHostMessage =
   | { type: 'CHECK_REPOSITORIES' }
   | { type: 'REFRESH_MODULE_EXPLORER' }
   | { type: 'REFRESH_REPOSITORY'; repositoryId: string }
-  | { type: 'SAVE_SETTINGS'; settings: PanelSettingsPresentation }
+  | { type: 'SAVE_SETTINGS'; settings: PanelSettingsPresentation; modelKey?: string | null }
   /**
    * Opaque IDs only. The extension host verifies that the exact revision
    * already belongs to the registered repository before using it read-only.
@@ -101,6 +111,9 @@ export type WebviewToHostMessage =
   | { type: 'OPEN_TARGET' };
 
 const hostMessageTypes = new Set<string>([
+  'REQUEST_SETTINGS_SAVE',
+  'REFERENCE_FOLDERS_SELECTED',
+  'MODEL_KEY_STATUS',
   'WORKSPACE_TRANSLATION_RESULT',
   'WORKSPACE_TRANSLATION_ERROR',
   'INIT',
@@ -126,6 +139,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (typeof value !== 'object' || value === null) return false;
   const message = value as Record<string, unknown>;
   switch (message.type) {
+    case 'SETTINGS_VISIBILITY_CHANGED':
+      return hasOnlyKeys(message, ['type', 'open']) && typeof message.open === 'boolean';
     case 'WORKSPACE_TRANSLATION': {
       if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
       if (message.action === 'describe') return hasOnlyKeys(message, ['type', 'requestId', 'action']);
@@ -148,11 +163,14 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'START_TASK_SEARCH':
       return hasOnlyKeys(message, ['type', 'requestId', 'targetScope', 'request']) &&
         isOpaqueIdentifier(message.requestId) && isTaskSearchScope(message.targetScope) && isTaskSearchIntent(message.request);
+    case 'BROWSE_REFERENCE_FOLDERS':
     case 'CANCEL_TASK_SEARCH':
       return hasOnlyKeys(message, ['type', 'requestId']) && isOpaqueIdentifier(message.requestId);
     case 'ADD_TARGET_WORKSPACE':
       return hasOnlyKeys(message, ['type', 'mode']) && typeof message.mode === 'string' && ['browse', 'input', 'workspace'].includes(message.mode);
     case 'READY':
+    case 'CONFIGURE_MODEL_KEY':
+    case 'CLEAR_MODEL_KEY':
     case 'APPLY_CURRENT_RUN':
     case 'CHECK_REPOSITORIES':
     case 'REFRESH_MODULE_EXPLORER':
@@ -162,8 +180,10 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return hasOnlyKeys(message, ['type']);
     case 'SAVE_SETTINGS':
       return (
-        hasOnlyKeys(message, ['type', 'settings']) &&
-        isPanelSettings(message.settings)
+        Object.keys(message).every(key => ['type', 'settings', 'modelKey'].includes(key)) &&
+        isPanelSettings(message.settings) &&
+        (message.modelKey === undefined || message.modelKey === null ||
+          (typeof message.modelKey === 'string' && !validateModelKey(message.modelKey)))
       );
     case 'START_SEARCH':
       return (
@@ -244,7 +264,8 @@ function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
   if (typeof value !== 'object' || value === null) return false;
   const settings = value as Record<string, unknown>;
   return (
-    hasOnlyKeys(settings, ['repositoryPaths', 'topK']) &&
+    (hasOnlyKeys(settings, ['repositoryPaths', 'topK']) || hasOnlyKeys(settings, ['repositoryPaths', 'topK', 'llm'])) &&
+    (settings.llm === undefined || isLlmSettings(settings.llm)) &&
     Array.isArray(settings.repositoryPaths) &&
     settings.repositoryPaths.length <= 20 &&
     settings.repositoryPaths.every(
@@ -255,6 +276,10 @@ function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
     settings.topK >= 1 &&
     settings.topK <= 10
   );
+}
+
+function isLlmSettings(value: unknown): value is LlmSettings {
+  try { parseLlmSettings(value); return true; } catch { return false; }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {

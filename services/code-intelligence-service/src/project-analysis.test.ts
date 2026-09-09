@@ -182,6 +182,8 @@ describe('project understanding lifecycle', () => {
     const record = await projects.read(scope);
     expect(record.state).toBe('failed');
     expect(record.error).toBeTruthy();
+    if (mode === 'invalid') expect(record.error).toContain('evidenceIds contains unknown or duplicate IDs');
+    if (mode === 'failed') expect(record.error).not.toContain('Provider unavailable');
     expect(record.proposal).toBeUndefined();
     expect(record.coverage).toBeUndefined();
     expect(record.planHash).toBeUndefined();

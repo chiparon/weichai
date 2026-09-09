@@ -19,7 +19,7 @@ import {
 const config = loadConfig();
 
 const adapter = new AdaptationAdapter({
-  apiKey: config.apiKey,
+  apiKey: () => config.apiKey,
   skeletonProjectPath: config.skeletonProjectPath,
   projectRoot: config.projectRoot,
 });
@@ -35,13 +35,13 @@ async function main(): Promise<void> {
       verification: config.workspaceTranslation.verification,
       maxModelTurns: config.workspaceTranslation.maxModelTurns,
       timeoutMs: config.workspaceTranslation.timeoutMs,
-      client: createWorkspaceTranslationModelClient({ apiKey: config.apiKey, temperature: 0 }),
+      client: createWorkspaceTranslationModelClient({ apiKey: () => config.apiKey, temperature: 0 }),
     });
   }
   // Legacy /v1/module-plan remains snapshot-compatible. The semantic route is
   // explicitly opt-in and talks only to the VS Code host's read-only HTTP
   // SemanticQueryPort endpoint; this process never creates an index runtime.
-  const semanticModel = createDeepSeekToolCallingArchitectClient({ apiKey: config.apiKey, temperature: 0 });
+  const semanticModel = createDeepSeekToolCallingArchitectClient({ apiKey: () => config.apiKey, temperature: 0 });
   const semanticArchitecturePort = config.semanticQueryPort
     ? new ToolCallingArchitectRuntime({
       queryPort: new HttpSemanticQueryPort(config.semanticQueryPort),
@@ -58,10 +58,10 @@ async function main(): Promise<void> {
       complete: (messages, signal) => observeAgentModelCall({
         strategy: 'hierarchy', model: deepSeekModelConfig.model, inputChars: JSON.stringify(messages).length,
       }, () => completeWithDeepSeek(messages, {
-        apiKey: config.apiKey, temperature: 0, jsonMode: true,
+        apiKey: () => config.apiKey, temperature: 0, jsonMode: true,
       }, signal), (result) => result.length, signal),
     }),
-    architecturePort: new ArchitectAgent({ apiKey: config.apiKey }),
+    architecturePort: new ArchitectAgent({ apiKey: () => config.apiKey }),
     staticAnalysisSnapshots: new FileStaticAnalysisSnapshotStore({
       analysisRoot: config.analysisRoot,
     }),

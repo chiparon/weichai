@@ -1,3 +1,4 @@
+import { DEFAULT_LLM_SETTINGS, parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
 import * as vscode from 'vscode';
 import type { ExecutionMode } from './ui-types';
 import {
@@ -12,12 +13,14 @@ export interface ExtensionSettings {
   repositoryPaths: string[];
   topK: number;
   adaptationApiUrl: string;
+  llm: LlmSettings;
 }
 
 export function loadSettings(): ExtensionSettings {
   const config = vscode.workspace.getConfiguration('forexplore');
   return {
     executionMode: 'real',
+    llm: parseLlmSettings(config.inspect<LlmSettings>('llm')?.globalValue ?? DEFAULT_LLM_SETTINGS),
     repositoryPaths: config.get<string[]>('repositoryPaths', []),
     topK: boundedTopK(config.get<number>('topK', 4)),
     adaptationApiUrl:
@@ -29,13 +32,19 @@ export function loadSettings(): ExtensionSettings {
 export async function savePanelSettings(input: {
   repositoryPaths: string[];
   topK: number;
-}): Promise<Pick<ExtensionSettings, 'repositoryPaths' | 'topK'>> {
+  llm?: LlmSettings;
+}): Promise<Pick<ExtensionSettings, 'repositoryPaths' | 'topK' | 'llm'>> {
+  const llm = parseLlmSettings(input.llm ?? loadSettings().llm);
   const repositoryPaths = [...new Set(input.repositoryPaths.map((value) => value.trim()).filter(Boolean))];
   const topK = boundedTopK(input.topK);
   const config = vscode.workspace.getConfiguration('forexplore');
-  await config.update('repositoryPaths', repositoryPaths, vscode.ConfigurationTarget.Global);
-  await config.update('topK', topK, vscode.ConfigurationTarget.Global);
-  return { repositoryPaths, topK };
+  // Update an existing workspace override so the newly saved value actually takes effect.
+  const target = (key: string) => config.inspect(key)?.workspaceValue !== undefined
+    ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+  await config.update('repositoryPaths', repositoryPaths, target('repositoryPaths'));
+  await config.update('topK', topK, target('topK'));
+  await config.update('llm', llm, vscode.ConfigurationTarget.Global);
+  return { repositoryPaths, topK, llm };
 }
 
 function boundedTopK(value: number): number {

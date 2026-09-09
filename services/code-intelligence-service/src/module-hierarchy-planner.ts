@@ -30,12 +30,16 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+export class ModuleHierarchyDecisionError extends Error {
+  constructor(readonly detail: string) { super(`Invalid module hierarchy decision: ${detail}`); }
+}
+
 function invalid(message: string): never {
-  throw new Error(`Invalid module hierarchy decision: ${message}`);
+  throw new ModuleHierarchyDecisionError(message);
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
-  if (Object.keys(value).some((key) => !keys.includes(key))) invalid('unexpected fields');
+  if (Object.keys(value).some((key) => !keys.includes(key))) invalid(`unexpected fields; allowed fields: ${keys.join(', ')}`);
 }
 
 function text(value: unknown, limit: number, field: string): string {
@@ -147,7 +151,10 @@ export function parseModuleHierarchyDecision(
   };
   const base = { ...metadata(value), reason: text(value.reason, 1_600, 'reason') };
   if (value.action === 'stop') {
-    exactKeys(value, ['action', 'name', 'nodeKind', 'description', 'reason', 'evidenceIds', 'stopReason']);
+    exactKeys(value, ['action', 'name', 'nodeKind', 'description', 'reason', 'evidenceIds', 'stopReason', 'children']);
+    // Some JSON-mode providers emit an empty array for an omitted optional list.
+    // Canonical stops still contain no children; nonempty/ambiguous values are rejected.
+    if (value.children !== undefined && (!Array.isArray(value.children) || value.children.length > 0)) invalid('stop cannot include nonempty children');
     const stopReason = value.stopReason === undefined ? 'cohesive' : value.stopReason;
     if (stopReason !== 'cohesive' && stopReason !== 'insufficient-evidence' && stopReason !== 'no-valid-split') invalid('unknown stopReason');
     return { action: 'stop', ...base, stopReason };
@@ -157,6 +164,21 @@ export function parseModuleHierarchyDecision(
     invalid('split requires at least two nonempty children');
   }
   const groups = new Set(request.candidates.map((candidate) => candidate.id));
+  const ownership = new Map<string, number>();
+  const unknownPositions: string[] = [];
+  value.children.forEach((child, childIndex) => {
+    if (!record(child) || !Array.isArray(child.groupIds)) return;
+    child.groupIds.forEach((id, index) => {
+      if (typeof id !== 'string' || !groups.has(id)) unknownPositions.push(`${childIndex}:${index}`);
+      else ownership.set(id, (ownership.get(id) ?? 0) + 1);
+    });
+  });
+  const missing = [...groups].filter(id => !ownership.has(id));
+  const duplicate = [...ownership].filter(([, count]) => count > 1).map(([id]) => id);
+  if (missing.length || duplicate.length || unknownPositions.length) {
+    // Only known snapshot IDs and positions are echoed; invalid model values may contain secrets or instructions.
+    invalid(`group assignment: missing [${missing.join(', ')}]; duplicate [${duplicate.join(', ')}]; unknown positions [${unknownPositions.join(', ')}]. Each candidate must be assigned exactly once.`);
+  }
   const groupEvidence = new Map(request.candidates.map((candidate) => [candidate.id, candidate.evidenceIds]));
   const assigned = new Set<string>();
   const children = value.children.map((child: unknown) => {
@@ -200,7 +222,16 @@ export class ModelModuleHierarchyPlanner implements ModuleHierarchyPlanner {
   async decide(request: ModuleHierarchyDecisionRequest, parentSignal?: AbortSignal): Promise<ModuleHierarchyDecision> {
     parentSignal?.throwIfAborted();
     const bounded = parseModuleHierarchyDecisionRequest(request);
-    const input = JSON.stringify(bounded);
+    const aliases = new Map(bounded.candidates.map((candidate, index) => [candidate.id, `g${index + 1}`]));
+    const evidenceAliases = new Map([...requestEvidence(bounded)].map((id, index) => [id, `e${index + 1}`]));
+    const wire = { ...bounded,
+      candidates: bounded.candidates.map(candidate => ({ ...candidate, id: aliases.get(candidate.id)!, evidenceIds: candidate.evidenceIds.map(id => evidenceAliases.get(id)!) })),
+      dependencies: bounded.dependencies.map(edge => ({ ...edge, sourceId: aliases.get(edge.sourceId)!, targetId: aliases.get(edge.targetId)!, evidenceIds: edge.evidenceIds.map(id => evidenceAliases.get(id)!) })),
+      excerpts: bounded.excerpts.map(excerpt => ({ ...excerpt, evidenceId: evidenceAliases.get(excerpt.evidenceId)! })),
+    };
+    const realGroups = new Map([...aliases].map(([real, alias]) => [alias, real]));
+    const realEvidence = new Map([...evidenceAliases].map(([real, alias]) => [alias, real]));
+    const input = JSON.stringify(wire);
     if (input.length + systemPrompt.length > this.maxInputChars) throw new Error('Module hierarchy evidence exceeds the model input budget.');
     const signal = AbortSignal.any([...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(this.timeoutMs)]);
     const messages: ModuleHierarchyMessage[] = [{ role: 'system', content: systemPrompt }, { role: 'user', content: input }];
@@ -217,7 +248,12 @@ export class ModelModuleHierarchyPlanner implements ModuleHierarchyPlanner {
       signal.throwIfAborted();
       if (output.length > this.maxOutputChars) throw new Error('Module hierarchy model response exceeds the output budget.');
       try {
-        return parseModuleHierarchyDecision(output, request);
+        const decision = parseModuleHierarchyDecision(output, wire);
+        const restored = { ...decision, evidenceIds: decision.evidenceIds.map(id => realEvidence.get(id)!),
+          ...(decision.action === 'split' ? { children: decision.children.map(child => ({ ...child,
+            groupIds: child.groupIds.map(id => realGroups.get(id)!), evidenceIds: child.evidenceIds.map(id => realEvidence.get(id)!),
+          })) } : {}) };
+        return parseModuleHierarchyDecision(restored, bounded);
       } catch (error) {
         if (attempt === this.maxRepairs) throw error;
         const feedback = `Your previous decision failed validation: ${error instanceof Error ? error.message : 'invalid schema'}. Return a corrected JSON decision using the original evidence snapshot.`;

@@ -40,6 +40,7 @@ export async function run(): Promise<void> {
   const commands = await vscode.commands.getCommands(true);
   for (const command of [
     'forexplore.showPanel',
+    'forexplore.savePanelSettings',
     'forexplore.checkRepositories',
     'forexplore.reindex',
     'forexplore.refreshCodeIntelligence',

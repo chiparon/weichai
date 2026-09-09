@@ -15,7 +15,7 @@ import { selectedCandidate } from '@forexplore/workflow-core';
 interface CandidatesStageProps {
   state: WorkflowState;
   dispatch: React.Dispatch<WorkflowEvent>;
-  adaptationProvider: 'DeepSeek';
+  adaptationProvider: string;
   onSelectCandidate: (candidateId: string) => void;
   onAdapt: () => void;
 }

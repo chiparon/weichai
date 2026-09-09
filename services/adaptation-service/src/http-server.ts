@@ -1,3 +1,5 @@
+import { modelSettingsScope, requestModelSettings } from './model-request';
+import { modelCredentialScope, requestModelCredential } from './model-credential';
 import {
   createServer,
   type IncomingMessage,
@@ -5,7 +7,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
+import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { WorkspaceTranslationError, type WorkspaceTranslationRuntime } from "./workspace-translation-runtime";
 import {
   moduleMigrationSchemaVersion,
@@ -254,7 +256,7 @@ export function createHttpServer(options: HttpServerOptions): Server {
   if (options.workspaceTranslation && options.workspaceTranslation.bearerToken.trim().length < 32) {
     throw new Error("Workspace translation requires a bearer token of at least 32 characters.");
   }
-  return createServer(async (request, response) => {
+  const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "OPTIONS") {
       json(response, 204, null, options.corsOrigin);
       return;
@@ -385,7 +387,11 @@ export function createHttpServer(options: HttpServerOptions): Server {
           const decision = parseModuleHierarchyDecision(await options.moduleHierarchyPlanner.decide(body, signal), body);
           signal.throwIfAborted();
           json(response, 200, decision, options.corsOrigin);
-        } catch {
+        } catch (error) {
+          if (error instanceof ModuleHierarchyDecisionError) {
+            json(response, 502, { code: 'MODULE_DECISION_INVALID', detail: error.detail }, options.corsOrigin);
+            return;
+          }
           throw new HttpError(signal.aborted ? 504 : 502, signal.aborted ? 'Module hierarchy decision timed out or was cancelled.' : 'Module hierarchy model could not produce a valid decision.');
         } finally { response.removeListener('close', disconnect); }
         return;
@@ -448,5 +454,12 @@ export function createHttpServer(options: HttpServerOptions): Server {
       if (!(error instanceof HttpError) && !(error instanceof WorkspaceTranslationError)) console.error(error);
       json(response, status, { error: message }, options.corsOrigin);
     }
+  };
+  return createServer((request, response) => {
+    let credential: string | undefined;
+    let modelSettings;
+    try { credential = requestModelCredential(request); modelSettings = requestModelSettings(request); }
+    catch { json(response, 403, { error: 'Invalid local IDE credential request.' }, options.corsOrigin); return; }
+    void modelSettingsScope.run(modelSettings, () => modelCredentialScope.run(credential, () => handleRequest(request, response)));
   });
 }

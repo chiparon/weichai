@@ -1,5 +1,5 @@
 import type { ModuleHierarchyDecision, ModuleHierarchyDecisionRequest, ModuleHierarchyPlanner } from '@forexplore/contracts';
-import { parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
+import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { localFetch } from './local-fetch';
 
 export function moduleHierarchyEndpoint(adaptationApiUrl: string): string {
@@ -28,10 +28,17 @@ export class HttpModuleHierarchyPlanner implements ModuleHierarchyPlanner {
     const response = await this.fetcher(this.endpoint(), {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(bounded), signal,
     });
-    if (!response.ok) throw new Error(`Module hierarchy service request failed with HTTP ${response.status}.`);
     const content = await response.text();
     signal.throwIfAborted();
     if (content.length > 65_536) throw new Error('Module hierarchy service response exceeds its limit.');
+    if (!response.ok) {
+      let failure: { code?: string; detail?: string } = {};
+      try { failure = JSON.parse(content); } catch {}
+      if (failure?.code === 'MODULE_DECISION_INVALID' && typeof failure.detail === 'string' && failure.detail.length <= 4096) {
+        throw new ModuleHierarchyDecisionError(failure.detail);
+      }
+      throw new Error(`Module hierarchy service request failed with HTTP ${response.status}.`);
+    }
     return parseModuleHierarchyDecision(content, bounded);
   }
 }

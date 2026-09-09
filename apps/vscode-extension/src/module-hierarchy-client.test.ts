@@ -10,6 +10,13 @@ const snapshot: ModuleHierarchyDecisionRequest = {
 };
 
 describe('module hierarchy client boundary', () => {
+  it('preserves structured validation diagnostics while rejecting arbitrary provider errors', async () => {
+    const detail = 'group assignment: missing [g2]; duplicate [g1]; unknown positions [0:2]. Each candidate must be assigned exactly once.';
+    const fetcher = vi.fn(async () => Response.json({ code: 'MODULE_DECISION_INVALID', detail }, { status: 502 }));
+    await expect(new HttpModuleHierarchyPlanner('http://localhost:8788', fetcher).decide(snapshot)).rejects.toThrow(detail);
+    const bad = vi.fn(async () => Response.json({ error: 'private provider body' }, { status: 502 }));
+    await expect(new HttpModuleHierarchyPlanner('http://localhost:8788', bad).decide(snapshot)).rejects.toThrow(/^Module hierarchy service request failed with HTTP 502\.$/);
+  });
   it('strips base queries and rejects credential URLs and non-HTTP protocols', () => {
     expect(moduleHierarchyEndpoint('http://127.0.0.1:8788/prefix/?query=1#fragment')).toBe('http://127.0.0.1:8788/prefix/module-hierarchy/decision');
     expect(() => moduleHierarchyEndpoint('file:///private')).toThrow();

@@ -215,7 +215,8 @@ describe('adaptive module hierarchy builder', () => {
     expect(decide).toHaveBeenCalledTimes(1);
     expect(proposal.hierarchy?.modelDecisionCount).toBe(0);
     expect(proposal.hierarchy?.deferredCount).toBeGreaterThan(0);
-    expect(proposal.risks?.join(' ')).toContain('invalid');
+    expect(proposal.risks?.join(' ')).toContain('Invalid module hierarchy decision: group assignment: missing [');
+    expect(proposal.risks?.join(' ')).toContain('unknown positions [0:0]');
     assertOwnership(proposal);
   });
 

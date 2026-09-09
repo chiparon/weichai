@@ -130,39 +130,32 @@ export function SettingsPanel({
       </div>
 
       <section className="card settings-section" aria-label="AI 服务">
-        <div className="card-heading"><span>AI 服务</span><strong>{LLM_PRESETS[draftLlm.provider].label}</strong></div>
+        <div className="card-heading"><span>AI 服务</span></div>
         <div className="model-settings-grid">
           <label>服务商<select aria-label="AI 服务商" value={draftLlm.provider} disabled={saving}
             onChange={event => { const provider = event.target.value as LlmProvider; setDraftLlm(current => ({ ...current, provider, apiBase: LLM_PRESETS[provider].apiBase, model: LLM_PRESETS[provider].model })); }}>
             {Object.entries(LLM_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
           </select></label>
-          <label>模型名称<input aria-label="模型名称" value={draftLlm.model} maxLength={200} required disabled={saving}
+          <label>模型<input aria-label="模型名称" value={draftLlm.model} maxLength={200} required disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, model: event.target.value }))} /></label>
           {showApiBase ? <label className="model-endpoint">自定义 API 地址<input aria-label="API Base URL" type="url" value={draftLlm.apiBase} maxLength={1000} required disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, apiBase: event.target.value }))} /></label> : null}
-        </div>
-        <div className="model-key-section" role="group" aria-label={`${LLM_PRESETS[draftLlm.provider].label} API Key`}>
-          <div className="model-key-heading"><span>API Key</span><span className="muted-copy">{credentialChanged ? '服务商尚未保存' : modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</span></div>
-          <div className="model-key-controls">
-            <button type="button" className="model-key-field" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
-              <KeyRound size={15} /><span>{!credentialChanged && modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}</span>
-            </button>
-            {!credentialChanged && modelKeyStatus?.configured ? <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || !onClearModelKey}>清除保存的 Key</button> : null}
+          <div className="model-key-section" role="group" aria-label={`${LLM_PRESETS[draftLlm.provider].label} API Key`}>
+            <div className="model-key-heading"><span>API Key</span><span className="muted-copy">{credentialChanged ? '待保存' : modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</span></div>
+            <div className="model-key-controls">
+              <button type="button" className="model-key-field" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
+                <KeyRound size={15} /><span>{!credentialChanged && modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}</span>
+              </button>
+              {!credentialChanged && modelKeyStatus?.configured ? <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || !onClearModelKey}>清除保存的 Key</button> : null}
+            </div>
           </div>
-          <p className="muted-copy">{credentialChanged ? '先保存服务商，再配置对应的 API Key。' : '通过 VS Code 密码框录入并加密保存。'}</p>
-          {!credentialChanged && modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
-        </div>
-      </section>
-
-      <section className="card settings-section" aria-label="输出限制">
-        <div className="card-heading"><span>输出限制</span></div>
-        <div className="model-settings-grid">
-          <label>每次最大输出 Token<select aria-label="每次最大输出 Token" value={draftLlm.maxOutputTokens} disabled={saving}
+          <label>输出 Token 上限<select aria-label="每次最大输出 Token" value={draftLlm.maxOutputTokens} disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, maxOutputTokens: Number(event.target.value) }))}>
             {OUTPUT_TOKEN_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}
           </select></label>
         </div>
-        <p className="settings-intro">每次调用的最大输出，不包含输入 Token；多步骤任务会多次调用。请选择模型支持的上限。</p>
+        <p className="settings-intro">{credentialChanged ? '保存服务商后配置 Key；Token 仅限制单次输出。' : '密钥加密保存；Token 上限仅限制单次输出，不含输入。'}</p>
+        {!credentialChanged && modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
       </section>
 
       <section className="card settings-section">

@@ -2182,6 +2182,7 @@ button:disabled {
   gap: 10px;
   max-width: 720px;
   margin: 0 auto;
+  padding-bottom: 92px;
 }
 
 .settings-heading {
@@ -2408,6 +2409,34 @@ button:disabled {
 .settings-save {
   width: auto;
   min-width: 108px;
+}
+
+.settings-save-dock {
+  position: fixed;
+  right: 20px;
+  bottom: 44px;
+  z-index: 50;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px #00000040;
+}
+
+.settings-save kbd { margin-left: 8px; font: inherit; font-size: 10px; opacity: .75; }
+.settings-save-error, .settings-save-notice { margin: 0 0 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.settings-save-error { color: var(--error); }
+.settings-save-notice { color: var(--muted); text-align: right; }
+.model-key-section { display: grid; gap: 8px; margin-top: 16px; }
+.model-key-heading, .model-key-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-key-heading { font-size: 12px; }
+.model-key-field { display: flex; align-items: center; gap: 8px; flex: 1; padding: 10px 12px; border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 5px; color: var(--fg); background: var(--vscode-input-background, var(--surface-2)); text-align: left; }
+.model-key-field:hover:not(:disabled) { border-color: var(--accent); }
+.model-key-section p { margin: 0; }
+@media (max-width: 420px) {
+  .settings-save-dock { right: 12px; max-width: calc(100vw - 24px); }
+  .settings-save kbd { display: none; }
 }
 
 .overview-glyph {

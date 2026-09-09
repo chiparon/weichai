@@ -48,6 +48,7 @@ export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: stri
 
 /** Messages the extension host posts into the Webview. */
 export type HostToWebviewMessage =
+  | { type: 'REQUEST_SETTINGS_SAVE' }
   | { type: 'REFERENCE_FOLDERS_SELECTED'; requestId: string; paths: string[]; error?: string }
   | { type: 'MODEL_KEY_STATUS'; configured: boolean; message?: string }
   | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean } }
@@ -74,6 +75,7 @@ export type HostToWebviewMessage =
  * candidate objects, validation evidence, or patches to be written.
  */
 export type WebviewToHostMessage =
+  | { type: 'SETTINGS_VISIBILITY_CHANGED'; open: boolean }
   | { type: 'BROWSE_REFERENCE_FOLDERS'; requestId: string }
   | { type: 'CONFIGURE_MODEL_KEY' }
   | { type: 'CLEAR_MODEL_KEY' }
@@ -108,6 +110,7 @@ export type WebviewToHostMessage =
   | { type: 'OPEN_TARGET' };
 
 const hostMessageTypes = new Set<string>([
+  'REQUEST_SETTINGS_SAVE',
   'REFERENCE_FOLDERS_SELECTED',
   'MODEL_KEY_STATUS',
   'WORKSPACE_TRANSLATION_RESULT',
@@ -135,6 +138,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (typeof value !== 'object' || value === null) return false;
   const message = value as Record<string, unknown>;
   switch (message.type) {
+    case 'SETTINGS_VISIBILITY_CHANGED':
+      return hasOnlyKeys(message, ['type', 'open']) && typeof message.open === 'boolean';
     case 'WORKSPACE_TRANSLATION': {
       if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
       if (message.action === 'describe') return hasOnlyKeys(message, ['type', 'requestId', 'action']);

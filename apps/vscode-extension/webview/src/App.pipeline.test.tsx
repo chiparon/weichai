@@ -179,7 +179,7 @@ it('opens without a method, saves two history paths, displays durable summaries 
   });
   await enter(0, paths[0]!); await clickText('添加路径'); await enter(1, paths[1]!);
   await act(async () => {
-    container.querySelector('.settings-panel')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    post({ type: 'REQUEST_SETTINGS_SAVE' });
     await Promise.all(pending);
   });
   expect(sent).toContainEqual({ type: 'SAVE_SETTINGS', settings: expect.objectContaining({ repositoryPaths: paths.slice(0, 2), topK: 4 }) });

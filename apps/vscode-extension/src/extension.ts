@@ -189,6 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     output,
+    vscode.commands.registerCommand('forexplore.savePanelSettings', () => { publish({ type: 'REQUEST_SETTINGS_SAVE' }); }),
     services,
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
@@ -295,7 +296,7 @@ async function configureModelKey(context: vscode.ExtensionContext, clear: boolea
     const id = modelCredentialId(endpoint, llm);
     if (clear) {
       await context.secrets.delete(id);
-      await publishModelKeyStatus(context, '已清除当前服务的 Key。默认 DeepSeek 地址仍可使用后端环境配置。');
+      await publishModelKeyStatus(context, '已清除当前服务在插件中保存的 Key。');
       return;
     }
     const value = await vscode.window.showInputBox({
@@ -391,6 +392,9 @@ async function handlePanelMessage(
       } catch (error) {
         publishError(errorMessage(error, '添加目标工程失败'));
       }
+      return;
+    case 'SETTINGS_VISIBILITY_CHANGED':
+      await vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', message.open);
       return;
     case 'BROWSE_REFERENCE_FOLDERS':
       try {

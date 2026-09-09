@@ -1,7 +1,7 @@
 import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, OUTPUT_TOKEN_LIMITS, parseLlmSettings, type LlmProvider } from '@forexplore/contracts';
 import { mergeReferencePaths } from '../reference-folder-picker';
-import { FolderPlus, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { FolderPlus, KeyRound, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PanelSettingsPresentation } from '../../../src/protocol/messages';
 import type {
   CodeIntelligencePresentation,
@@ -17,6 +17,7 @@ interface SettingsPanelProps extends PanelSettingsPresentation {
   repositoryStatuses: RepositoryStatus[];
   codeIntelligence?: CodeIntelligencePresentation | null;
   saving: boolean;
+  saveMessage?: string;
   onCheckRepositories(): void;
   /** Selects only a host-verified opaque repository/revision pair for read-only display. */
   onSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void;
@@ -37,15 +38,18 @@ export function SettingsPanel({
   repositoryStatuses,
   codeIntelligence,
   saving,
+  saveMessage,
   onCheckRepositories,
   onSelectCodeIntelligenceRevision,
   onSelectCodeIntelligenceProject,
   onSave,
   onCancel,
 }: SettingsPanelProps) {
+  const formRef = useRef<HTMLFormElement>(null);
   const [draftLlm, setDraftLlm] = useState(llm);
   const [browsing, setBrowsing] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const showApiBase = draftLlm.provider === 'custom' || draftLlm.apiBase !== LLM_PRESETS[draftLlm.provider].apiBase;
   const credentialChanged = draftLlm.provider !== llm.provider || draftLlm.apiBase !== llm.apiBase;
   useEffect(() => { setDraftLlm(llm); }, [llm]);
 
@@ -61,6 +65,24 @@ export function SettingsPanel({
     () => mergeReferencePaths(draftPaths, []),
     [draftPaths],
   );
+  const dirty = draftTopK !== topK || JSON.stringify(draftLlm) !== JSON.stringify(llm) ||
+    JSON.stringify(normalizedPaths) !== JSON.stringify(repositoryPaths);
+
+  useEffect(() => {
+    const requestSave = () => { if (!saving && !browsing) formRef.current?.requestSubmit(); };
+    const keydown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 's') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) requestSave();
+    };
+    window.addEventListener('keydown', keydown, true);
+    window.addEventListener('recast-save-settings', requestSave);
+    return () => {
+      window.removeEventListener('keydown', keydown, true);
+      window.removeEventListener('recast-save-settings', requestSave);
+    };
+  }, [saving, browsing]);
 
   function updatePath(index: number, value: string): void {
     setDraftPaths((current) => current.map((path, itemIndex) => itemIndex === index ? value : path));
@@ -72,6 +94,7 @@ export function SettingsPanel({
 
   function submit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    if (saving || browsing) return;
     try {
       const model = parseLlmSettings(draftLlm);
       setFormError(null);
@@ -97,7 +120,7 @@ export function SettingsPanel({
   }
 
   return (
-    <form className="settings-panel" onSubmit={submit}>
+    <form ref={formRef} className="settings-panel" onSubmit={submit}>
       <div className="settings-heading">
         <span className="settings-glyph"><Settings2 size={18} /></span>
         <div>
@@ -115,28 +138,31 @@ export function SettingsPanel({
           </select></label>
           <label>模型名称<input aria-label="模型名称" value={draftLlm.model} maxLength={200} required disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, model: event.target.value }))} /></label>
-          <label className="model-endpoint">API Base URL<input aria-label="API Base URL" type="url" value={draftLlm.apiBase} maxLength={1000} required disabled={saving}
-            onChange={event => setDraftLlm(current => ({ ...current, apiBase: event.target.value }))} /></label>
+          {showApiBase ? <label className="model-endpoint">自定义 API 地址<input aria-label="API Base URL" type="url" value={draftLlm.apiBase} maxLength={1000} required disabled={saving}
+            onChange={event => setDraftLlm(current => ({ ...current, apiBase: event.target.value }))} /></label> : null}
+        </div>
+        <div className="model-key-section" role="group" aria-label={`${LLM_PRESETS[draftLlm.provider].label} API Key`}>
+          <div className="model-key-heading"><span>API Key</span><span className="muted-copy">{credentialChanged ? '服务商尚未保存' : modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</span></div>
+          <div className="model-key-controls">
+            <button type="button" className="model-key-field" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
+              <KeyRound size={15} /><span>{!credentialChanged && modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}</span>
+            </button>
+            {!credentialChanged && modelKeyStatus?.configured ? <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || !onClearModelKey}>清除保存的 Key</button> : null}
+          </div>
+          <p className="muted-copy">{credentialChanged ? '先保存服务商，再配置对应的 API Key。' : '通过 VS Code 密码框录入并加密保存。'}</p>
+          {!credentialChanged && modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
+        </div>
+      </section>
+
+      <section className="card settings-section" aria-label="输出限制">
+        <div className="card-heading"><span>输出限制</span></div>
+        <div className="model-settings-grid">
           <label>每次最大输出 Token<select aria-label="每次最大输出 Token" value={draftLlm.maxOutputTokens} disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, maxOutputTokens: Number(event.target.value) }))}>
             {OUTPUT_TOKEN_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}
           </select></label>
         </div>
-        <p className="settings-intro">限制每次模型调用的最大输出，不包含输入 Token；多步骤任务会多次调用。模型须支持所选上限，模型名称可按账号权限修改。</p>
-        <p className="muted-copy">{draftLlm.provider === 'anthropic' ? '使用 Claude Messages 原生接口，支持工具调用。' : '使用 Chat Completions 兼容接口，支持工具调用。'} API 地址填写到版本路径，不含 /messages 或 /chat/completions。</p>
-      </section>
-
-      <section className="card settings-section" aria-label="API Key">
-        <div className="card-heading"><span>{LLM_PRESETS[llm.provider].label} API Key</span><strong>{modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</strong></div>
-        <p className="settings-intro">通过 VS Code 密码输入框加密保存，按服务商与 API 地址隔离。只有默认 DeepSeek 地址可回退到后端环境配置。</p>
-        <div className="settings-actions">
-          <button type="button" className="secondary-action" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
-            {modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}
-          </button>
-          <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || credentialChanged || !modelKeyStatus?.configured || !onClearModelKey}>清除保存的 Key</button>
-        </div>
-        {credentialChanged ? <p role="status" className="muted-copy">请先保存服务商和 API 地址，再配置对应的 Key。</p> : null}
-        {modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
+        <p className="settings-intro">每次调用的最大输出，不包含输入 Token；多步骤任务会多次调用。请选择模型支持的上限。</p>
       </section>
 
       <section className="card settings-section">
@@ -315,15 +341,18 @@ export function SettingsPanel({
         </button>
       </section>
 
-      {formError ? <p role="alert" className="error-banner">{formError}</p> : null}
-      <div className="settings-actions">
-        <button type="button" className="secondary-action" onClick={onCancel} disabled={saving}>
-          <X size={14} /> 取消
-        </button>
-        <button type="submit" className="primary-action settings-save" disabled={saving || browsing}>
-          {saving ? <span className="spinner" /> : <Save size={14} />}
-          {saving ? '正在保存…' : '保存设置'}
-        </button>
+      <div className="settings-save-dock" role="group" aria-label="保存设置操作">
+        {formError ? <p role="alert" className="settings-save-error">{formError}</p> : null}
+        {!formError && !saving && saveMessage && !dirty ? <p role="status" className="settings-save-notice">{saveMessage}</p> : null}
+        <div className="settings-actions">
+          <button type="button" className="secondary-action" onClick={onCancel} disabled={saving}>
+            <X size={14} /> 取消
+          </button>
+          <button type="submit" className="primary-action settings-save" aria-keyshortcuts="Control+S Meta+S" title="保存设置 (Ctrl+S / ⌘S)" disabled={saving || browsing}>
+            {saving ? <span className="spinner" /> : <Save size={14} />}
+            {saving ? '正在保存…' : '保存设置'}<kbd>Ctrl+S</kbd>
+          </button>
+        </div>
       </div>
     </form>
   );

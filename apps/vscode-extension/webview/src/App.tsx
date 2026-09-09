@@ -57,6 +57,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  useEffect(() => {
+    bus.post({ type: 'SETTINGS_VISIBILITY_CHANGED', open: settingsOpen });
+    setSettingsSaveMessage('');
+  }, [bus, settingsOpen]);
   const [modelKeyStatus, setModelKeyStatus] = useState<{ configured: boolean; message?: string }>({ configured: false });
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef<WorkflowState['pending']>(null);
@@ -69,6 +74,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     bus.post({ type: 'READY' });
     return bus.subscribe((message) => {
       switch (message.type) {
+        case 'REQUEST_SETTINGS_SAVE':
+          window.dispatchEvent(new Event('recast-save-settings'));
+          break;
         case 'INIT':
           settingsRef.current = message.payload.settings;
           setPayload(message.payload);
@@ -129,6 +137,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           setVisibleStep('target');
           break;
         case 'SETTINGS_UPDATED':
+          setSettingsSaveMessage('设置已保存');
           settingsRef.current = message.settings;
           setPayload((current) => current ? { ...current, settings: message.settings } : current);
           dispatch({ type: 'SET_TOP_K', value: message.settings.topK });
@@ -213,6 +222,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   function handleSaveSettings(settings: PanelSettingsPresentation): void {
     setError(null);
     setSettingsSaving(true);
+    setSettingsSaveMessage('');
     bus.post({ type: 'SAVE_SETTINGS', settings });
   }
 
@@ -351,6 +361,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
             repositoryStatuses={repositoryStatuses}
             codeIntelligence={codeIntelligence}
             saving={settingsSaving}
+            saveMessage={settingsSaveMessage}
             onCheckRepositories={handleCheckRepositories}
             onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
             onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}

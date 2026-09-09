@@ -69,6 +69,7 @@ export class TranslationPanel {
       instance.handlers.onMessage(message);
     });
     panel.onDidDispose(() => {
+      void vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', false);
       if (TranslationPanel.current === instance) TranslationPanel.current = undefined;
     });
     panel.webview.html = await buildHtml(panel.webview, context.extensionUri);

@@ -103,6 +103,10 @@
       {
         "command": "forexplore.recoverModuleMigrationReview",
         "title": "RECAST: 恢复模块迁移审阅状态"
+      },
+      {
+        "command": "forexplore.savePanelSettings",
+        "title": "RECAST: 保存设置"
       }
     ],
     "configuration": {
@@ -234,7 +238,15 @@
           }
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "forexplore.savePanelSettings",
+        "key": "ctrl+s",
+        "mac": "cmd+s",
+        "when": "activeWebviewPanelId == forexplore.translation && forexplore.settingsOpen"
+      }
+    ]
   },
   "scripts": {
     "build": "npm run build:webview && npm run build:extension",

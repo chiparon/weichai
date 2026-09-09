@@ -265,7 +265,7 @@ npm run test:project-analysis:live
 
 在 RECAST 面板右上角打开“设置”，选择 DeepSeek、OpenAI、Anthropic / Claude、Google Gemini、通义千问或自定义 OpenAI 兼容接口。预设会填入 API Base URL 与模型名称；模型可按账号实际开通权限修改。Claude 使用原生 `/messages` 和工具调用协议，其余使用 `/chat/completions`。
 
-1. 选择服务商，填写模型名称及 API Base URL（包含版本路径，不包含最终的 `/messages` 或 `/chat/completions`）。
+1. 在同一张 AI 服务卡片中选择服务商、填写模型名称并配置 API Key。常用服务使用内置地址；仅自定义接口或已有的非默认地址显示 URL 输入框。
 2. 选择“每次最大输出 Token”：1,024 / 2,048 / 4,096 / 8,192 / 16,384 / 32,768，默认 8,192。它限制每次模型请求的输出；输入 Token 和多步骤任务的累计用量不计入此限制。所选模型必须支持相应上限，输出截断会提示提高上限。
 3. 保存设置后，点击“配置 API Key”，在 VS Code 原生密码框输入。密钥不会进入 Webview、工作区设置或日志。密钥按服务商、API Base URL 与本地后端地址分别保存；切换服务后须配置对应 Key。
 
@@ -274,3 +274,5 @@ npm run test:project-analysis:live
 参考工程路径可通过“浏览文件夹（可多选）”调用系统文件夹选择器，仍可手动输入。选择仅更新当前草稿，保存后才登记与索引；取消选择保留草稿。支持最多 20 个工程，并对 Windows 路径的大小写和斜杠差异去重。
 
 Logo 源文件为 `media/recast-logo.svg`，扩展列表使用 `media/recast-logo.png`，活动栏使用同一图形的单色版本。
+
+设置页的保存操作固定在右下角，可随时点击或按 Ctrl+S（macOS：⌘S）。快捷键仅在 RECAST 设置打开时接管保存，并使用与按钮相同的表单校验流程；保存中和目录选择中不会重复提交。

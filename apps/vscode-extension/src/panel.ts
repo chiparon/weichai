@@ -56,6 +56,7 @@ export class TranslationPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
       },
     );
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'recast-logo.svg');
 
     const instance = new TranslationPanel(panel, context, payload, handlers);
     TranslationPanel.current = instance;

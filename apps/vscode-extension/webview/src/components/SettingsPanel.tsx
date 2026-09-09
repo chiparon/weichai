@@ -1,6 +1,7 @@
 import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, OUTPUT_TOKEN_LIMITS, parseLlmSettings, type LlmProvider } from '@forexplore/contracts';
+import { validateModelKey } from '../../../src/model-credential';
 import { mergeReferencePaths } from '../reference-folder-picker';
-import { FolderPlus, KeyRound, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
+import { FolderPlus, RefreshCw, Save, Settings2, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { PanelSettingsPresentation } from '../../../src/protocol/messages';
 import type {
@@ -12,8 +13,6 @@ import type {
 interface SettingsPanelProps extends PanelSettingsPresentation {
   modelKeyStatus?: { configured: boolean; message?: string };
   onBrowseReferenceFolders?(): Promise<string[]>;
-  onConfigureModelKey?(): void;
-  onClearModelKey?(): void;
   repositoryStatuses: RepositoryStatus[];
   codeIntelligence?: CodeIntelligencePresentation | null;
   saving: boolean;
@@ -23,7 +22,7 @@ interface SettingsPanelProps extends PanelSettingsPresentation {
   onSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void;
   /** Selects only a project inside the host-verified revision. */
   onSelectCodeIntelligenceProject(repositoryId: string, analysisRevision: string, projectId: string): void;
-  onSave(settings: PanelSettingsPresentation): void;
+  onSave(settings: PanelSettingsPresentation, modelKey?: string | null): void;
   onCancel(): void;
 }
 
@@ -31,8 +30,6 @@ export function SettingsPanel({
   llm = DEFAULT_LLM_SETTINGS,
   onBrowseReferenceFolders,
   modelKeyStatus,
-  onConfigureModelKey,
-  onClearModelKey,
   topK,
   repositoryPaths,
   repositoryStatuses,
@@ -47,11 +44,13 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const [draftLlm, setDraftLlm] = useState(llm);
+  const [draftKey, setDraftKey] = useState<string | null | undefined>(undefined);
   const [browsing, setBrowsing] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const showApiBase = draftLlm.provider === 'custom' || draftLlm.apiBase !== LLM_PRESETS[draftLlm.provider].apiBase;
   const credentialChanged = draftLlm.provider !== llm.provider || draftLlm.apiBase !== llm.apiBase;
-  useEffect(() => { setDraftLlm(llm); }, [llm]);
+  useEffect(() => { setDraftLlm(llm); setDraftKey(undefined); }, [llm]);
+  useEffect(() => { setDraftKey(undefined); }, [draftLlm.provider, draftLlm.apiBase]);
 
   const [draftTopK, setDraftTopK] = useState(topK);
   const [draftPaths, setDraftPaths] = useState<string[]>(repositoryPaths);
@@ -65,7 +64,7 @@ export function SettingsPanel({
     () => mergeReferencePaths(draftPaths, []),
     [draftPaths],
   );
-  const dirty = draftTopK !== topK || JSON.stringify(draftLlm) !== JSON.stringify(llm) ||
+  const dirty = draftKey !== undefined || draftTopK !== topK || JSON.stringify(draftLlm) !== JSON.stringify(llm) ||
     JSON.stringify(normalizedPaths) !== JSON.stringify(repositoryPaths);
 
   useEffect(() => {
@@ -97,8 +96,12 @@ export function SettingsPanel({
     if (saving || browsing) return;
     try {
       const model = parseLlmSettings(draftLlm);
+      const keyError = typeof draftKey === 'string' ? validateModelKey(draftKey) : undefined;
+      if (keyError) throw new Error(keyError);
       setFormError(null);
-      onSave({ topK: draftTopK, repositoryPaths: normalizedPaths, llm: model });
+      const settings = { topK: draftTopK, repositoryPaths: normalizedPaths, llm: model };
+      if (draftKey === undefined) onSave(settings);
+      else onSave(settings, draftKey === null ? null : draftKey.trim());
     } catch (error) { setFormError(error instanceof Error ? error.message : 'AI 配置无效。'); }
   }
 
@@ -141,12 +144,15 @@ export function SettingsPanel({
           {showApiBase ? <label className="model-endpoint">自定义 API 地址<input aria-label="API Base URL" type="url" value={draftLlm.apiBase} maxLength={1000} required disabled={saving}
             onChange={event => setDraftLlm(current => ({ ...current, apiBase: event.target.value }))} /></label> : null}
           <div className="model-key-section" role="group" aria-label={`${LLM_PRESETS[draftLlm.provider].label} API Key`}>
-            <div className="model-key-heading"><span>API Key</span><span className="muted-copy">{credentialChanged ? '待保存' : modelKeyStatus?.configured ? '插件已保存' : '插件未保存'}</span></div>
+            <label htmlFor="model-api-key">API Key</label>
             <div className="model-key-controls">
-              <button type="button" className="model-key-field" onClick={onConfigureModelKey} disabled={saving || credentialChanged || !onConfigureModelKey}>
-                <KeyRound size={15} /><span>{!credentialChanged && modelKeyStatus?.configured ? '更换 API Key' : '配置 API Key'}</span>
-              </button>
-              {!credentialChanged && modelKeyStatus?.configured ? <button type="button" className="text-button" onClick={onClearModelKey} disabled={saving || !onClearModelKey}>清除保存的 Key</button> : null}
+              <input id="model-api-key" aria-label="API Key" type="password" autoComplete="off" spellCheck={false}
+                value={draftKey ?? ''} maxLength={512} disabled={saving}
+                placeholder={draftKey !== null && !credentialChanged && modelKeyStatus?.configured ? '已保存（留空保留）' : '无'}
+                onChange={event => setDraftKey(event.target.value || undefined)} />
+              {!credentialChanged && modelKeyStatus?.configured ? <button type="button" className="icon-button" aria-label={draftKey === null ? '撤销清除 Key' : '清除保存的 Key'} title={draftKey === null ? '撤销清除 Key' : '清除保存的 Key（保存后生效）'} onClick={() => setDraftKey(draftKey === null ? undefined : null)} disabled={saving}>
+                {draftKey === null ? <RefreshCw size={14} /> : <Trash2 size={14} />}
+              </button> : null}
             </div>
           </div>
           <label>输出 Token 上限<select aria-label="每次最大输出 Token" value={draftLlm.maxOutputTokens} disabled={saving}
@@ -154,7 +160,7 @@ export function SettingsPanel({
             {OUTPUT_TOKEN_LIMITS.map(limit => <option key={limit} value={limit}>{limit.toLocaleString('en-US')} tokens</option>)}
           </select></label>
         </div>
-        <p className="settings-intro">{credentialChanged ? '保存服务商后配置 Key；Token 仅限制单次输出。' : '密钥加密保存；Token 上限仅限制单次输出，不含输入。'}</p>
+        <p className="settings-intro">填写 Key 后保存即启用服务商；Token 仅限制单次输出。</p>
         {!credentialChanged && modelKeyStatus?.message ? <p role="status" className="muted-copy">{modelKeyStatus.message}</p> : null}
       </section>
 

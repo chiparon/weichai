@@ -1,3 +1,4 @@
+import { validateModelKey } from '../model-credential';
 import { parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
 import type {
   WorkspaceTranslationRun,
@@ -96,7 +97,7 @@ export type WebviewToHostMessage =
   | { type: 'CHECK_REPOSITORIES' }
   | { type: 'REFRESH_MODULE_EXPLORER' }
   | { type: 'REFRESH_REPOSITORY'; repositoryId: string }
-  | { type: 'SAVE_SETTINGS'; settings: PanelSettingsPresentation }
+  | { type: 'SAVE_SETTINGS'; settings: PanelSettingsPresentation; modelKey?: string | null }
   /**
    * Opaque IDs only. The extension host verifies that the exact revision
    * already belongs to the registered repository before using it read-only.
@@ -179,8 +180,10 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return hasOnlyKeys(message, ['type']);
     case 'SAVE_SETTINGS':
       return (
-        hasOnlyKeys(message, ['type', 'settings']) &&
-        isPanelSettings(message.settings)
+        Object.keys(message).every(key => ['type', 'settings', 'modelKey'].includes(key)) &&
+        isPanelSettings(message.settings) &&
+        (message.modelKey === undefined || message.modelKey === null ||
+          (typeof message.modelKey === 'string' && !validateModelKey(message.modelKey)))
       );
     case 'START_SEARCH':
       return (

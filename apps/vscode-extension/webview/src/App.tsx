@@ -219,11 +219,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     bus.post({ type: 'REFRESH_MODULE_EXPLORER' });
   }
 
-  function handleSaveSettings(settings: PanelSettingsPresentation): void {
+  function handleSaveSettings(settings: PanelSettingsPresentation, modelKey?: string | null): void {
     setError(null);
     setSettingsSaving(true);
     setSettingsSaveMessage('');
-    bus.post({ type: 'SAVE_SETTINGS', settings });
+    bus.post({ type: 'SAVE_SETTINGS', settings, ...(modelKey !== undefined ? { modelKey } : {}) });
   }
 
   function handleSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void {
@@ -354,8 +354,6 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
             llm={payload.settings.llm}
             onBrowseReferenceFolders={() => browseReferenceFolders(bus)}
             modelKeyStatus={modelKeyStatus}
-            onConfigureModelKey={() => bus.post({ type: 'CONFIGURE_MODEL_KEY' })}
-            onClearModelKey={() => bus.post({ type: 'CLEAR_MODEL_KEY' })}
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}

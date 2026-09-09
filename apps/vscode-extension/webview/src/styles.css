@@ -2429,12 +2429,9 @@ button:disabled {
 .settings-save-error { color: var(--error); }
 .settings-save-notice { color: var(--muted); text-align: right; }
 .model-key-section { display: grid; gap: 7px; min-width: 0; align-content: start; }
-.model-key-heading, .model-key-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.model-key-heading { font-size: 12px; color: var(--vscode-descriptionForeground); }
-.model-key-controls { flex-wrap: wrap; }
-.model-key-field { display: flex; align-items: center; gap: 8px; flex: 1; padding: 8px 10px; border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 5px; color: var(--fg); background: var(--vscode-input-background, var(--surface-2)); text-align: left; }
-.model-key-field:hover:not(:disabled) { border-color: var(--accent); }
-.model-key-section p { margin: 0; }
+.model-key-controls { display: flex; align-items: center; gap: 8px; }
+.model-key-controls input { flex: 1; min-width: 0; }
+.model-key-controls .icon-button { flex-shrink: 0; height: 36px; }
 @media (max-width: 420px) {
   .settings-save-dock { right: 12px; max-width: calc(100vw - 24px); }
   .settings-save kbd { display: none; }
@@ -3292,3 +3289,6 @@ button:disabled {
 .model-settings-grid input, .model-settings-grid select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--vscode-input-border, #405363); border-radius: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
 .model-settings-grid .model-endpoint { grid-column: 1 / -1; }
 @media (max-width: 600px) { .model-settings-grid { grid-template-columns: 1fr; } }
+
+.model-settings-grid label { line-height: 18px; }
+.model-settings-grid input, .model-settings-grid select { height: 36px; }

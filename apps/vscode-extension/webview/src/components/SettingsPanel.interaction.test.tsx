@@ -8,6 +8,49 @@ import { SettingsPanel } from './SettingsPanel';
 let unmount: (() => void) | undefined;
 afterEach(() => { if (unmount) act(unmount); document.body.innerHTML = ''; });
 
+it('keeps failed key drafts for retry, clears them on provider changes/success, and stages deletion', async () => {
+  (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container); unmount = () => root.unmount();
+  const save = vi.fn();
+  const props = { llm: DEFAULT_LLM_SETTINGS, topK: 4, repositoryPaths: [], repositoryStatuses: [],
+    modelKeyStatus: { configured: true }, onCheckRepositories: vi.fn(), onSelectCodeIntelligenceProject: vi.fn(),
+    onSelectCodeIntelligenceRevision: vi.fn(), onSave: save, onCancel: vi.fn() };
+  await act(async () => root.render(<SettingsPanel {...props} saving={false} />));
+  const input = container.querySelector<HTMLInputElement>('[aria-label="API Key"]')!;
+  expect(input.value).toBe('');
+  expect(input.placeholder).toContain('留空保留');
+  const enter = async (value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await enter('invalid key');
+  await act(async () => window.dispatchEvent(new Event('recast-save-settings')));
+  expect(save).not.toHaveBeenCalled();
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  await enter('test-key');
+  await act(async () => window.dispatchEvent(new Event('recast-save-settings')));
+  expect(save).toHaveBeenLastCalledWith(expect.any(Object), 'test-key');
+  await act(async () => root.render(<SettingsPanel {...props} saving={true} />));
+  await act(async () => root.render(<SettingsPanel {...props} saving={false} />));
+  expect(input.value).toBe('test-key');
+  await act(async () => root.render(<SettingsPanel {...props} llm={{ ...DEFAULT_LLM_SETTINGS }} saving={false} />));
+  expect(input.value).toBe('');
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="清除保存的 Key"]')!.click());
+  expect(input.placeholder).toBe('无');
+  expect(save).toHaveBeenCalledTimes(1);
+  await act(async () => window.dispatchEvent(new Event('recast-save-settings')));
+  expect(save).toHaveBeenLastCalledWith(expect.any(Object), null);
+  await enter('must-not-follow-provider');
+  await act(async () => {
+    const provider = container.querySelector<HTMLSelectElement>('[aria-label="AI 服务商"]')!;
+    provider.value = 'openai'; provider.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(input.value).toBe('');
+  expect(input.placeholder).toBe('无');
+  expect(input.disabled).toBe(false);
+});
+
 it('browses into an unsaved draft, preserves cancellation, and saves provider/model/token together', async () => {
   (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement('div'); document.body.append(container);
@@ -16,7 +59,7 @@ it('browses into an unsaved draft, preserves cancellation, and saves provider/mo
   const browse = vi.fn().mockResolvedValueOnce(['D:/Legacy', 'D:/Added']).mockResolvedValueOnce([]);
   await act(async () => root.render(<SettingsPanel llm={DEFAULT_LLM_SETTINGS} topK={4} repositoryPaths={['D:/Legacy']} repositoryStatuses={[]} saving={false}
     onCheckRepositories={vi.fn()} onSelectCodeIntelligenceProject={vi.fn()} onSelectCodeIntelligenceRevision={vi.fn()}
-    onBrowseReferenceFolders={browse} onConfigureModelKey={vi.fn()} onSave={save} onCancel={vi.fn()} />));
+    onBrowseReferenceFolders={browse} onSave={save} onCancel={vi.fn()} />));
   const clickBrowse = () => [...container.querySelectorAll('button')].find(b => b.textContent?.includes('浏览文件夹'))!.click();
   await act(async () => clickBrowse());
   expect([...container.querySelectorAll<HTMLInputElement>('.repository-path-fields input')].map(i => i.value)).toEqual(['D:/Legacy', 'D:/Added']);
@@ -35,11 +78,18 @@ it('browses into an unsaved draft, preserves cancellation, and saves provider/mo
   expect(container.querySelector('[aria-label="API Base URL"]')).toBeNull();
   expect(container.querySelector('.model-key-section')!.getAttribute('aria-label')).toBe('Anthropic / Claude API Key');
   expect(container.querySelector('.model-key-section')!.textContent).not.toContain('DeepSeek');
-  expect([...container.querySelectorAll('button')].find(b => b.textContent?.includes('配置 API Key'))!.disabled).toBe(true);
+  const keyInput = container.querySelector<HTMLInputElement>('[aria-label="API Key"]')!;
+  expect(keyInput.disabled).toBe(false);
+  expect(keyInput.placeholder).toBe('无');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(keyInput, 'test-claude-key');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(save).not.toHaveBeenCalled();
   await act(async () => container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(save).toHaveBeenCalledWith({ topK: 4, repositoryPaths: ['D:/Legacy', 'D:/Added'], llm: {
     provider: 'anthropic', model: LLM_PRESETS.anthropic.model, apiBase: LLM_PRESETS.anthropic.apiBase, maxOutputTokens: 4096,
-  } });
+  } }, 'test-claude-key');
   expect(isWebviewToHostMessage({ type: 'SAVE_SETTINGS', settings: save.mock.calls[0]![0] })).toBe(true);
   expect(isWebviewToHostMessage({ type: 'SAVE_SETTINGS', settings: { ...save.mock.calls[0]![0], llm: { ...DEFAULT_LLM_SETTINGS, apiKey: 'secret' } } })).toBe(false);
   expect(isWebviewToHostMessage({ type: 'BROWSE_REFERENCE_FOLDERS', requestId: 'picker-1', paths: ['untrusted'] })).toBe(false);

@@ -1,4 +1,4 @@
-import { createModelCredentialProvider, modelCredentialId, validateModelKey } from './model-credential';
+import { createModelCredentialProvider, modelCredentialId, validateModelKey, saveWithModelCredential } from './model-credential';
 import { setModelCredentialProvider } from './local-fetch';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 import { createHash } from 'node:crypto';
@@ -443,7 +443,7 @@ async function handlePanelMessage(
       await publishProjectView(host.codeIntelligence);
       return;
     case 'SAVE_SETTINGS':
-      await updatePanelSettings(host, message.settings);
+      await updatePanelSettings(host, message.settings, message.modelKey);
       return;
     case 'SELECT_CODE_INTELLIGENCE_REVISION':
       await selectCodeIntelligenceRevision(host.codeIntelligence, message);
@@ -534,10 +534,12 @@ async function selectCodeIntelligenceProject(
 async function updatePanelSettings(
   host: ExtensionHost,
   settings: Extract<WebviewToHostMessage, { type: 'SAVE_SETTINGS' }>['settings'],
+  modelKey?: string | null,
 ): Promise<void> {
   let saved: Awaited<ReturnType<typeof savePanelSettings>>;
   try {
-    saved = await savePanelSettings(settings);
+    const current = loadSettings();
+    saved = await saveWithModelCredential(host.context.secrets, current.adaptationApiUrl, settings.llm ?? current.llm, modelKey, () => savePanelSettings(settings));
   } catch (error) {
     publishError(errorMessage(error, '保存设置失败'));
     return;

@@ -2,9 +2,9 @@ import { DEFAULT_LLM_SETTINGS, parseLlmSettings, type LlmSettings } from '@forex
 
 export interface ModelRequestContext { apiKey?: string; settings: LlmSettings }
 export interface CredentialStorage {
-  get(key: string): Thenable<string | undefined>;
-  store(key: string, value: string): Thenable<void>;
-  delete(key: string): Thenable<void>;
+  get(key: string): PromiseLike<string | undefined>;
+  store(key: string, value: string): PromiseLike<void>;
+  delete(key: string): PromiseLike<void>;
 }
 
 export function modelCredentialId(endpoint: string, settings?: LlmSettings): string {
@@ -38,4 +38,29 @@ export function createModelCredentialProvider(storage: CredentialStorage, endpoi
 
 export function validateModelKey(value: string): string | undefined {
   return /^[\x21-\x7e]{1,512}$/.test(value.trim()) ? undefined : '请输入有效 API Key（不能含空格或换行）。';
+}
+
+/** Store the draft credential before activating its provider; never return secret storage errors. */
+export async function saveWithModelCredential<T>(
+  storage: CredentialStorage, endpoint: string, settings: LlmSettings,
+  update: string | null | undefined, save: () => Promise<T>,
+): Promise<T> {
+  parseLlmSettings(settings);
+  if (typeof update === 'string' && validateModelKey(update)) throw new Error('API Key 格式无效。');
+  if (update === undefined) return save();
+  const id = modelCredentialId(endpoint, settings);
+  let previous: string | undefined;
+  try {
+    previous = await storage.get(id);
+    if (update === null) await storage.delete(id);
+    else await storage.store(id, update.trim());
+  } catch { throw new Error('密钥保存失败，未启用新的服务商，请重试。'); }
+  try { return await save(); }
+  catch {
+    try {
+      if (previous === undefined) await storage.delete(id);
+      else await storage.store(id, previous);
+    } catch { throw new Error('设置保存失败，密钥恢复失败，请重新填写并保存。'); }
+    throw new Error('设置保存失败，已恢复原有密钥，请重试。');
+  }
 }

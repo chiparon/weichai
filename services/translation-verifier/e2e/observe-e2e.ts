@@ -10,14 +10,14 @@ import { redactSecrets } from "../src/run-output/verification-logger.js";
 import {
   protectedSecrets,
   redact,
-} from "../src/strategies/multi-agent-differential/behavior-command.js";
-import { isProjectTestPath } from "../src/strategies/multi-agent-differential/behavior-workspace.js";
+} from "../src/strategies/multi-agent-write-box/behavior-command.js";
+import { isProjectTestPath } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
 import type {
   BehaviorAgentTask,
   BehaviorCommand,
   BehaviorCommandRecord,
   BehaviorRuntime,
-} from "../src/strategies/multi-agent-differential/behavior-types.js";
+} from "../src/strategies/multi-agent-write-box/behavior-types.js";
 
 const MAX_EVENTS = 10_000;
 const MAX_ITEMS = 1_000;

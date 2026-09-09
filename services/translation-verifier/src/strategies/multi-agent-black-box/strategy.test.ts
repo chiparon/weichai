@@ -11,13 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { calculatePatchHashV2 } from "@forexplore/workflow-core";
-import { hashContent } from "../multi-agent-differential/behavior-workspace.js";
+import { hashContent } from "../multi-agent-write-box/behavior-workspace.js";
 import type { FilePatch } from "@forexplore/contracts";
 import type {
   VerificationInput,
   VerificationStrategyContext,
 } from "../../schemas/verification-types.js";
-import type { BehaviorRuntime } from "../multi-agent-differential/behavior-types.js";
+import type { BehaviorRuntime } from "../multi-agent-write-box/behavior-types.js";
 import { createVerificationArtifactStore } from "../../run-output/verification-artifact-store.js";
 import { runManagedProcess } from "../smoke-differential/manage-test-process.js";
 import {
@@ -25,7 +25,7 @@ import {
   MULTI_AGENT_BLACK_BOX_STRATEGY,
 } from "./strategy.js";
 import { createDefaultVerificationService } from "../../create-default-verifier.js";
-import { createPreparation, capturePreparationFiles, restorePreparationFiles } from "../multi-agent-differential/preparation.js";
+import { createPreparation, capturePreparationFiles, restorePreparationFiles } from "../multi-agent-write-box/preparation.js";
 
 const roots: string[] = [];
 afterEach(() => {

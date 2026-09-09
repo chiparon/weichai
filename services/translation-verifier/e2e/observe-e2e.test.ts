@@ -13,7 +13,7 @@ import type {
   BehaviorAgentTask,
   BehaviorCommandRecord,
   BehaviorRuntime,
-} from "../src/strategies/multi-agent-differential/behavior-types.js";
+} from "../src/strategies/multi-agent-write-box/behavior-types.js";
 import { createE2EObserver } from "./observe-e2e.js";
 
 const directories: string[] = [];

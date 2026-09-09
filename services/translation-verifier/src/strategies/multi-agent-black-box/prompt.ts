@@ -7,7 +7,7 @@ import {
 import {
   collectionManifestSchema,
   targetManifestSchema,
-} from "../multi-agent-differential/behavior-schema.js";
+} from "../multi-agent-write-box/behavior-schema.js";
 
 const preparationTemplate = `# Black-box test preparation (Agent1)
 

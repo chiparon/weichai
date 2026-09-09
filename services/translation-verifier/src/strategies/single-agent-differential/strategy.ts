@@ -17,15 +17,15 @@ import type {
   BehaviorCommandRecord,
   BehaviorRuntime,
   BehaviorSide,
-} from "../multi-agent-differential/behavior-types.js";
+} from "../multi-agent-write-box/behavior-types.js";
 import {
   BehaviorEnvironmentError,
   createBehaviorRuntime,
-} from "../multi-agent-differential/claude-runtime.js";
+} from "../multi-agent-write-box/claude-runtime.js";
 import {
   parseBehaviorJson,
   parseObservations,
-} from "../multi-agent-differential/behavior-schema.js";
+} from "../multi-agent-write-box/behavior-schema.js";
 import {
   assertDeclaredSnapshot,
   assertProjectRoots,
@@ -36,11 +36,11 @@ import {
   prepareTestDirectory,
   readTestFile,
   TEST_DIRECTORY,
-} from "../multi-agent-differential/behavior-workspace.js";
+} from "../multi-agent-write-box/behavior-workspace.js";
 import {
   protectedSecrets,
   redact,
-} from "../multi-agent-differential/behavior-command.js";
+} from "../multi-agent-write-box/behavior-command.js";
 import { buildSingleAgentPrompt } from "./prompt.js";
 import {
   parseSingleAgentManifest,

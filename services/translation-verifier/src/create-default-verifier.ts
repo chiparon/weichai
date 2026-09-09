@@ -10,7 +10,7 @@ import {
 import {
   createMultiAgentDifferentialProvider,
   type MultiAgentDifferentialOptions,
-} from "./strategies/multi-agent-differential/strategy.js";
+} from "./strategies/multi-agent-write-box/strategy.js";
 import {
   createSingleAgentDifferentialProvider,
   type SingleAgentDifferentialOptions,

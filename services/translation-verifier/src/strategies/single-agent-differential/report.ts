@@ -1,10 +1,10 @@
 import { Ajv } from "ajv";
 import type { RepositoryIngestionJsonValue as JsonValue } from "@forexplore/contracts";
-import type { BehaviorCaseResult } from "../multi-agent-differential/behavior-types.js";
+import type { BehaviorCaseResult } from "../multi-agent-write-box/behavior-types.js";
 import {
   parseBehaviorJson,
   parseObservations,
-} from "../multi-agent-differential/behavior-schema.js";
+} from "../multi-agent-write-box/behavior-schema.js";
 
 export interface SingleAgentPlan {
   schemaVersion: "1.0";

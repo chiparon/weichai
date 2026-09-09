@@ -22,7 +22,7 @@ export { DIFFERENTIAL_SMOKE_STRATEGY } from "./strategies/smoke-differential/str
 export {
   MULTI_AGENT_DIFFERENTIAL_STRATEGY,
   MultiAgentDifferentialStrategy,
-} from "./strategies/multi-agent-differential/strategy.js";
+} from "./strategies/multi-agent-write-box/strategy.js";
 export {
   MULTI_AGENT_BLACK_BOX_STRATEGY,
   MultiAgentBlackBoxStrategy,

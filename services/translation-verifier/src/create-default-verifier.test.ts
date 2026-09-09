@@ -15,8 +15,8 @@ import { createDefaultVerificationService } from "./create-default-verifier.js";
 import { assertVerificationReceipt } from "./schemas/validate-verification-receipt.js";
 import type { VerificationInput } from "./schemas/verification-types.js";
 import { SINGLE_AGENT_DIFFERENTIAL_STRATEGY } from "./strategies/single-agent-differential/strategy.js";
-import { MULTI_AGENT_DIFFERENTIAL_STRATEGY } from "./strategies/multi-agent-differential/strategy.js";
-import { BehaviorEnvironmentError } from "./strategies/multi-agent-differential/claude-runtime.js";
+import { MULTI_AGENT_DIFFERENTIAL_STRATEGY } from "./strategies/multi-agent-write-box/strategy.js";
+import { BehaviorEnvironmentError } from "./strategies/multi-agent-write-box/claude-runtime.js";
 
 const roots: string[] = [];
 afterEach(() => {

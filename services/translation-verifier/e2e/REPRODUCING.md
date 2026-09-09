@@ -65,7 +65,7 @@ An explicit `--model` overrides the environment. All three behavior strategies e
 
 Each strategy owns its readable template and generation functions:
 
-- White box: `src/strategies/multi-agent-differential/behavior-prompt.ts`.
+- White box: `src/strategies/multi-agent-write-box/behavior-prompt.ts`.
 - Black box: `src/strategies/multi-agent-black-box/prompt.ts`.
 - Single-agent: `src/strategies/single-agent-differential/prompt.ts`.
 

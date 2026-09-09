@@ -11,16 +11,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBehaviorRuntime } from "../multi-agent-differential/claude-runtime.js";
+import { createBehaviorRuntime } from "../multi-agent-write-box/claude-runtime.js";
 import {
   runBehaviorCommandCli,
   stopRegisteredCommands,
   BEHAVIOR_COMMAND_ENTRY,
   BEHAVIOR_CONTROL_ENV,
   type BehaviorSessionControl,
-} from "../multi-agent-differential/behavior-command.js";
+} from "../multi-agent-write-box/behavior-command.js";
 import * as processes from "../smoke-differential/manage-test-process.js";
-import type { BehaviorAgentTask } from "../multi-agent-differential/behavior-types.js";
+import type { BehaviorAgentTask } from "../multi-agent-write-box/behavior-types.js";
 const directories: string[] = [];
 afterEach(() => {
   vi.restoreAllMocks();

@@ -21,15 +21,15 @@ import type {
   BehaviorCaseResult,
   BehaviorExecutionScope,
   BehaviorCommandRecord,
-} from "../multi-agent-differential/behavior-types.js";
+} from "../multi-agent-write-box/behavior-types.js";
 import {
   MultiAgentDifferentialStrategy,
   BehaviorFailure,
   classifyReuse,
   executeManifest,
   type MultiAgentDifferentialOptions,
-} from "../multi-agent-differential/strategy.js";
-import { createBehaviorRuntime } from "../multi-agent-differential/claude-runtime.js";
+} from "../multi-agent-write-box/strategy.js";
+import { createBehaviorRuntime } from "../multi-agent-write-box/claude-runtime.js";
 import {
   assertProjectRoots,
   assertProjectBaseline,
@@ -42,7 +42,7 @@ import {
   readTestFile,
   TEST_DIRECTORY,
   type BehaviorProjectBaseline,
-} from "../multi-agent-differential/behavior-workspace.js";
+} from "../multi-agent-write-box/behavior-workspace.js";
 import {
   assertPreparation,
   assertSourceSnapshot,
@@ -51,17 +51,17 @@ import {
   capturePreparationFiles,
   restorePreparationFiles,
   type FrozenPreparationFile,
-} from "../multi-agent-differential/preparation.js";
+} from "../multi-agent-write-box/preparation.js";
 import {
   parseBehaviorJson,
   parseCollectionManifest,
   parseObservations,
   parseTargetManifest,
-} from "../multi-agent-differential/behavior-schema.js";
+} from "../multi-agent-write-box/behavior-schema.js";
 import {
   protectedSecrets,
   redact,
-} from "../multi-agent-differential/behavior-command.js";
+} from "../multi-agent-write-box/behavior-command.js";
 import { preparationPrompt, diagnosisPrompt } from "./prompt.js";
 
 export const MULTI_AGENT_BLACK_BOX_STRATEGY: VerificationStrategyDescriptor = {

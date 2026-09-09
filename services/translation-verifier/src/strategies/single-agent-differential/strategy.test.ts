@@ -16,7 +16,7 @@ import type {
   BehaviorAgentResult,
   BehaviorCommandRecord,
   BehaviorSide,
-} from "../multi-agent-differential/behavior-types.js";
+} from "../multi-agent-write-box/behavior-types.js";
 import type {
   VerificationInput,
   VerificationStrategyContext,

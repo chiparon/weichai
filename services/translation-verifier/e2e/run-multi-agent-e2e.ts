@@ -17,12 +17,12 @@ import {
 import {
   protectedSecrets,
   redact,
-} from "../src/strategies/multi-agent-differential/behavior-command.js";
+} from "../src/strategies/multi-agent-write-box/behavior-command.js";
 import {
   persistBehaviorArtifact,
   projectHash,
-} from "../src/strategies/multi-agent-differential/behavior-workspace.js";
-import { createBehaviorRuntime } from "../src/strategies/multi-agent-differential/claude-runtime.js";
+} from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
+import { createBehaviorRuntime } from "../src/strategies/multi-agent-write-box/claude-runtime.js";
 import { createVerificationArtifactStore } from "../src/run-output/verification-artifact-store.js";
 import { createVerificationResult } from "../src/schemas/materialize-verification-result.js";
 import { assertVerificationInput } from "../src/schemas/validate-verification-input.js";
@@ -38,12 +38,12 @@ import {
   MultiAgentDifferentialStrategy,
   BehaviorFailure,
   classifyReuse,
-} from "../src/strategies/multi-agent-differential/strategy.js";
+} from "../src/strategies/multi-agent-write-box/strategy.js";
 import {
   MULTI_AGENT_BLACK_BOX_STRATEGY,
   MultiAgentBlackBoxStrategy,
 } from "../src/strategies/multi-agent-black-box/strategy.js";
-import type { BehaviorRuntime } from "../src/strategies/multi-agent-differential/behavior-types.js";
+import type { BehaviorRuntime } from "../src/strategies/multi-agent-write-box/behavior-types.js";
 import {
   repositoryRoot,
   sourceProjectRoot,

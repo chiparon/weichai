@@ -22,12 +22,12 @@ import {
   runManagedProcess,
   sanitizedBuildEnvironment,
 } from "../src/strategies/smoke-differential/manage-test-process.js";
-import { projectHash } from "../src/strategies/multi-agent-differential/behavior-workspace.js";
+import { projectHash } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
 import {
   protectedSecrets,
   redact,
-} from "../src/strategies/multi-agent-differential/behavior-command.js";
-import { createBehaviorRuntime } from "../src/strategies/multi-agent-differential/claude-runtime.js";
+} from "../src/strategies/multi-agent-write-box/behavior-command.js";
+import { createBehaviorRuntime } from "../src/strategies/multi-agent-write-box/claude-runtime.js";
 import {
   SingleAgentDifferentialStrategy,
   SINGLE_AGENT_DIFFERENTIAL_STRATEGY,

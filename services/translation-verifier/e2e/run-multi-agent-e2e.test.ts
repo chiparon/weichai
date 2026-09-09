@@ -18,8 +18,8 @@ import {
   targetProjectRoot,
   fileUploadInput,
 } from "./fileupload-benchmark-fixture.js";
-import { projectHash } from "../src/strategies/multi-agent-differential/behavior-workspace.js";
-import type { BehaviorRuntime } from "../src/strategies/multi-agent-differential/behavior-types.js";
+import { projectHash } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
+import type { BehaviorRuntime } from "../src/strategies/multi-agent-write-box/behavior-types.js";
 
 const runtime: BehaviorRuntime = {
   async runAgent(task) {

@@ -15,7 +15,7 @@ import {
   javaPath,
   pythonPath,
 } from "./fileupload-benchmark-fixture.js";
-import { projectHash } from "../src/strategies/multi-agent-differential/behavior-workspace.js";
+import { projectHash } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
 
 const prepared: NonNullable<SingleAgentE2EDeps["prepareProjects"]> = async ({
   sourceRoot,

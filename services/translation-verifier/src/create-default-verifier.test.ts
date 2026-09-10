@@ -118,7 +118,7 @@ describe("default service strategy integration", () => {
     },
   );
 
-  it("selects the single session runtime and persists a bound failure when it supplies no evidence", async () => {
+  it("defaults to the single session runtime and persists a bound failure when it supplies no evidence", async () => {
     const root = mkdtempSync(join(tmpdir(), "verifier-registration-"));
     roots.push(root);
     const sessions: string[] = [];
@@ -144,9 +144,7 @@ describe("default service strategy integration", () => {
       },
     });
     const request = input();
-    const receipt = await service.verifyWithReceipt(request, {
-      strategyId: SINGLE_AGENT_DIFFERENTIAL_STRATEGY.id,
-    });
+    const receipt = await service.verifyWithReceipt(request);
     expect(sessions).toEqual(["single-agent"]);
     expect(receipt.result).toMatchObject({
       strategyId: SINGLE_AGENT_DIFFERENTIAL_STRATEGY.id,
@@ -163,9 +161,5 @@ describe("default service strategy integration", () => {
         SINGLE_AGENT_DIFFERENTIAL_STRATEGY,
       ),
     ).not.toThrow();
-
-    const defaultReceipt = await service.verifyWithReceipt(request);
-    expect(defaultReceipt.result.strategyId).toBe("differential-smoke");
-    expect(sessions).toHaveLength(1);
   });
 });

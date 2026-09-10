@@ -18,7 +18,7 @@ import {
   type VerificationInput,
   VerificationService,
   VerificationStrategyFactory,
-  DIFFERENTIAL_SMOKE_STRATEGY,
+  DEFAULT_VERIFICATION_STRATEGY,
   type VerificationAssessment,
   type VerificationReceipt,
   type VerificationResult,
@@ -514,10 +514,10 @@ describe("AdaptationAdapterV2", () => {
       const service = new VerificationService({
         workspaceRoot: join(root, "workspaces"),
         artifactRoot,
-        defaultStrategyId: DIFFERENTIAL_SMOKE_STRATEGY.id,
+        defaultStrategyId: DEFAULT_VERIFICATION_STRATEGY.id,
         factory: new VerificationStrategyFactory([
           {
-            descriptor: DIFFERENTIAL_SMOKE_STRATEGY,
+            descriptor: DEFAULT_VERIFICATION_STRATEGY,
             create: () => ({
               async verify(input, context) {
                 writeFileSync(
@@ -544,7 +544,7 @@ describe("AdaptationAdapterV2", () => {
                 if (failure === "abort") throw abort;
                 return createVerificationResult(
                   input,
-                  DIFFERENTIAL_SMOKE_STRATEGY,
+                  DEFAULT_VERIFICATION_STRATEGY,
                   {
                     ...fixtureVerificationAssessment(input),
                     summary: "verified",
@@ -645,10 +645,10 @@ describe("AdaptationAdapterV2", () => {
     const service = new VerificationService({
       workspaceRoot: join(root, "workspaces"),
       artifactRoot,
-      defaultStrategyId: DIFFERENTIAL_SMOKE_STRATEGY.id,
+      defaultStrategyId: DEFAULT_VERIFICATION_STRATEGY.id,
       factory: new VerificationStrategyFactory([
         {
-          descriptor: DIFFERENTIAL_SMOKE_STRATEGY,
+          descriptor: DEFAULT_VERIFICATION_STRATEGY,
           create: () => ({
             async verify(input, context) {
               writeFileSync(
@@ -664,7 +664,7 @@ describe("AdaptationAdapterV2", () => {
               });
               return createVerificationResult(
                 input,
-                DIFFERENTIAL_SMOKE_STRATEGY,
+                DEFAULT_VERIFICATION_STRATEGY,
                 {
                   ...fixtureVerificationAssessment(input, {
                     targetAssessment: "bug_found",

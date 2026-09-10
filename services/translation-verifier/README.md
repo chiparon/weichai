@@ -1,6 +1,6 @@
 # translation-verifier
 
-A replaceable strategy baseline for translation verification: generic input -> registered strategy -> identified output. The default `differential-smoke` strategy supports Host-selected differential or target-only verification. It reports source/target conclusions separately from execution failures. It is not proof of business correctness.
+A replaceable strategy baseline for translation verification: generic input -> registered strategy -> identified output. The default autonomous strategy derives a test basis and selects differential or target-only verification. It reports source/target conclusions separately from execution failures. It is not proof of business correctness.
 
 ## Architecture Diagrams
 
@@ -13,7 +13,7 @@ The diagrams describe the implemented two-phase lifecycle, including target-only
 
 ## Public Contract
 
-Output schema `$id` is `urn:forexplore:verification-output:2.0`; `VerificationResult.schemaVersion` and `translationVerifierSchemaVersion` are `2.0`. The default strategy is `differential-smoke@2.0.0`. Input and run/timing schemas remain `1.0`. This is a breaking output change: strategy outputs and results explicitly reject legacy `status`, and `deriveCompatibilityStatus` is no longer exported. Old reports are not converted or accepted. Unrelated strategy extension fields remain accepted.
+Output schema `$id` is `urn:forexplore:verification-output:2.0`; `VerificationResult.schemaVersion` and `translationVerifierSchemaVersion` are `2.0`. The default strategy is `single-agent-differential@1.0.0`, selected once by `DEFAULT_VERIFICATION_STRATEGY` in `src/create-default-verifier.ts`; the factory and adaptation bridge share this descriptor. Input and run/timing schemas remain `1.0`. This is a breaking output change: strategy outputs and results explicitly reject legacy `status`, and `deriveCompatibilityStatus` is no longer exported. Old reports are not converted or accepted. Unrelated strategy extension fields remain accepted.
 
 ```ts
 createDefaultVerificationService(options?).verify(input, { strategyId?, keepWorkspace? }, signal)
@@ -42,7 +42,7 @@ verificationPolicy: {
 }
 ```
 
-For the default smoke strategy, only `accepted` authorizes source execution and selects `mode: "differential"`. Rejected, undetermined or omitted decisions select `target_only`; the smoke provider declines source staging. Its Agent cannot promote reference trust or select its own mode. Both smoke modes require an explicit independent `testBasis`; missing basis fails closed before a model call. These are smoke rules, not universal framework requirements. Other strategies may establish their own test basis and reference decision. A reference implementation is evidence, never the sole authority over a requirement.
+For the explicitly selected `differential-smoke` strategy, only `accepted` authorizes source execution and selects `mode: "differential"`. Rejected, undetermined or omitted decisions select `target_only`; the smoke provider declines source staging. Its Agent cannot promote reference trust or select its own mode. Both smoke modes require an explicit independent `testBasis`; missing basis fails closed before a model call. These are smoke rules, not universal framework requirements. Other strategies may establish their own test basis and reference decision. A reference implementation is evidence, never the sole authority over a requirement.
 
 | Report field | Values and meaning |
 | --- | --- |
@@ -60,7 +60,7 @@ The adaptation adapter alone maps a validated report to the existing workflow ga
 
 The framework has three external phases: **validate input**, **execute strategy**, **save report**. Strategy internals are arbitrary, repeatable and may use no Agent. There is no central six-stage smoke workflow. See [docs/flow.md](docs/flow.md) for ownership and execution flow.
 
-The V2 adaptation runtime uses `TranslationVerifierV2Adapter` and the default service. This redesign changes report reception and legacy gate mapping only: it does not inject Host policies into the adaptation runtime or change its analysis, translation, repair or cancellation flow. Existing adaptation requests without an independent basis remain `unverified` under default smoke; upstream policy integration belongs to that module's owner. Strategy selection belongs to the server, not HTTP clients or the UI. Unknown strategy IDs fail without fallback. `AdaptationAdapterV2` owns the migration repair loop, with at most two repair rounds; required `unverified` checks stop repair and block write-back.
+The V2 adaptation runtime uses `TranslationVerifierV2Adapter` and the default service. The single-agent strategy establishes its test basis from the supplied requirements and project evidence; it does not require smoke's Host-injected `verificationPolicy`. Missing evidence remains inconclusive and blocks write-back. Strategy selection belongs to the server, not HTTP clients or the UI. Unknown strategy IDs fail without fallback. `AdaptationAdapterV2` owns the migration repair loop, with at most two repair rounds; required `unverified` checks stop repair and block write-back.
 
 ## Register and Compare Strategies
 
@@ -107,7 +107,7 @@ Framework tests use `VerificationService.verifyWithReceipt()` with lightweight t
 
 ## Single-Agent Baseline
 
-`single-agent-differential@1.0.0` is explicitly selectable; default smoke remains unchanged. Configure its model/runtime through `createDefaultVerificationService({ singleAgent: { ... } })`, or invoke `SingleAgentDifferentialStrategy.verify()` directly from its strategy module with prepared project context.
+`single-agent-differential@1.0.0` is the default strategy. Configure its model/runtime through `createDefaultVerificationService({ singleAgent: { ... } })`, or invoke `SingleAgentDifferentialStrategy.verify()` directly from its strategy module with prepared project context.
 
 One session reads the authorized source and target projects, selects differential or target-only verification, derives a test basis, authors new project tests, runs commands, and writes its final report. It does not simulate Agent1/Agent2, use their handoff manifest, or start a repair session. Missing evidence never falls back to smoke or a mock runtime.
 

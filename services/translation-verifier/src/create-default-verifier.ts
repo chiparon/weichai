@@ -1,7 +1,6 @@
 import {
   createDifferentialSmokeProvider,
   type DifferentialSmokeStrategyOptions,
-  DIFFERENTIAL_SMOKE_STRATEGY,
 } from "./strategies/smoke-differential/strategy.js";
 import {
   VerificationService,
@@ -14,12 +13,15 @@ import {
 import {
   createSingleAgentDifferentialProvider,
   type SingleAgentDifferentialOptions,
+  SINGLE_AGENT_DIFFERENTIAL_STRATEGY,
 } from "./strategies/single-agent-differential/strategy.js";
 import {
   createMultiAgentBlackBoxProvider,
   type MultiAgentBlackBoxOptions,
 } from "./strategies/multi-agent-black-box/strategy.js";
 import { VerificationStrategyFactory } from "./workflow/strategy-registry.js";
+
+export const DEFAULT_VERIFICATION_STRATEGY = Object.freeze({ ...SINGLE_AGENT_DIFFERENTIAL_STRATEGY });
 
 export type VerificationServiceRuntimeOptions = Pick<
   VerificationServiceOptions,
@@ -70,7 +72,7 @@ export function createDefaultVerificationService(
   ]);
   return new VerificationService({
     factory,
-    defaultStrategyId: DIFFERENTIAL_SMOKE_STRATEGY.id,
+    defaultStrategyId: DEFAULT_VERIFICATION_STRATEGY.id,
     ...runtimeOptions(options),
   });
 }

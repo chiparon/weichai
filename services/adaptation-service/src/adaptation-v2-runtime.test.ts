@@ -14,7 +14,7 @@ vi.mock("@forexplore/translation-verifier", async (importOriginal) => {
 
 import {
   createVerificationResult,
-  DIFFERENTIAL_SMOKE_STRATEGY,
+  DEFAULT_VERIFICATION_STRATEGY,
   type VerificationService,
 } from "@forexplore/translation-verifier";
 import { canonicalJson } from "@forexplore/workflow-core";
@@ -96,7 +96,7 @@ describe("createAdaptationV2Runtime", () => {
       async (input) => {
         const result = createVerificationResult(
           input,
-          DIFFERENTIAL_SMOKE_STRATEGY,
+          DEFAULT_VERIFICATION_STRATEGY,
           {
             ...fixtureVerificationAssessment(input),
             summary: "verified",

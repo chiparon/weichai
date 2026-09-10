@@ -4,7 +4,7 @@ import type { RepositoryIngestionJsonValue } from "@forexplore/contracts";
 import { calculatePatchHashV2, canonicalJson } from "@forexplore/workflow-core";
 import {
   createVerificationResult,
-  DIFFERENTIAL_SMOKE_STRATEGY,
+  DEFAULT_VERIFICATION_STRATEGY,
   type VerificationService,
 } from "@forexplore/translation-verifier";
 import { TranslationVerifierV2Adapter } from "./translation-verifier-v2-adapter";
@@ -94,7 +94,7 @@ describe("TranslationVerifierV2Adapter", () => {
     };
     const result = createVerificationResult(
       verificationInput,
-      DIFFERENTIAL_SMOKE_STRATEGY,
+      DEFAULT_VERIFICATION_STRATEGY,
       {
         ...fixtureVerificationAssessment({}),
         summary: "verified",
@@ -149,8 +149,7 @@ describe("TranslationVerifierV2Adapter", () => {
       "forexplore.translation-verifier.differential",
     );
     expect(adapter.providerVersion).toBe("1.0.0");
-    expect(adapter.strategyDescriptor).toEqual(DIFFERENTIAL_SMOKE_STRATEGY);
-    expect(adapter.strategyDescriptor).not.toBe(DIFFERENTIAL_SMOKE_STRATEGY);
+    expect(adapter.strategyDescriptor).toEqual(DEFAULT_VERIFICATION_STRATEGY);
     expect(Object.isFrozen(adapter.strategyDescriptor)).toBe(true);
     expect(service.verifyWithReceipt).toHaveBeenCalledOnce();
     expect(service.verifyWithReceipt).toHaveBeenCalledWith(

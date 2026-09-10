@@ -60,6 +60,7 @@ describe("translation-verifier entry", () => {
   it("preserves every runtime package export after internal moves", () => {
     expect(Object.keys(packageVerifier).sort()).toEqual(
       [
+        "DEFAULT_VERIFICATION_STRATEGY",
         "DIFFERENTIAL_SMOKE_STRATEGY",
         "MULTI_AGENT_DIFFERENTIAL_STRATEGY",
         "MULTI_AGENT_BLACK_BOX_STRATEGY",

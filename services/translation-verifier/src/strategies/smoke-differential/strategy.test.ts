@@ -72,6 +72,7 @@ describe("DifferentialSmokeStrategy", () => {
       artifactRoot: join(root, "artifacts"),
       runSmokeImpl: fakeRunSmoke,
     }).verifyWithReceipt(value, {
+      strategyId: DIFFERENTIAL_SMOKE_STRATEGY.id,
       preparedProjects: { sourceRoot, targetRoot },
     });
     expect(receipt.result.executionStatus).toBe("failed");
@@ -594,7 +595,7 @@ describe("createDefaultVerificationService", () => {
             }
           }),
       });
-      const pending = service.verifyWithReceipt(input(), {}, controller.signal);
+      const pending = service.verifyWithReceipt(input(), { strategyId: DIFFERENTIAL_SMOKE_STRATEGY.id }, controller.signal);
       try {
         await postprocessing;
         const during = recorder.mock.results[0]!.value.snapshot();
@@ -746,7 +747,7 @@ describe("createDefaultVerificationService", () => {
       });
       const receipt = await service.verifyWithReceipt(
         input(),
-        {},
+        { strategyId: DIFFERENTIAL_SMOKE_STRATEGY.id },
         controller.signal,
       );
       expect(receipt.result).toMatchObject({
@@ -786,7 +787,7 @@ describe("createDefaultVerificationService", () => {
   );
 
   it.each(["valid", "missing-report", "changed-baseline"])(
-    "records actual default smoke boundaries for %s evidence",
+    "records actual smoke boundaries for %s evidence",
     async (kind) => {
       const recorder = vi.spyOn(recording, "createRunRecorder");
       const spawnClaude: NonNullable<
@@ -825,7 +826,7 @@ describe("createDefaultVerificationService", () => {
         apiKey: "test",
         spawnClaude,
       });
-      const receipt = await service.verifyWithReceipt(input());
+      const receipt = await service.verifyWithReceipt(input(), { strategyId: DIFFERENTIAL_SMOKE_STRATEGY.id });
       expect(receipt.result.executionStatus).toBe(
         kind === "valid" ? "completed" : "failed",
       );
@@ -892,7 +893,7 @@ describe("createDefaultVerificationService", () => {
       workspaceRoot,
       artifactRoot: join(root, "artifacts"),
       runSmokeImpl: fakeRunSmoke,
-    }).verifyWithReceipt(input({ sourceLanguageId: "go" }));
+    }).verifyWithReceipt(input({ sourceLanguageId: "go" }), { strategyId: DIFFERENTIAL_SMOKE_STRATEGY.id });
     expect(receipt.result.issues[0]?.kind).toBe("unsupported-language");
     expect(receipt.resultArtifact).toBeDefined();
     expect(fakeRunSmoke).not.toHaveBeenCalled();
@@ -907,7 +908,7 @@ describe("createDefaultVerificationService", () => {
     expect(run.diagnostics).toEqual([]);
   });
 
-  it("registers differential-smoke as the default strategy", () => {
+  it("registers all built-in verification strategies", () => {
     const service = createDefaultVerificationService({
       runSmokeImpl: vi.fn() as RunSmokeImpl,
     });

@@ -6,7 +6,6 @@ import {
 } from '@forexplore/adaptation-http-adapter';
 import {
   SeekDbCodeSearchAdapterV2,
-  withSeekDbSearch,
 } from '@forexplore/seekdb-adapter';
 import type { MigrationRuntimeCapabilitySnapshot } from '@forexplore/contracts';
 import type {
@@ -26,10 +25,7 @@ import {
 import { loadSettings } from './settings';
 import type { ExecutionMode, ServiceStatus } from './ui-types';
 
-export type ServiceKind = 'retrieval' | 'adaptation';
-
 export interface RuntimePorts {
-  ports: WorkflowPorts;
   searchProvider: 'SeekDB';
   adaptationProvider: 'DeepSeek';
   executionMode: ExecutionMode;
@@ -45,8 +41,9 @@ export interface RuntimePortsV2 {
 }
 
 /**
- * Owns the real two-service runtime. A configured-but-unhealthy service is an
- * error; the extension never falls back to mock adapters.
+ * Owns the V2 retrieval and adaptation runtimes and their intersected route
+ * capabilities. The separate local code-intelligence index is descriptive and
+ * cannot replace either required migration service.
  */
 export class ServiceManager implements vscode.Disposable {
   private status: ServiceStatus = {
@@ -71,7 +68,7 @@ export class ServiceManager implements vscode.Disposable {
   }
 
   /** Display-only provider labels that do not create or replace any port. */
-  getRuntimePresentation(): Omit<RuntimePorts, 'ports'> {
+  getRuntimePresentation(): RuntimePorts {
     return {
       searchProvider: 'SeekDB',
       adaptationProvider: 'DeepSeek',
@@ -135,29 +132,14 @@ export class ServiceManager implements vscode.Disposable {
     return this.refresh();
   }
 
-  getRuntimePorts(): RuntimePorts {
-    const settings = loadSettings();
-    if (this.status.retrieval !== 'connected' || this.status.adaptation !== 'connected') {
-      throw new Error(this.status.message ?? '真实服务尚未就绪。');
+  getAdaptationPort(): WorkflowPorts['adaptation'] {
+    if (this.status.adaptation !== 'connected') {
+      throw new Error(this.status.message ?? '真实适配服务尚未就绪。');
     }
-
-    let ports = withSeekDbSearch(realWorkflowPorts(), {
-      baseUrl: settings.retrievalApiUrl,
+    return new AdaptationHttpAdapter({
+      baseUrl: loadSettings().adaptationApiUrl,
       fetch: localFetch,
     });
-    ports = {
-      ...ports,
-      adaptation: new AdaptationHttpAdapter({
-        baseUrl: settings.adaptationApiUrl,
-        fetch: localFetch,
-      }),
-    };
-    return {
-      ports,
-      searchProvider: 'SeekDB',
-      adaptationProvider: 'DeepSeek',
-      executionMode: 'real',
-    };
   }
 
   /** Production workflow boundary. It exposes only V2 clients and binds the
@@ -188,29 +170,4 @@ export class ServiceManager implements vscode.Disposable {
   dispose(): void {
     // The extension owns no child processes.
   }
-}
-
-/**
- * `WorkflowPorts` needs all three ports, but this extension owns write-back
- * locally. Real mode must never inherit the Mock backfill adapter merely as a
- * convenient placeholder.
- */
-function realWorkflowPorts(): WorkflowPorts {
-  return {
-    search: {
-      async search() {
-        throw new Error('真实检索端口尚未初始化。');
-      },
-    },
-    adaptation: {
-      async adapt() {
-        throw new Error('真实适配端口尚未初始化。');
-      },
-    },
-    backfill: {
-      async apply() {
-        throw new Error('真实模式的写回由受信任的 VS Code 宿主执行，不能通过服务端端口调用。');
-      },
-    },
-  };
 }

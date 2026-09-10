@@ -6,11 +6,9 @@
  */
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { IndexedCodeDocument, Language } from '@forexplore/contracts';
+import type { IndexedCodeDocument } from '@forexplore/contracts';
 import { discoverRepositories, resolveSourceRoot } from './discover.js';
-import type { CorpusManifest } from './discover.js';
 import { extractSymbols, fileExtensions, isTestPath } from './extractor.js';
-import type { SymbolMatch } from './extractor.js';
 
 export type { CorpusManifest } from './discover.js';
 export type { SymbolMatch } from './extractor.js';
@@ -74,6 +72,56 @@ export {
   implementationAssessmentDetectorVersion,
   RepositoryImplementationDetectorRegistry,
 } from './implementation-assessment.js';
+export {
+  compilerConfirmedSemanticEdges,
+  verifyCompilerProbeAnalysis,
+} from './deep-analysis-adapters.js';
+export {
+  createDefaultLanguageRegistry,
+  LanguageRegistry,
+  type TreeSitterCapabilityLevel,
+  type TreeSitterGrammar,
+  type TreeSitterLanguageId,
+  type TreeSitterLanguageRegistration,
+} from './language-registry.js';
+export {
+  discoverProjects,
+  projectForPath,
+  type ProjectDiscoveryFile,
+  type ProjectDiscoveryRequest,
+  type ProjectDiscoveryResult,
+  type ProjectReferenceSyntax,
+} from './project-discovery.js';
+export {
+  indexTreeSitterFile,
+  sourceRangeForOffsets,
+  type StructuralSourceRange,
+  type StructuralSymbolKind,
+  type TreeSitterDeclaration,
+  type TreeSitterDiagnostic,
+  type TreeSitterExport,
+  type TreeSitterFileIndex,
+  type TreeSitterImport,
+  type TreeSitterIndexRequest,
+} from './tree-sitter-indexer.js';
+export {
+  resolveSyntacticDependencies,
+  syntacticDependencyCandidatePaths,
+  type SyntacticDependencyResolverRequest,
+} from './syntactic-dependency-resolver.js';
+export {
+  buildStructuralIndex,
+  type BuildStructuralIndexRequest,
+  type StructuralIndexBuild,
+  type StructuralIndexBuildStats,
+  type StructuralSourceFile,
+} from './structural-index.js';
+export {
+  filesystemRepositoryStructuralScanner,
+  scanRepositoryStructuralIndex,
+  type RepositoryStructuralScanner,
+  type RepositoryStructuralScanRequest,
+} from './repository-scan.js';
 
 async function sourceFiles(root: string): Promise<string[]> {
   const files: string[] = [];

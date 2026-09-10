@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search, Settings2 } from 'lucide-react';
 import type {
+  CodeIntelligencePresentation,
   ModuleExplorerMode,
   ModuleExplorerNode,
   ModuleWorkspaceAction,
@@ -774,8 +775,13 @@ export default function App() {
   const [state, dispatch] = useReducer(workflowReducerV2, initialWorkflowStateV2);
   const [payload, setPayload] = useState<PanelInitPayload | null>(null);
   const [repositoryStatuses, setRepositoryStatuses] = useState<RepositoryStatus[]>([]);
+  const [codeIntelligence, setCodeIntelligence] = useState<CodeIntelligencePresentation | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [moduleExplorer, setModuleExplorer] = useState<PanelInitPayload['moduleExplorer'] | null>(null);
+  const [projectExplorer, setProjectExplorer] = useState<PanelInitPayload['projectExplorer'] | null>(null);
+  const [browsingProjects, setBrowsingProjects] = useState(false);
+  const [projectHistoryId, setProjectHistoryId] = useState<string | null>(null);
+  const [selectedProjectNodeId, setSelectedProjectNodeId] = useState<string | null>(null);
   const [explorerMode, setExplorerMode] = useState<ModuleExplorerMode>('target');
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -817,8 +823,13 @@ export default function App() {
           setPayload(message.payload);
           settingsRef.current = message.payload.settings;
           setRepositoryStatuses(message.payload.repositoryStatuses);
+          setCodeIntelligence(message.payload.codeIntelligence);
           setServiceStatus(message.payload.serviceStatus);
           setModuleExplorer(message.payload.moduleExplorer);
+          setProjectExplorer(message.payload.projectExplorer ?? null);
+          setBrowsingProjects(Boolean(message.payload.projectExplorer && !acceptedTargetWorkspace && !message.payload.target));
+          setProjectHistoryId(message.payload.projectExplorer?.history[0]?.id ?? null);
+          setSelectedProjectNodeId(null);
           setHistoryId((current) =>
             message.payload.moduleExplorer.history.some((repository) => repository.id === current)
               ? current
@@ -855,6 +866,7 @@ export default function App() {
             break;
           }
           setTargetWorkspace(message.snapshot);
+          setBrowsingProjects(false);
           setTargetWorkspaceRefreshing(false);
           setTargetWorkspaceInvalidation(null);
           setSelectedTargetNodeId(null);
@@ -928,6 +940,7 @@ export default function App() {
           setMigrationSelection(message.migrationSelection);
           setError(null);
           if (message.activateWorkflow) {
+            setBrowsingProjects(false);
             dispatch({ type: 'SELECT_TARGET', target: message.target });
             dispatch({ type: 'SET_TOP_K', value: settingsRef.current.topK });
             setExplorerMode('target');
@@ -954,6 +967,9 @@ export default function App() {
         case 'REPOSITORY_STATUS':
           setRepositoryStatuses(message.statuses);
           break;
+        case 'CODE_INTELLIGENCE_STATUS':
+          setCodeIntelligence(message.presentation);
+          break;
         case 'SERVICE_STATUS':
           setServiceStatus(message.status);
           break;
@@ -961,6 +977,16 @@ export default function App() {
           setModuleExplorer(message.explorer);
           setSelectedNodeId(null);
           setHistoryId((current) =>
+            message.explorer.history.some((repository) => repository.id === current)
+              ? current
+              : message.explorer.history[0]?.id ?? null,
+          );
+          setRefreshingExplorer(false);
+          break;
+        case 'PROJECT_EXPLORER':
+          setProjectExplorer(message.explorer);
+          setSelectedProjectNodeId(null);
+          setProjectHistoryId((current) =>
             message.explorer.history.some((repository) => repository.id === current)
               ? current
               : message.explorer.history[0]?.id ?? null,
@@ -1139,6 +1165,25 @@ export default function App() {
     bus.post({ type: 'SAVE_SETTINGS', settings });
   }
 
+  function handleSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void {
+    setError(null);
+    bus.post({ type: 'SELECT_CODE_INTELLIGENCE_REVISION', repositoryId, analysisRevision });
+  }
+
+  function handleSelectCodeIntelligenceProject(
+    repositoryId: string,
+    analysisRevision: string,
+    projectId: string,
+  ): void {
+    setError(null);
+    setBrowsingProjects(true);
+    setSelectedProjectNodeId(null);
+    if (codeIntelligence?.repositories.find((repository) => repository.repositoryId === repositoryId)?.role === 'history') {
+      setProjectHistoryId(repositoryId);
+    }
+    bus.post({ type: 'SELECT_CODE_INTELLIGENCE_PROJECT', repositoryId, analysisRevision, projectId });
+  }
+
   function handlePickRepositoryPath(): void {
     setError(null);
     bus.post({ type: 'PICK_REPOSITORY_PATH' });
@@ -1183,6 +1228,7 @@ export default function App() {
     );
   }
 
+  const displayedExplorer = browsingProjects && projectExplorer ? projectExplorer : moduleExplorer;
   const candidate = selectedCandidateV2(state);
   const targetWorkspaceStage = state.stage === 'target';
   const selectedTargetNode = targetWorkspace && selectedTargetNodeId
@@ -1196,10 +1242,12 @@ export default function App() {
           <span className="brand-glyph">FX</span>
           <strong>ForeXplore</strong>
         </div>
-        {targetWorkspaceStage ? (
+        {targetWorkspaceStage || browsingProjects ? (
           <div className="target-workspace-title">
-            <strong>01B 目标工作区模块划分</strong>
-            <span>模块边界、实现状态和迁移路线均由 Host 快照约束</span>
+            <strong>{browsingProjects ? '项目代码理解' : '01B 目标工作区模块划分'}</strong>
+            <span>{browsingProjects
+              ? '浏览自动解析与模块摘要；迁移审批独立维护'
+              : '模块边界、实现状态和迁移路线均由 Host 快照约束'}</span>
           </div>
         ) : <StepRail stage={state.stage} />}
         <button
@@ -1215,12 +1263,28 @@ export default function App() {
         </button>
       </header>
 
+      {projectExplorer ? (
+        <div className="target-workspace-state-filters" role="group" aria-label="目录视图">
+          <button type="button" aria-pressed={browsingProjects} className={browsingProjects ? 'is-active' : ''}
+            onClick={() => setBrowsingProjects(true)}>项目解析</button>
+          <button type="button" aria-pressed={!browsingProjects} className={!browsingProjects ? 'is-active' : ''}
+            onClick={() => setBrowsingProjects(false)}>已审迁移目录</button>
+        </div>
+      ) : null}
       <ModuleWorkspace
-        explorer={moduleExplorer}
+        repositories={codeIntelligence?.repositories ?? []}
+        onSelectProject={browsingProjects ? handleSelectCodeIntelligenceProject : undefined}
+        onRefreshRepository={(repositoryId) => {
+          setError(null);
+          setRefreshingExplorer(true);
+          bus.post({ type: 'REFRESH_REPOSITORY', repositoryId });
+        }}
+        onAddTarget={(mode) => { setError(null); bus.post({ type: 'ADD_TARGET_WORKSPACE', mode }); }}
+        explorer={displayedExplorer}
         mode={explorerMode}
-        historyId={historyId}
-        currentTargetId={selectedTargetNodeId}
-        selectedNodeId={selectedNodeId}
+        historyId={browsingProjects ? projectHistoryId : historyId}
+        currentTargetId={browsingProjects ? null : selectedTargetNodeId}
+        selectedNodeId={browsingProjects ? selectedProjectNodeId : selectedNodeId}
         refreshing={refreshingExplorer || targetWorkspaceRefreshing}
         onModeChange={(mode) => {
           setExplorerMode(mode);
@@ -1228,8 +1292,12 @@ export default function App() {
           setSelectedNodeId(null);
         }}
         onHistoryChange={handleHistoryChange}
-        onNodeSelect={handleModuleNodeSelect}
+        onNodeSelect={browsingProjects ? (node) => {
+          setSelectedProjectNodeId(node.id);
+          setSettingsOpen(false);
+        } : handleModuleNodeSelect}
         onRefresh={handleRefreshExplorer}
+        onRetry={(scope, force) => bus.post({ type: 'RETRY_PROJECT_ANALYSIS', ...scope, force })}
         onOpenSettings={() => setSettingsOpen(true)}
         onWorkspaceAction={handleWorkspaceAction}
         settingsOpen={settingsOpen}
@@ -1240,16 +1308,24 @@ export default function App() {
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}
+            codeIntelligence={codeIntelligence}
             saving={settingsSaving}
             pickedRepositoryPath={pickedRepositoryPath}
             onPickRepositoryPath={handlePickRepositoryPath}
             onCheckRepositories={handleCheckRepositories}
+            onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
+            onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}
             onSave={handleSaveSettings}
             onCancel={() => {
               setPickedRepositoryPath(null);
               setSettingsOpen(false);
             }}
           />
+        ) : browsingProjects ? (
+          <section className="card" aria-label="项目解析权限">
+            <p>项目摘要仅用于代码理解；迁移目标与审批在“已审迁移目录”中维护。</p>
+            {state.target ? <p>当前迁移目标：{state.target.entity.name} · {state.target.entity.path}</p> : null}
+          </section>
         ) : (
           <main className={`stage-body ${targetWorkspaceStage ? 'is-target-workspace' : ''}`}>
             {targetWorkspaceStage ? (
@@ -1310,6 +1386,7 @@ export default function App() {
       <FooterStatus
         serviceStatus={serviceStatus}
         repositoryStatuses={repositoryStatuses}
+        codeIntelligence={codeIntelligence}
         workspaceRoot={payload.workspaceRoot}
       />
     </div>

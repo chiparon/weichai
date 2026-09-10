@@ -15,14 +15,18 @@
   "main": "./dist/extension/extension.js",
   "files": [
     "dist/extension/**",
+    "dist/extension/node_modules/**",
     "dist/webview/**",
+    "media/**",
     "README.md"
   ],
   "activationEvents": [
     "onCommand:forexplore.startLegacyTranslation",
+    "onView:forexplore.launcher",
     "onCommand:forexplore.showPanel",
     "onCommand:forexplore.checkRepositories",
     "onCommand:forexplore.reindex",
+    "onCommand:forexplore.refreshCodeIntelligence",
     "onCommand:forexplore.restoreLastCheckpoint",
     "onCommand:forexplore.initializeTargetWorkspace",
     "onCommand:forexplore.reviewTargetWorkspaceModules",
@@ -43,6 +47,30 @@
     "onCommand:forexplore.recoverLegacyModuleMigrationReview"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "forexplore",
+          "title": "ForeXplore",
+          "icon": "media/forexplore.svg"
+        }
+      ]
+    },
+    "views": {
+      "forexplore": [
+        {
+          "id": "forexplore.launcher",
+          "name": "ForeXplore",
+          "type": "tree"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "forexplore.launcher",
+        "contents": "[打开迁移面板](command:forexplore.showPanel)"
+      }
+    ],
     "commands": [
       {
         "command": "forexplore.startLegacyTranslation",
@@ -59,6 +87,10 @@
       {
         "command": "forexplore.reindex",
         "title": "ForeXplore: 重新索引检索仓库"
+      },
+      {
+        "command": "forexplore.refreshCodeIntelligence",
+        "title": "ForeXplore: 刷新代码智能索引"
       },
       {
         "command": "forexplore.restoreLastCheckpoint",
@@ -151,7 +183,7 @@
             "real"
           ],
           "default": "real",
-          "description": "调用本地 SeekDB 检索服务和语言无关的适配服务；两个服务都必须健康。"
+          "description": "调用真实的检索和迁移适配服务；代码智能索引用于项目解析，不替代迁移能力校验。"
         },
         "forexplore.repositoryPaths": {
           "type": "array",
@@ -159,7 +191,13 @@
             "type": "string"
           },
           "default": [],
-          "description": "历史代码仓的本地目录。删除路径只修改本地注册，不会撤回已经发布的模块知识。"
+          "description": "历史代码仓的本地目录。保存后建立版本化结构索引和项目模块 Summary；删除路径只修改本地注册，不会撤回已审发布的模块知识。"
+        },
+        "forexplore.targetRepositoryPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "通过目标项目选择器明确选择的目录。只有同时位于当前工作区中的目录会作为目标工程索引。"
         },
         "forexplore.topK": {
           "type": "number",
@@ -242,6 +280,7 @@
     "@forexplore/adaptation-http-adapter": "0.1.0",
     "@forexplore/adaptation-service": "0.1.0",
     "@forexplore/code-indexer": "0.1.0",
+    "@forexplore/code-intelligence-service": "0.1.0",
     "@forexplore/contracts": "0.1.0",
     "@forexplore/seekdb-adapter": "0.1.0",
     "@forexplore/workflow-core": "0.1.0",

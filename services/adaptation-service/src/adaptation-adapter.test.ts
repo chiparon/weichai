@@ -9,6 +9,8 @@ import type {
 import { describe, expect, it } from "vitest";
 import { AdaptationAdapter, _buildFilePatch } from "./adaptation-adapter";
 import type { CompileResult } from "./compiler";
+import { collectTargetContextSnapshot } from "./context-collector";
+import { projectTargetContext } from "./translator";
 
 const javaCandidate: SearchCandidate = {
   id: "java-candidate",
@@ -159,6 +161,22 @@ describe("AdaptationAdapter implementation boundary", () => {
       expect(result.targetLanguage).toBe(language);
       expect(compiledLanguages).toEqual([language]);
     }
+  });
+
+  it("rejects module targets at the V1 adaptation and context boundaries", async () => {
+    const target: AdaptationRequest["target"] = { ...request.target, kind: "module" };
+    const adapter = new AdaptationAdapter({ apiKey: "not-used-by-gate-tests" });
+
+    await expect(adapter.adapt({ ...request, target })).rejects.toThrow(
+      "The deprecated V1 adaptation route supports only class or function targets.",
+    );
+    expect(collectTargetContextSnapshot({ projectRoot: javaProjectRoot, target })).toMatchObject({
+      status: "unsupported",
+      reason: { code: "TARGET_CONTEXT_CAPABILITY_UNAVAILABLE" },
+    });
+    expect(() => projectTargetContext({ ...targetContext, target })).toThrow(
+      "The V1 Translator supports only class or function targets.",
+    );
   });
 
   it("rejects strategies unsupported by the adapter", async () => {

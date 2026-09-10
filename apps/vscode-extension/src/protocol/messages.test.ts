@@ -3,6 +3,11 @@ import { isWebviewToHostMessage } from './messages';
 
 describe('Webview message boundary', () => {
   it('accepts bounded intent messages', () => {
+    expect(isWebviewToHostMessage({ type: 'ADD_TARGET_WORKSPACE', mode: 'browse' })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'ADD_TARGET_WORKSPACE', mode: 'input' })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'ADD_TARGET_WORKSPACE', mode: 'workspace' })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'ADD_TARGET_WORKSPACE', mode: ['workspace'] })).toBe(false);
+    expect(isWebviewToHostMessage({ type: 'ADD_TARGET_WORKSPACE', mode: 'input', path: '/tmp' })).toBe(false);
     expect(
       isWebviewToHostMessage({
         type: 'START_SEARCH',
@@ -49,6 +54,17 @@ describe('Webview message boundary', () => {
       workspaceId: 'history:one',
       action: 'withdraw-history-publication',
     })).toBe(true);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SELECT_CODE_INTELLIGENCE_REVISION',
+        repositoryId: 'repo-2dd9d4a2',
+        analysisRevision: 'revision-33b87b6a',
+      }),
+    ).toBe(true);
+    const project = { repositoryId: 'repo-1', analysisRevision: 'revision-1', projectId: 'project-1' };
+    expect(isWebviewToHostMessage({ type: 'SELECT_CODE_INTELLIGENCE_PROJECT', ...project })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'RETRY_PROJECT_ANALYSIS', ...project, force: false })).toBe(true);
+    expect(isWebviewToHostMessage({ type: 'REFRESH_REPOSITORY', repositoryId: 'repo-1' })).toBe(true);
   });
 
   it('rejects a Webview-supplied target, patch, file path, or old protocol action', () => {
@@ -61,6 +77,7 @@ describe('Webview message boundary', () => {
       }),
     ).toBe(false);
     expect(isWebviewToHostMessage({ type: 'APPLY_PATCHES', files: [] })).toBe(false);
+    expect(isWebviewToHostMessage({ type: 'SELECT_WORKSPACE_TARGET', targetId: 'workspace://safe.cs#L1' })).toBe(false);
     expect(isWebviewToHostMessage({ type: 'OPEN_FILE', path: '/tmp/secret', line: 1 })).toBe(false);
     expect(isWebviewToHostMessage({ type: 'COPY_TARGET_PATH', path: '../../outside.cs' })).toBe(false);
     expect(isWebviewToHostMessage({ type: 'REVEAL_TARGET_IN_EXPLORER', path: '../../outside.cs' })).toBe(false);
@@ -69,6 +86,21 @@ describe('Webview message boundary', () => {
         type: 'SELECT_WORKSPACE_TARGET',
         targetId: 'workspace://safe.cs#L1',
         path: '../../outside.cs',
+      }),
+    ).toBe(false);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SELECT_CODE_INTELLIGENCE_REVISION',
+        repositoryId: 'repo-2dd9d4a2',
+        analysisRevision: 'revision-33b87b6a',
+        localPath: 'C:\\private\\repository',
+      }),
+    ).toBe(false);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SELECT_CODE_INTELLIGENCE_REVISION',
+        repositoryId: 'C:\\private\\repository',
+        analysisRevision: 'revision-33b87b6a',
       }),
     ).toBe(false);
   });
@@ -90,6 +122,20 @@ describe('Webview message boundary', () => {
     ).toBe(false);
     expect(isWebviewToHostMessage({ type: 'SELECT_CANDIDATE', candidateId: '' })).toBe(false);
     expect(isWebviewToHostMessage({ type: 'SELECT_WORKSPACE_TARGET', targetId: '' })).toBe(false);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SELECT_CODE_INTELLIGENCE_REVISION',
+        repositoryId: 'repo-2dd9d4a2',
+        analysisRevision: '',
+      }),
+    ).toBe(false);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SELECT_CODE_INTELLIGENCE_REVISION',
+        repositoryId: 'repo-2dd9d4a2',
+        analysisRevision: '../revision',
+      }),
+    ).toBe(false);
     expect(isWebviewToHostMessage({ type: 'OPEN_REPOSITORY_SETTINGS' })).toBe(false);
     expect(isWebviewToHostMessage({
       type: 'SELECT_HISTORY_REPOSITORY',

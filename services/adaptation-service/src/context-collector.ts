@@ -446,7 +446,7 @@ export function collectTargetContextSnapshot(
   }
   if (
     adapter.descriptor.context.status !== "supported" ||
-    !adapter.descriptor.context.targetKinds.includes(options.target.kind)
+    !adapter.descriptor.context.targetKinds.some((kind) => kind === options.target.kind)
   ) {
     return unsupportedEngineering(
       "TARGET_CONTEXT_CAPABILITY_UNAVAILABLE",

@@ -146,6 +146,31 @@ export type {
 } from "./context-collector";
 
 export {
+  ToolCallingArchitectRuntime,
+  buildToolCallingArchitectMessages,
+  calculateRevisionScopedPlanHash,
+  createDeepSeekToolCallingArchitectClient,
+  parseRevisionScopedModulePlan,
+  toolCallingArchitectTools,
+} from "./tool-calling-architect-runtime";
+export type {
+  RevisionScopedArchitecturePort,
+  RevisionScopedModule,
+  RevisionScopedModuleDependency,
+  RevisionScopedModulePlanProposal,
+  ToolCallingArchitectEvidenceReceipt,
+  ToolCallingArchitectMessage,
+  ToolCallingArchitectModelClient,
+  ToolCallingArchitectModelResponse,
+  ToolCallingArchitectPlanResult,
+  ToolCallingArchitectRequest,
+  ToolCallingArchitectRuntimeOptions,
+  ToolCallingArchitectToolCall,
+  ToolCallingArchitectToolDefinition,
+  ToolCallingArchitectToolName,
+} from "./tool-calling-architect-runtime";
+
+export {
   compileStandalone,
   compileIntegrated,
   compileJavaStandalone,
@@ -173,10 +198,21 @@ export { deepSeekModelConfig, loadDeepSeekModelConfig } from "./model-config";
 export type { DeepSeekModelConfig } from "./model-config";
 
 export { chatCompletionContent, completeWithDeepSeek } from "./deepseek-client";
-export type { DeepSeekClientOptions, DeepSeekMessage } from "./deepseek-client";
+export { completeWithDeepSeekTools } from "./deepseek-client";
+export type {
+  DeepSeekClientOptions,
+  DeepSeekMessage,
+  DeepSeekToolCall,
+  DeepSeekToolCompletion,
+  DeepSeekToolDefinition,
+  DeepSeekToolMessage,
+} from "./deepseek-client";
 
 export { loadConfig } from "./config";
 export type { AdaptationServiceConfig } from "./config";
+
+export { HttpSemanticQueryPort } from "./http-semantic-query-port";
+export type { HttpSemanticQueryPortOptions } from "./http-semantic-query-port";
 
 export { createHttpServer } from "./http-server";
 export type {
@@ -187,6 +223,7 @@ export type {
   ModuleDiscoveryHttpConstraint,
   ModuleDiscoveryHttpRequest,
   ModulePlanHttpRequest,
+  SemanticModulePlanHttpRequest,
   StaticAnalysisSnapshotStore,
 } from "./http-server";
 export type { RepositoryArchitecturePort } from "@forexplore/workflow-core";

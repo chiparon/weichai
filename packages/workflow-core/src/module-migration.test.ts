@@ -122,6 +122,20 @@ function proposal(
 }
 
 describe('module migration planning', () => {
+  it('preserves adapter-owned summary languages without a central language allow-list', () => {
+    const modules = [{ ...module('a', 'src/a.kt'), language: 'kotlin' }];
+    const snapshot = analysis(modules);
+    snapshot.files[0]!.language = 'kotlin';
+    snapshot.symbols[0]!.language = 'kotlin';
+    const plan = buildModuleMigrationPlan(snapshot, proposal(modules), { id: 'plan-kotlin', now: NOW });
+    expect(materializeModuleSummary(plan).generated.modules[0]!.language).toBe('kotlin');
+    expect(validateModuleMigrationProposal(proposal([
+      { ...modules[0]!, language: '../invalid' },
+    ]), snapshot).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'module-language-invalid' }),
+    ]));
+  });
+
   it('uses a browser-safe SHA-256 hash over canonical plan inputs', () => {
     expect(sha256Hex('abc')).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
@@ -374,7 +388,14 @@ describe('module migration planning', () => {
       decidedAt: NOW,
     }, SNAPSHOT, NOW);
     expect(arePlanApprovalsCurrent(approved)).toBe(true);
-    expect(materializeModuleSummary(approved).human.approvalsCurrent).toBe(true);
+    const approvedSummary = materializeModuleSummary(approved);
+    expect(approvedSummary.human.approvalsCurrent).toBe(true);
+    expect(approvedSummary.generated.modules.find((item) => item.id === 'a')).toMatchObject({
+      purpose: 'a module',
+      coreApis: ['symbol:a'],
+      language: 'Java',
+      domain: 'a',
+    });
 
     const rejected = recordModulePlanDecision(approved, {
       id: 'plan-rejection',

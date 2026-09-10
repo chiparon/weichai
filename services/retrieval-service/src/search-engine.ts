@@ -33,6 +33,9 @@ function expandedLimit(topK: number): number {
 function candidateKinds(
   targetKind: SearchRequest['target']['kind'],
 ): IndexedCodeDocument['kind'][] {
+  if (targetKind === 'module') {
+    throw new Error('Module targets require module retrieval; the legacy symbol index supports only classes and functions.');
+  }
   return [targetKind];
 }
 

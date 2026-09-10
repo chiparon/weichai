@@ -539,6 +539,7 @@ function initPayload(input: Partial<PanelInitPayload> = {}): PanelInitPayload {
       history: [],
     },
     repositoryStatuses: [],
+    codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
     serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' },
     searchProvider: 'SeekDB',
     adaptationProvider: 'DeepSeek',
@@ -901,6 +902,68 @@ describe('01B target workspace Webview', () => {
     expect(adapt.disabled).toBe(false);
     await click(adapt);
     expect(posted.at(-1)).toEqual({ type: 'START_ADAPT', decisionNotes: '' });
+  });
+
+  it('keeps project browsing and project selection separate from a reviewed V2 target', async () => {
+    const snapshot = targetWorkspaceSnapshot();
+    const payload = initPayload({ targetWorkspace: snapshot });
+    const projectExplorer = {
+      ...payload.moduleExplorer,
+      target: {
+        ...payload.moduleExplorer.target,
+        id: 'repo-project',
+        repositoryId: 'repo-project',
+        projectId: 'project-one',
+        revision: 'revision-one',
+        name: 'Unreviewed project',
+        lifecycle: {
+          stage: 'ready', label: '项目分析（只读）', message: '浏览不授予迁移权限',
+          ready: false, publicationActive: false,
+        },
+      },
+    };
+    payload.projectExplorer = projectExplorer;
+    payload.codeIntelligence.repositories = [{
+      repositoryId: 'repo-project', displayName: 'Unreviewed project', role: 'target',
+      analysisStatus: 'ready', activeRevision: 'revision-one', selectedRevision: 'revision-one',
+      revisions: [], languages: [], summary: { status: 'current' }, selectedProjectId: 'project-one',
+      projects: [{ projectId: 'project-one', displayName: 'Project one', kind: 'package', relativePath: '.', languageIds: ['csharp'] }],
+    }];
+    await send({ type: 'INIT', payload });
+    const selection = migrationSelection(snapshot);
+    await send({
+      type: 'TARGET_ENTITY_SELECTED', selection: selection.selection,
+      target: selection.target, migrationSelection: selection, activateWorkflow: true,
+    });
+    expect(container.querySelector('.target-readonly-fields')?.textContent).toContain('Pay');
+
+    await click([...container.querySelectorAll('[aria-label="目录视图"] button')]
+      .find((button) => button.textContent === '项目解析') ?? null);
+    await click(container.querySelector('[aria-label="选择目标项目"]'));
+    await click(container.querySelector('[role="menuitemradio"]'));
+    expect(posted.at(-1)).toEqual({
+      type: 'SELECT_CODE_INTELLIGENCE_PROJECT', repositoryId: 'repo-project',
+      analysisRevision: 'revision-one', projectId: 'project-one',
+    });
+    await send({ type: 'PROJECT_EXPLORER', explorer: projectExplorer });
+    expect(container.textContent).toContain('当前迁移目标：Pay');
+    expect(container.querySelector('.target-start-action')).toBeNull();
+    expect(container.querySelector('.requirement-input')).toBeNull();
+
+    // Even matching node IDs from descriptive analysis cannot enter the reviewed selector.
+    await click(container.querySelector('[aria-label="展开 PaymentService"]'));
+    const beforeBrowse = posted.length;
+    await click(container.querySelector('[data-node-id="node:callable:refund"] .tree-select'));
+    expect(posted).toHaveLength(beforeBrowse);
+    await send({ type: 'MODULE_EXPLORER', explorer: payload.moduleExplorer });
+    expect(container.textContent).toContain('当前迁移目标：Pay');
+
+    await click([...container.querySelectorAll('[aria-label="目录视图"] button')]
+      .find((button) => button.textContent === '已审迁移目录') ?? null);
+    expect(container.querySelector('.target-readonly-fields')?.textContent).toContain('Pay');
+    expect(container.querySelector('.target-location')?.textContent).toContain('java → csharp');
+    expect(container.querySelector('.target-readonly-fields')?.textContent).not.toContain('Refund');
+    expect(container.textContent).toContain('检索相似实现');
   });
 
   it('validates snapshot-bound intents and rejects Webview-supplied paths', () => {

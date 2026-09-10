@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type {
   EntityImplementationAssessment,
+  Language,
   MigrationTargetRef,
   MigrationRouteResolution,
   MigrationRuntimeCapabilitySnapshot,
@@ -24,7 +25,18 @@ import type {
   TargetWorkspaceEntityContext,
   TargetWorkspaceHostRecord,
 } from './target-workspace-host';
-import { languageFromLanguageId } from './target-builder';
+// V1 compatibility labels only; V2 route eligibility uses the open language ID.
+const legacyLanguageLabels: Record<string, Language> = {
+  typescript: 'TypeScript',
+  typescriptreact: 'TypeScript',
+  javascript: 'TypeScript',
+  javascriptreact: 'TypeScript',
+  python: 'Python',
+  java: 'Java',
+  csharp: 'C#',
+  rust: 'Rust',
+  go: 'Go',
+};
 
 export interface ProjectTargetWorkspaceInput {
   record: TargetWorkspaceHostRecord;
@@ -388,7 +400,7 @@ export function moduleTargetFromTargetWorkspaceContext(
     throw new Error('Target workspace entity cannot be represented as a symbol-level target.');
   }
   const languageId = entity.languageId ?? file.languageId;
-  const language = languageId ? languageFromLanguageId(languageId) : null;
+  const language = languageId ? legacyLanguageLabels[languageId.toLowerCase()] : undefined;
   if (!language) {
     throw new Error(
       `The V1 symbol workflow cannot represent target language ${languageId ?? '<missing>'}; ` +

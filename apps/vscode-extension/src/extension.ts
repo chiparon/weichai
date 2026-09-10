@@ -15,6 +15,7 @@ import { normalizeLanguageId } from '@forexplore/contracts';
 import {
   writeRepositoryAnalysisArtifact,
 } from '@forexplore/code-indexer';
+import { requestSemanticModuleMigrationProposal } from './module-plan-client';
 import {
   applyHunksStrict,
   canApplyAdaptationForRoute,
@@ -25,6 +26,10 @@ import {
   type MigrationExecutionV2ValidationContext,
 } from '@forexplore/workflow-core';
 import { WorkspaceBackfill } from './backfill';
+import {
+  CodeIntelligenceHost,
+  codeIntelligenceRuntimeOptionsFromEnvironment,
+} from './code-intelligence-host';
 import { canonicalWorkspacePath } from './diff-apply';
 import {
   HostOwnedRepositoryAnalyzer,
@@ -52,6 +57,7 @@ import { requestRepositoryModuleDiscovery } from './module-discovery-client';
 import type { ModuleWaveExecutionPort } from './module-wave-execution-host';
 import type { ModuleMigrationWaveRecoveryPort } from './module-migration-recovery';
 import { TranslationPanel } from './panel';
+import { buildProjectExplorer } from './project-explorer';
 import type {
   HostToWebviewMessage,
   WebviewToHostMessage,
@@ -98,6 +104,8 @@ import type {
   ModuleWorkspaceAction,
   RepositoryStatus,
 } from './ui-types';
+import { addTargetWorkspace, selectedTargetWorkspaceFolders } from './target-workspace';
+import type { CodeIntelligencePresentation } from './ui-types';
 
 // Keep the transaction implementation bundled by esbuild without making the
 // extension's strict typecheck re-check the service's broader source tree.
@@ -120,6 +128,7 @@ interface ExtensionHost {
   moduleMigration: ModuleMigrationHost;
   previews: ModuleMigrationPreviewProvider;
   repositoryAnalyzer: HostOwnedRepositoryAnalyzer;
+  codeIntelligence: CodeIntelligenceHost;
 }
 
 interface ActiveMigrationRun extends ActiveMigrationRunV2 {
@@ -157,12 +166,44 @@ let activeHistoryRepositoryId: string | null = null;
 let activeHistoryModuleSelection: ActiveHistoryModuleBinding | null = null;
 let targetSelectionEpoch = 0;
 let repositoryPathPickerOpen = false;
+let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('ForeXplore');
   const services = new ServiceManager(output);
   const health = new RepositoryHealthCheck();
   const repositoryAnalyzer = new HostOwnedRepositoryAnalyzer();
+  let codeIntelligence: CodeIntelligenceHost;
+  try {
+    const runtimeOptions = codeIntelligenceRuntimeOptionsFromEnvironment(process.env, {
+      // A packaged extension must use durable SeekDB. The only memory path is
+      // an explicitly non-production VS Code development/test host.
+      allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
+    });
+    codeIntelligence = new CodeIntelligenceHost({
+      runtimeOptions,
+      planProject: async (scope) => {
+        await codeIntelligence.startSemanticQueryServer({
+          port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
+          bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
+        });
+        return requestSemanticModuleMigrationProposal(loadSettings().adaptationApiUrl, scope);
+      },
+      onChange: () => { void publishProjectView(codeIntelligence).catch((error) => output.appendLine(String(error))); },
+      identityStore: context.globalState,
+      output,
+    });
+  } catch (error) {
+    const startupError = error instanceof Error ? error : new Error(String(error));
+    output.appendLine(`[forexplore] invalid code intelligence configuration: ${startupError.message}`);
+    codeIntelligence = new CodeIntelligenceHost({
+      runtimeFactory: async () => Promise.reject(startupError),
+      identityStore: context.globalState,
+      output,
+      storageKind: 'seekdb',
+    });
+  }
+  activeCodeIntelligenceHost = codeIntelligence;
   const moduleMigrationPreviews = new ModuleMigrationPreviewProvider();
   const moduleMigration = new ModuleMigrationHost({
     context,
@@ -172,6 +213,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     waveRecovery: new GitWaveTransaction(),
     waveExecution: new ModuleWaveExecutionCoordinator(),
     repositoryAnalyzer: (request) => repositoryAnalyzer.analyze(request),
+    onCompilerProbeAnalysisReady: async ({ workspaceFolder, analysis }) => {
+      // The compatibility analyzer remains the producer of this snapshot.
+      // Only the trusted host can bind its compiler-confirmed subset to the
+      // already-active structural revision; Agent/MCP/Webview code receives
+      // the resulting semantic evidence through SemanticQueryPort only.
+      const binding = await codeIntelligence.bindJavaCsharpCompilerProbeEvidence({
+        localPath: workspaceFolder.uri.fsPath,
+        analysis,
+      });
+      output.appendLine(
+        binding.status === 'bound'
+          ? `[forexplore] Java/C# compiler-probe evidence bound to ${binding.repositoryId}/${binding.analysisRevision}.`
+          : '[forexplore] Java/C# compiler-probe evidence was not bound to the active structural revision.',
+      );
+      publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await codeIntelligence.presentation() });
+    },
   });
   const targetWorkspaces = new TargetWorkspaceHost({
     store: new FileSystemTargetWorkspaceHostStore({
@@ -261,6 +318,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     moduleMigration,
     previews: moduleMigrationPreviews,
     repositoryAnalyzer,
+    codeIntelligence,
   };
   // Recovery completes before mutation commands become reachable. This avoids
   // a startup race between journal replay and a newly requested write-back.
@@ -269,6 +327,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     output,
     services,
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
+    }),
+    vscode.window.registerTreeDataProvider<vscode.TreeItem>('forexplore.launcher', {
+      getTreeItem: (item) => item,
+      getChildren: () => [],
+    }),
+    { dispose: () => codeIntelligence.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(
       moduleMigrationPreviewScheme,
       moduleMigrationPreviews,
@@ -280,19 +346,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       showPanel(extensionHost),
     ),
     vscode.commands.registerCommand('forexplore.checkRepositories', async () => {
+      const index = await synchronizeCodeIntelligence(codeIntelligence, { scan: false });
       const statuses = await refreshRepositoryStatus(services, health);
       const summary = summarizeRepositoryStatus(statuses);
       void vscode.window.showInformationMessage(
-        summary ?? '未配置本地仓库路径；检索范围由当前运行模式决定。',
+        [summary, summarizeCodeIntelligence(index)].filter(Boolean).join('；') || '未配置本地仓库路径。',
       );
     }),
     vscode.commands.registerCommand('forexplore.reindex', async () => {
       await services.refresh();
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'ForeXplore: 正在刷新版本化代码智能索引',
+        },
+        () => synchronizeCodeIntelligence(codeIntelligence, { forceFull: true }),
+      );
       const repositories = await refreshRepositoryStatus(services, health);
       void vscode.window.showInformationMessage(
-        '扩展不会把本地目录误标为已索引。请在检索服务部署环境运行索引器，然后重新检查服务状态。',
+        summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。',
       );
       void repositories;
+    }),
+    vscode.commands.registerCommand('forexplore.refreshCodeIntelligence', async () => {
+      const result = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'ForeXplore: 正在增量刷新代码智能索引',
+        },
+        () => synchronizeCodeIntelligence(codeIntelligence),
+      );
+      void vscode.window.showInformationMessage(
+        summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。',
+      );
     }),
     vscode.commands.registerCommand('forexplore.restoreLastCheckpoint', () =>
       restoreLastCheckpoint(extensionHost),
@@ -312,9 +398,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('forexplore.retryTargetWorkspaceInventory', () =>
       retryTargetWorkspaceInventory(extensionHost),
     ),
-    vscode.commands.registerCommand('forexplore.indexModuleMigrationRepository', () =>
-      moduleMigration.indexRepository(),
-    ),
+    vscode.commands.registerCommand('forexplore.indexModuleMigrationRepository', async () => {
+      await synchronizeCodeIntelligence(codeIntelligence);
+      await moduleMigration.indexRepository();
+    }),
     vscode.commands.registerCommand('forexplore.reviewRepositoryModuleBoundaries', () =>
       moduleMigration.reviewRepositoryModuleBoundaries(),
     ),
@@ -350,9 +437,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
   );
 
-  // Keep status informative, but never start servers or silently switch modes.
-  void services
-    .refresh()
+  // The trusted host starts the shared local indexing chain; services used for
+  // translation remain independently health-checked and are never replaced.
+  void Promise.all([
+    services.refresh(),
+    synchronizeCodeIntelligence(codeIntelligence),
+  ])
     .then(() => refreshRepositoryStatus(services, health))
     .catch((error) => {
       output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
@@ -396,6 +486,8 @@ export function deactivate(): void {
   panelWorkspaceFolder = null;
   activeHistoryRepositoryId = null;
   activeHistoryModuleSelection = null;
+  activeCodeIntelligenceHost?.dispose();
+  activeCodeIntelligenceHost = null;
 }
 
 interface ModuleMappingImportDocument {
@@ -985,6 +1077,7 @@ async function showWorkspacePanel(
       workspaceRoot: workspaceFolder?.uri.fsPath ?? '',
       settings: { repositoryPaths: settings.repositoryPaths, topK: settings.topK },
       repositoryStatuses,
+      codeIntelligence: await host.codeIntelligence.presentation(),
       serviceStatus: host.services.serviceStatus,
       moduleExplorer,
       searchProvider: runtime.searchProvider,
@@ -992,6 +1085,8 @@ async function showWorkspacePanel(
     },
     { onMessage: (message) => void handlePanelMessage(host, message) },
   );
+  await publishProjectView(host.codeIntelligence).catch((error) =>
+    publishError(errorMessage(error, '项目视图加载失败')));
 }
 
 async function buildModuleExplorerPresentation(
@@ -1098,12 +1193,15 @@ async function showTargetWorkspacePanel(
       settings: { repositoryPaths: settings.repositoryPaths, topK: settings.topK },
       moduleExplorer,
       repositoryStatuses,
+      codeIntelligence: await host.codeIntelligence.presentation(),
       serviceStatus,
       searchProvider: runtime.searchProvider,
       adaptationProvider: runtime.adaptationProvider,
     },
     { onMessage: (message) => void handlePanelMessage(host, message) },
   );
+  await publishProjectView(host.codeIntelligence).catch((error) =>
+    publishError(errorMessage(error, '项目视图加载失败')));
 }
 
 async function refreshTargetWorkspace(
@@ -1280,6 +1378,13 @@ async function handlePanelMessage(
   message: WebviewToHostMessage,
 ): Promise<void> {
   switch (message.type) {
+    case 'ADD_TARGET_WORKSPACE':
+      try {
+        if (await addTargetWorkspace(message.mode)) await refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true });
+      } catch (error) {
+        publishError(errorMessage(error, '添加目标工作区失败'));
+      }
+      return;
     case 'READY':
       return;
     case 'START_SEARCH':
@@ -1313,6 +1418,10 @@ async function handlePanelMessage(
     case 'PICK_REPOSITORY_PATH':
       await pickRepositoryPath();
       return;
+    case 'REFRESH_REPOSITORY':
+      await synchronizeCodeIntelligence(host.codeIntelligence, { scanRepositoryIds: [message.repositoryId] });
+      await publishProjectView(host.codeIntelligence);
+      return;
     case 'SAVE_SETTINGS':
       await updatePanelSettings(host, message.settings);
       return;
@@ -1325,6 +1434,15 @@ async function handlePanelMessage(
     case 'RUN_MODULE_WORKSPACE_ACTION':
       await runModuleWorkspaceAction(host, message.workspaceId, message.action);
       return;
+    case 'SELECT_CODE_INTELLIGENCE_REVISION':
+      await selectCodeIntelligenceRevision(host.codeIntelligence, message);
+      return;
+    case 'RETRY_PROJECT_ANALYSIS':
+      await host.codeIntelligence.retryProject(message, message.force);
+      return;
+    case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      await selectCodeIntelligenceProject(host.codeIntelligence, message);
+      return;
     case 'COPY_TARGET_PATH':
       await copyTargetPath();
       return;
@@ -1334,6 +1452,43 @@ async function handlePanelMessage(
     case 'OPEN_TARGET':
       await openTarget();
       return;
+  }
+}
+
+async function selectCodeIntelligenceRevision(
+  host: CodeIntelligenceHost,
+  selection: Extract<WebviewToHostMessage, { type: 'SELECT_CODE_INTELLIGENCE_REVISION' }>,
+): Promise<void> {
+  try {
+    await host.selectRevisionForDisplay(selection);
+    await publishProjectView(host);
+  } catch (error) {
+    publishError(errorMessage(error, '切换代码智能 revision 失败'));
+  }
+}
+
+async function selectCodeIntelligenceProject(
+  host: CodeIntelligenceHost,
+  selection: Extract<WebviewToHostMessage, { type: 'SELECT_CODE_INTELLIGENCE_PROJECT' }>,
+): Promise<void> {
+  try {
+    // Project browsing never replaces an independently reviewed V2 target.
+    await host.selectProjectForDisplay(selection);
+    await publishProjectView(host);
+  } catch (error) {
+    publishError(errorMessage(error, '切换代码智能项目失败'));
+  }
+}
+
+async function refreshModuleExplorer(
+  host: CodeIntelligenceHost,
+  options: Parameters<typeof synchronizeCodeIntelligence>[1] = {},
+): Promise<void> {
+  try {
+    await synchronizeCodeIntelligence(host, options);
+    await publishProjectView(host);
+  } catch (error) {
+    publishError(errorMessage(error, '刷新代码智能索引失败'));
   }
 }
 
@@ -1376,6 +1531,7 @@ async function updatePanelSettings(
     await Promise.all([
       refreshPanelStatus(host),
       publishModuleExplorer(host),
+      refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, scanRoles: ['history'] }),
     ]);
   } catch (error) {
     publishError(errorMessage(error, '保存设置失败'));
@@ -1904,8 +2060,12 @@ async function refreshPanelStatus(host: ExtensionHost): Promise<void> {
   try {
     const status = await host.services.refresh();
     publish({ type: 'SERVICE_STATUS', status });
-    const statuses = await refreshRepositoryStatus(host.services, host.health);
+    const [statuses, codeIntelligence] = await Promise.all([
+      refreshRepositoryStatus(host.services, host.health),
+      synchronizeCodeIntelligence(host.codeIntelligence, { scan: false }),
+    ]);
     publish({ type: 'REPOSITORY_STATUS', statuses });
+    publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: codeIntelligence });
   } catch (error) {
     publishError(errorMessage(error, '状态检查失败'));
   }
@@ -2335,6 +2495,41 @@ function refreshRepositoryStatus(
     .then((statuses) => decorateRepositoryStatuses(statuses, services.serviceStatus));
 }
 
+/**
+ * Only the extension host translates configured local roots into registry
+ * inputs.  The returned presentation is safe to pass to the Webview because
+ * it contains IDs/revisions only, never these local paths.
+ */
+function codeIntelligenceRepositoryInputs(): Array<{
+  localPath: string;
+  displayName?: string;
+  role: 'history' | 'target';
+}> {
+  const settings = loadSettings();
+  const history = settings.repositoryPaths.map((localPath) => ({
+    localPath,
+    role: 'history' as const,
+  }));
+  const targets = selectedTargetWorkspaceFolders()
+    .map((folder) => ({
+      localPath: folder.uri.fsPath,
+      displayName: folder.name,
+      role: 'target' as const,
+    }));
+  return [...history, ...targets];
+}
+
+async function synchronizeCodeIntelligence(
+  host: CodeIntelligenceHost,
+  options: { forceFull?: boolean; scan?: boolean; scanRepositoryIds?: readonly string[]; scanNewOnly?: boolean; scanRoles?: readonly ('history' | 'target')[] } = {},
+): Promise<CodeIntelligencePresentation> {
+  const result = await host.synchronize({
+    repositories: codeIntelligenceRepositoryInputs(),
+    ...options,
+  });
+  return result.presentation;
+}
+
 function publish(message: HostToWebviewMessage): void {
   TranslationPanel.current?.post(message);
 }
@@ -2346,7 +2541,21 @@ function publishError(message: string): void {
 function summarizeRepositoryStatus(statuses: RepositoryStatus[]): string | null {
   if (statuses.length === 0) return null;
   const unavailable = statuses.filter((status) => !status.exists || !status.readable).length;
-  return `本地仓库路径：${statuses.length} 个，${unavailable} 个不可用。索引状态由检索服务确认。`;
+  return `本地历史仓库：${statuses.length} 个，${unavailable} 个不可用。`;
+}
+
+function summarizeCodeIntelligence(presentation: CodeIntelligencePresentation): string | null {
+  if (presentation.status === 'initializing') return '代码智能索引正在初始化。';
+  if (presentation.status === 'error') return presentation.message ?? '代码智能索引刷新失败。';
+  if (presentation.repositories.length === 0) return null;
+  const ready = presentation.repositories.filter((repository) => (
+    repository.analysisStatus === 'ready' || repository.analysisStatus === 'degraded'
+  )).length;
+  const staleSummaries = presentation.repositories.filter(
+    (repository) => repository.summary.status === 'stale',
+  ).length;
+  return `${presentation.storage === 'seekdb' ? 'SeekDB' : '内存'}代码智能索引：${ready}/${presentation.repositories.length} 个仓库就绪`
+    + (staleSummaries ? `，${staleSummaries} 个 Summary 已过期。` : '。');
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -2359,4 +2568,22 @@ function isSha256(value: string): boolean {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? `${fallback}：${error.message}` : fallback;
+}
+
+function positiveEnvironmentPort(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) return fallback;
+  const port = Number(value);
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
+}
+
+let projectViewQueue: Promise<void> = Promise.resolve();
+function publishProjectView(host: CodeIntelligenceHost): Promise<void> {
+  projectViewQueue = projectViewQueue.catch(() => {}).then(async () => {
+    if (!TranslationPanel.current) return;
+    publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await host.presentation() });
+    const explorer = await buildProjectExplorer(host);
+    publish({ type: 'PROJECT_EXPLORER', explorer: explorer.presentation });
+    publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await host.presentation() });
+  });
+  return projectViewQueue;
 }

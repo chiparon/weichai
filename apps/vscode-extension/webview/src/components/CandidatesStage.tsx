@@ -80,7 +80,7 @@ export function CandidatesStage({
           <div>
             <span>02 · 检索结果</span>
             <h1 id="candidate-browser-title">选择一个可复用实现</h1>
-            <p>候选按仓库和模块路径归组，先判断模块上下文，再选择具体实现。</p>
+            <p>{state.target?.entity.name} · 候选按仓库和模块路径归组，先判断模块上下文，再选择具体实现。</p>
           </div>
           <div className="candidate-result-stats" aria-label="检索结果规模">
             <span><strong>{repositoryCount}</strong> 仓库</span>

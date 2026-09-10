@@ -66,6 +66,11 @@ import {
   type ModuleSummaryRequest,
 } from "./module-summary-agent";
 
+import type {
+  RevisionScopedArchitecturePort,
+  ToolCallingArchitectRequest,
+} from "./tool-calling-architect-runtime";
+
 export interface StaticAnalysisSnapshotStore {
   /** Returns only a server-persisted snapshot; HTTP never supplies source or paths. */
   getSnapshot(snapshotId: string, signal?: AbortSignal): Promise<RepositoryStaticAnalysis | null>;
@@ -127,6 +132,8 @@ export interface HttpServerOptions {
   moduleSummaryPort?: ModuleSummaryPort;
   /** Compatibility bridge from a verified legacy snapshot to adapter-neutral IR. */
   repositoryIrBridge?: RepositoryStaticAnalysisIrBridge;
+  /** Revision-native planning path backed only by SemanticQueryPort tools. */
+  semanticArchitecturePort?: RevisionScopedArchitecturePort;
   /** Browser CORS is opt-in; the VS Code extension host uses local HTTP directly. */
   corsOrigin?: string;
 }
@@ -279,6 +286,14 @@ export interface ModuleDiscoveryHttpRequest {
   constraints?: ModuleDiscoveryHttpConstraint[];
 }
 
+export interface SemanticModulePlanHttpRequest {
+  repositoryId: string;
+  analysisRevision: string;
+  projectId?: string;
+  objective: string;
+  immutableConstraints?: string[];
+}
+
 const maxPlanningObjectiveChars = 16_000;
 const maxPlanningConstraints = 64;
 const maxPlanningConstraintChars = 2_000;
@@ -383,6 +398,42 @@ function isModuleSummaryHttpRequest(value: unknown): value is ModuleSummaryReque
   );
 }
 
+/**
+ * This route deliberately receives only a stable index scope and planning
+ * intent.  It cannot upload a legacy snapshot, analysis hash, source text, or
+ * local path; the ToolCallingArchitectRuntime reads those facts from the
+ * revision-scoped SemanticQueryPort itself.
+ */
+function isSemanticModulePlanHttpRequest(value: unknown): value is SemanticModulePlanHttpRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  const allowedKeys = new Set(["repositoryId", "analysisRevision", "projectId", "objective", "immutableConstraints"]);
+  if (Object.keys(body).some((key) => !allowedKeys.has(key))) return false;
+  if (
+    typeof body.repositoryId !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.repositoryId) ||
+    typeof body.analysisRevision !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.analysisRevision) ||
+    (body.projectId !== undefined && (
+      typeof body.projectId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.projectId)
+    )) ||
+    typeof body.objective !== "string" ||
+    !body.objective.trim() ||
+    body.objective.length > maxPlanningObjectiveChars
+  ) {
+    return false;
+  }
+  if (body.immutableConstraints === undefined) return true;
+  return (
+    isStringArray(body.immutableConstraints) &&
+    body.immutableConstraints.length <= maxPlanningConstraints &&
+    body.immutableConstraints.every(
+      (constraint) => constraint.trim() && constraint.length <= maxPlanningConstraintChars,
+    )
+  );
+}
+
 function requireJson(request: IncomingMessage): void {
   const contentType = request.headers["content-type"] ?? "";
   if (!contentType.toLowerCase().startsWith("application/json")) {
@@ -441,6 +492,8 @@ function adaptationRequestV2Lookup(value: unknown): MigrationExecutionV2Artifact
     sourceBundleHash: sourceBundle.contentHash,
     targetContextId: targetContext.id,
     targetContextHash: targetContext.contentHash,
+    // SAFETY: This lookup is untrusted routing metadata; validateAdaptationRequestV2
+    // verifies the full lineage against server-owned artifacts before execution.
     executionLineage: lineage as unknown as MigrationExecutionLineageV2,
   };
 }
@@ -812,6 +865,43 @@ export function createHttpServer(options: HttpServerOptions): Server {
                 previousProposal: body.previousProposal,
                 reviseReview: body.reviseReview!,
               },
+        );
+        json(response, 200, result, options.corsOrigin);
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/v1/semantic-module-plan") {
+        if (!options.semanticArchitecturePort) {
+          json(
+            response,
+            404,
+            { error: "Revision-scoped semantic module planning is not configured." },
+            options.corsOrigin,
+          );
+          return;
+        }
+        requireJson(request);
+        const body = await readBody(request);
+        if (!isSemanticModulePlanHttpRequest(body)) {
+          json(
+            response,
+            400,
+            { error: "Invalid semantic module planning payload. Submit only repositoryId, analysisRevision, projectId, objective, and immutableConstraints." },
+            options.corsOrigin,
+          );
+          return;
+        }
+        const semanticRequest: ToolCallingArchitectRequest = {
+          schemaVersion: moduleMigrationSchemaVersion,
+          repositoryId: body.repositoryId,
+          analysisRevision: body.analysisRevision,
+          ...(body.projectId === undefined ? {} : { projectId: body.projectId }),
+          objective: body.objective,
+          ...(body.immutableConstraints === undefined ? {} : { immutableConstraints: body.immutableConstraints }),
+        };
+        const result = await options.semanticArchitecturePort.proposeModulePlanWithEvidence(
+          semanticRequest,
+          requestSignal(request),
         );
         json(response, 200, result, options.corsOrigin);
         return;

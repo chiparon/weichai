@@ -77,6 +77,12 @@ export class TranslationPanel {
   }
 
   post(message: HostToWebviewMessage): void {
+    if (message.type === 'SERVICE_STATUS') this.payload.serviceStatus = message.status;
+    if (message.type === 'REPOSITORY_STATUS') this.payload.repositoryStatuses = message.statuses;
+    if (message.type === 'MODULE_EXPLORER') this.payload.moduleExplorer = message.explorer;
+    if (message.type === 'CODE_INTELLIGENCE_STATUS') this.payload.codeIntelligence = message.presentation;
+    if (message.type === 'PROJECT_EXPLORER') this.payload.projectExplorer = message.explorer;
+    if (message.type === 'SETTINGS_UPDATED') this.payload.settings = message.settings;
     void this.panel.webview.postMessage(message);
   }
 

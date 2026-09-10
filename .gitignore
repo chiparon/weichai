@@ -20,6 +20,7 @@ obj/
 coverage/
 *.tsbuildinfo
 .vscode-test/
+.vscode-test-user/
 *.vsix
 # ForeXplore's durable architecture artifacts are reviewable repository
 # evidence. Checkpoints and any other local scratch data remain untracked.
@@ -70,6 +71,7 @@ __pycache__/
 results/
 results_副本/
 output/
+tmp/
 
 # Claude Code local overrides (per-developer)
 .claude/settings.local.json

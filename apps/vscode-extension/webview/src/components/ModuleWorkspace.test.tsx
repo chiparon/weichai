@@ -43,6 +43,10 @@ const paymentModule: ModuleExplorerNode = {
   name: '支付模块',
   kind: 'module',
   description: '处理支付发起、确认与退款',
+  purpose: '负责支付发起、确认与退款复用入口',
+  coreApis: ['PaymentService.Pay', 'PaymentService.Refund'],
+  language: 'C#',
+  domain: '支付',
   children: [{
     id: 'file:payment-service',
     name: 'PaymentService.cs',
@@ -131,6 +135,33 @@ const reactTestEnvironment = globalThis as typeof globalThis & {
 };
 
 describe('ModuleWorkspace history configuration prompt', () => {
+  it('offers the project picker for an unselected descriptive target without showing migration children', () => {
+    const markup = renderToStaticMarkup(
+      <ModuleWorkspace
+        explorer={{ generatedAt: '2026-09-01T00:00:00.000Z', target: { ...targetWorkspace, id: 'target:not-open' }, history: [] }}
+        mode="target"
+        historyId={null}
+        currentTargetId={null}
+        selectedNodeId={null}
+        refreshing={false}
+        onModeChange={vi.fn()}
+        onHistoryChange={vi.fn()}
+        onNodeSelect={vi.fn()}
+        onRefresh={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onWorkspaceAction={vi.fn()}
+        onSelectProject={vi.fn()}
+        onAddTarget={vi.fn()}
+        settingsOpen={false}
+      >
+        <div>Migration workflow</div>
+      </ModuleWorkspace>,
+    );
+    expect(markup).toContain('选择目标项目');
+    expect(markup).toContain('尚未选择目标项目');
+    expect(markup).not.toContain('Migration workflow');
+  });
+
   it('prompts for repository paths when no history repository is configured', () => {
     const markup = renderWorkspace({
       generatedAt: '2026-09-01T00:00:00.000Z',
@@ -175,7 +206,8 @@ describe('ModuleWorkspace history configuration prompt', () => {
     expect(markup).toContain('历史模块库');
     expect(markup).toContain('模块目录');
     expect(markup).toContain('支付模块');
-    expect(markup).toContain('处理支付发起、确认与退款');
+    expect(markup).toContain('负责支付发起、确认与退款复用入口');
+    expect(markup).toContain('支付');
     expect(markup).toContain('1 文件');
     expect(markup).toContain('1 类型');
     expect(markup).toContain('1 方法');
@@ -198,6 +230,20 @@ describe('ModuleWorkspace history configuration prompt', () => {
     expect(markup).toContain('src/Payments/PaymentService.cs');
   });
 
+  it('previews committed module summary metadata for a selected module', () => {
+    const explorer: ModuleExplorerPresentation = {
+      generatedAt: '2026-09-01T00:00:00.000Z',
+      target: targetWorkspace,
+      history: [historyWorkspace],
+    };
+    const markup = renderWorkspace(explorer, 'history', 'module:payments');
+
+    expect(markup).toContain('负责支付发起、确认与退款复用入口');
+    expect(markup).toContain('PaymentService.Pay');
+    expect(markup).toContain('PaymentService.Refund');
+    expect(markup).toContain('C#');
+  });
+
   it('selects a module from the module catalog', () => {
     const explorer: ModuleExplorerPresentation = {
       generatedAt: '2026-09-01T00:00:00.000Z',
@@ -212,7 +258,7 @@ describe('ModuleWorkspace history configuration prompt', () => {
       root.render(workspaceElement(explorer, 'history', null, onNodeSelect));
     });
     const moduleCard = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent?.includes('处理支付发起、确认与退款'));
+      .find((button) => button.textContent?.includes('负责支付发起、确认与退款复用入口'));
     expect(moduleCard).toBeDefined();
     act(() => moduleCard?.click());
     expect(onNodeSelect).toHaveBeenCalledWith(paymentModule);

@@ -116,6 +116,9 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     signal?: AbortSignal,
   ): Promise<AdaptationResult> {
     assertSupportedTranslation(request);
+    if (request.target.kind === "module") {
+      throw new Error("The deprecated V1 adaptation route supports only class or function targets.");
+    }
     const projectRoot = this.#projectRoot ?? this.#skeletonProjectPath;
     if (!projectRoot) {
       throw new Error(

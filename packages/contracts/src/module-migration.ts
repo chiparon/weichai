@@ -193,6 +193,8 @@ export type FunctionalModuleKind =
   | 'test-support'
   | 'other';
 
+export type ModuleSummaryLanguage = LanguageId | 'Mixed' | 'Unknown';
+
 /**
  * Module IDs are persisted in plan artifacts and used as graph identities.
  * Keep them deliberately narrow so they remain safe in UI, JSON, Git
@@ -212,6 +214,14 @@ export interface FunctionalModule {
   name: string;
   kind: FunctionalModuleKind;
   description: string;
+  /** Human-readable Purpose field written into module-summary.json. */
+  purpose?: string;
+  /** Human-readable Core APIs field written into module-summary.json. */
+  coreApis?: string[];
+  /** Primary implementation language for the module summary. */
+  language?: ModuleSummaryLanguage;
+  /** Human-readable Domain field written into module-summary.json. */
+  domain?: string;
   /** Source files exclusively owned by this module. */
   sourceFiles: string[];
   testFiles?: string[];

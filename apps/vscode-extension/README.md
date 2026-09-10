@@ -1,73 +1,116 @@
-# ForeXplore VS Code 扩展
+# ForeXplore Code Migration for VS Code
 
-ForeXplore 将企业已有实现作为迁移证据：从已审目标工作区选择可调用实体，检索历史候选，并且只在存在精确的源语言 × 目标语言 × 策略路线时生成补丁。
+ForeXplore is a VS Code workflow for evidence-based cross-language migration. It indexes existing repositories, lets a user select an approved source implementation, checks an exact source-language/target-language/strategy route, prepares a reviewed patch, and validates it before host-controlled write-back.
 
-项目已经进入语言无关的全面开发阶段，不再把 Java → C# 当作产品边界。实际可执行范围由运行时 `MigrationRouteDescriptor` 和其验证策略决定；没有能力快照时必须 fail closed。
+This extension is language-agnostic at the contract level. Java to C# is only a historical regression route. Executability is determined by the runtime `MigrationRouteDescriptor` and its validation policy. If the required route capability snapshot is missing or stale, the workflow fails closed.
 
-## 01B 目标工作区模块划分
+## Quick start
 
-01B 对当前待处理的目标工程复用 01A 的静态分析、开放语言 adapter registry、统一 IR、Module Discovery Agent 和第一道模块边界人审。接受边界后，宿主再对每个 callable 生成静态实现状态，并确定性聚合到 class、file、module 和 workspace：
+From the repository root:
 
-- `implemented`：检测到非占位实现体；不代表业务行为正确。
-- `unimplemented`：检测到高确定性的显式 stub。
-- `partial`：检测到 TODO、占位返回等不完整迹象。
-- `unknown`：证据不足或当前语言没有实现状态 detector。
-- `not-applicable`：接口、abstract/extern 声明或明确排除对象，不进入完成率分母。
-
-使用顺序：
-
-1. **ForeXplore: 初始化 01B 目标工作区**：固定分析快照并生成模块边界提案；证据不足时停止，不会把目标骨架发布为来源知识。
-2. **ForeXplore: 审阅 01B 目标模块边界**：接受 Gate 1 后才建立内容寻址的实现状态目录。
-3. **ForeXplore: 打开 01B 目标工作区**：浏览 module → file → native container/entity → callable，按五态搜索/筛选；未知实现状态或没有可执行路线的 callable 不可进入迁移。
-4. 在树中先选择目标实体核对证据、lineage 和路线能力，再显式点击“开始迁移”。Top-1 候选仍不会被自动选择。
-5. 若仅实现体变化，刷新会进入 `body-only-compatible`。运行 **ForeXplore: 重映射 01B 实现体兼容变更** 只会生成绑定新 IR 的边界提案；仍需再次 Gate 1 人审并重新检测状态。结构变化则必须重新发现和人审。
-
-若 Gate 1 已接受但 detector 临时失败，运行 **ForeXplore: 重试 01B 实现状态检测**。宿主会先重新校验工作区仍是同一快照；只重试状态清单，不重新伪造审批。01B 记录保存在扩展的 Host-owned 本地存储中，扩展重启后仍会在打开/启动时重新扫描并验证 freshness。
-
-写回或恢复文件后，旧 01B 快照立即失效，后续检索、适配和再次写回都会由宿主复验并拒绝旧 snapshot/hash/entity。01B 不运行 Summary Agent、第二道人审、SQLite knowledge registry、SeekDB module active head、发布补偿或显式撤销；这些只属于 01A 存量仓知识生命周期。
-
-## 存量仓模块知识入库
-
-仓库分析采用开放 `LanguageId` 和可注册 adapter；这使入库契约可扩展，但不代表每种语言都有相同的语义深度。迁移可执行性另由精确路线和必需验证能力判定。完整入库和撤销按五个受信任命令推进：
-
-- **ForeXplore: 索引模块迁移仓库**：固定工作区快照，生成 profile、analysis shards、统一 IR 和 Module Discovery proposal；证据不足时进入 `partial`，充分时停在 `awaiting-module-review`。
-- **ForeXplore: 审阅仓库模块边界**：第一道人审，只批准文件/实体/API/依赖的模块归属；接受后自动启动证据收集和 Summary Agent，不能直接发布。
-- **ForeXplore: 生成模块知识摘要提案**：重试 Summary Agent 阶段；每模块提案必须绑定有界 EvidenceBundle，完成后停在 `awaiting-summary-review`。
-- **ForeXplore: 审阅并发布模块知识**：第二道人审，逐模块 accept/revise/reject。全部接受后才写本地不可变知识、SQLite publication registry，并向独立 SeekDB 模块表 stage/validate/CAS activate；修订只重跑相应模块。
-- **ForeXplore: 撤销当前模块知识发布**：只对 `ready` 发布执行逻辑撤销；先从正式模块索引移除当前代，再同步本地 SQLite 和不可变 manifest，存在前代时恢复前代。历史制品不物理删除。
-
-模块索引写入默认关闭。检索服务与扩展宿主必须分别拥有同一令牌：
-
-```powershell
-$env:RETRIEVAL_MODULE_INDEX_TOKEN = '<random-secret>'
-$env:FOREXPLORE_MODULE_INDEX_WRITER_TOKEN = $env:RETRIEVAL_MODULE_INDEX_TOKEN
+```bash
+npm ci
+npm run dev:extension
 ```
 
-令牌只从进程环境读取，不接受工作区设置，以免仓库内容为自己授予发布权限。正式查询还受服务端 `RETRIEVAL_ALLOWED_REPOSITORIES` 限制。发布作用域是 `(repositoryId, channel)`；默认 channel 为 `branch:main`，发布前仍会要求人工确认。
+The development script starts SeekDB, the local retrieval and adaptation services, and a VS Code Extension Development Host. Open the migration panel to browse project analysis. To start migration, initialize and review the 01B target workspace and its module mapping as described below, then explicitly select an eligible callable from the approved directory. Project analysis alone does not make a callable eligible. Candidates are never selected automatically; a user must select one explicitly.
 
-## 已审模块映射与执行 Overlay
+The extension uses the real retrieval and adaptation services. It reports an error when a required service is unavailable and does not silently fall back to sample data.
 
-新主链把 01A 与 01B 各自通过 Gate 1 的 `RepositoryModuleCatalog` 作为唯一模块边界事实。任务目标不得重新生成模块所有权；跨仓库对应关系由独立的 `ModuleMappingProposal → ModuleMappingReview → MigrationExecutionOverlay` 制品表达，并允许 1:1、1:N 与 N:1：
+## Code-intelligence indexing
 
-- **ForeXplore: 导入跨目录模块映射提案**：选择不同的历史源仓和目标仓，从本机 JSON 导入只含已审 module/entity ID 引用的映射与执行分组。workflow-core 会对两侧当前 IR/catalog/review head 做确定性校验，未知引用立即拒绝。
-- **ForeXplore: 审阅模块映射并物化执行 Overlay**：在只读预览中接受、要求修订或拒绝。只有接受决定和已物化的 runtime route capability snapshot 同时存在时才产生 Overlay；没有能力快照时 fail closed。
-- 目标实体启动迁移前，Host 必须找到唯一覆盖它的 current Overlay。active run 与 Webview 协议保留两侧 catalog ref、proposal/review/overlay hash 及精确 route/runtime/policy lineage；任一 head 或能力快照变化都会使绑定 stale。
+Historical repositories and the explicitly selected target workspace are registered in one versioned indexing pipeline:
 
-旧 `FunctionalModule` 计划不是新运行默认入口，也不能覆盖已审目录。它只保留在命令标题和 ID 都显式带 **Legacy** 的兼容路径中，用于已有运行的审阅、准备、审批和恢复。
+```text
+RepositoryRegistry -> AnalysisCoordinator -> native Tree-sitter structural index
+                  -> revision store -> SemanticQueryPort
+```
 
-### 可信本地波次执行
+**ForeXplore: Refresh Code Intelligence Index** incrementally reuses unchanged files. **ForeXplore: Reindex Retrieval Repositories** checks all files. When content and parser versions are unchanged, the existing revision is retained; readers continue to use the previous active revision until a new revision is complete.
 
-整份计划已经对当前静态快照审批后，按以下顺序执行每个依赖波次：
+The index stores repository, revision, project, file, symbol, dependency-edge, module-artifact, and search-document records. Project metadata, file lists, static dependencies, and symbols are loaded first; source and additional index evidence are queried on demand. The Agent/MCP boundary exposes only the host-provided read-only `SemanticQueryPort`; it does not accept arbitrary absolute paths, start an LSP, or connect directly to SeekDB.
 
-1. 运行 **ForeXplore: 审阅下一迁移波次**，确认要准备的依赖已满足波次及其证据。
-2. 运行 **ForeXplore: 导入并准备下一迁移波次**，从本机文件选择器导入补丁包。扩展先显示只读补丁包预览；确认后才在隔离 Git worktree 中应用补丁、执行宿主范围检查和本地联合验证，并生成精确的 `preparedHash`。
-3. 审阅已准备波次中的补丁、验证记录和 `preparedHash`。运行 **ForeXplore: 审批并提交已准备迁移波次**，输入审批人后，扩展把审批绑定到该精确哈希，再发布单个原子 Git 提交到受管分支 `codex/forexplore-migration/<runId>`。当前工作区不会被直接部分写入。
+Structural evidence is not semantic proof. Compiler probes do not upgrade evidence to semantic evidence. A trusted language adapter may mark a precise edge as semantic evidence, but route availability and migration correctness remain separate decisions.
 
-补丁包只能从本地文件选择器导入，不能由 Webview、浏览器或 HTTP 请求提交。它是非可信的补丁输入，不得包含验证结论；验证必须由本地 VS Code 宿主在隔离 worktree 中重新执行。扩展重启会使内存中的已准备补丁失效。运行 **ForeXplore: 恢复模块迁移审阅状态** 后，放弃旧制品并重新准备、验证和审批该波次。
+Automatic project/module summaries are code-understanding artifacts. They are not migration approval, route approval, behavioral verification, or permission to write source code. The separate 01A module-knowledge lifecycle has its own human review and publication controls.
 
-### 本地补丁包格式
+### SeekDB configuration
 
-导入文件必须是严格的 JSON 对象，且顶层只能含有 `schemaVersion`、`snapshotId`、`planId`、`planHash`、`waveId` 和 `modules`。`schemaVersion` 固定为 `forexplore-module-wave-patch-bundle/v1`；`snapshotId`、`planId`、`waveId` 和 `moduleId` 是安全标识符。`planHash` 可写为 `sha256:<64 个小写十六进制字符>` 或不带前缀的 64 个小写十六进制字符，宿主会规范化为带前缀的计划哈希；文件的 `expectedOriginalSha256` 可使用两种输入形式，但内部会规范化为裸 SHA-256 摘要以匹配受保护回填契约。
+Set these variables in the environment of the process that launches VS Code when persistent code intelligence is required:
+
+```bash
+export CODE_INTELLIGENCE_SEEKDB_DATABASE='forexplore'
+export CODE_INTELLIGENCE_SEEKDB_HOST='127.0.0.1'       # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PORT='2881'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_USER='root'            # optional; default shown
+export CODE_INTELLIGENCE_SEEKDB_PASSWORD='...'
+export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
+```
+
+Without `CODE_INTELLIGENCE_SEEKDB_DATABASE`, development/test hosts may use explicitly labelled in-memory storage. It is not persistent and is not accepted by a production code-intelligence host. The database name must be a valid SQL identifier.
+
+The adaptation service also requires `DEEPSEEK_API_KEY`. For semantic project analysis, configure `ADAPTATION_SEMANTIC_INDEX_ENABLED=true`, `SEMANTIC_QUERY_PORT_URL` (default example: `http://127.0.0.1:8790`), and, when enabled, the same `SEMANTIC_QUERY_PORT_TOKEN` in both processes. Credentials remain in local process environments.
+
+For the deprecated Legacy V1 integration-compile regression only, configure the historical skeleton project before starting the adaptation service:
+
+```bash
+export DEEPSEEK_API_KEY='...'
+export ADAPTATION_PROJECT_ROOT='/absolute/path/to/commons-fileupload-java-skeleton'
+export ADAPTATION_SKELETON_PROJECT_PATH="$ADAPTATION_PROJECT_ROOT"
+npm run dev:adaptation
+```
+
+These V1 variables do not authorize or enable a V2 migration route.
+
+## Approved module workflow
+
+### 01A historical repositories
+
+The historical repository flow uses an open `LanguageId` and registered language adapters. Its trusted lifecycle is:
+
+1. **Index Module Migration Repository** fixes a workspace snapshot, produces analysis shards and a unified IR, and proposes module boundaries. Insufficient evidence remains partial and cannot be published.
+2. **Review Repository Module Boundaries** is the first human review. It approves file, entity, API, and dependency ownership. Approval starts evidence collection; it does not publish knowledge.
+3. **Generate Module Knowledge Summary Proposal** runs or retries the bounded Summary Agent. Each proposal is tied to an `EvidenceBundle`.
+4. **Review and Publish Module Knowledge** is the second human review. Accepted modules are written to the local immutable knowledge store and staged/validated before activation in the independent module index.
+5. **Withdraw Current Module Knowledge Publication** withdraws a ready publication and restores a prior generation when one exists. Historical artifacts are retained.
+
+Module-index writes are disabled by default. Publishing requires matching `RETRIEVAL_MODULE_INDEX_TOKEN` (retrieval service) and `FOREXPLORE_MODULE_INDEX_WRITER_TOKEN` (extension host), plus server-side `RETRIEVAL_ALLOWED_REPOSITORIES` authorization. Tokens are read from process environments, never workspace settings. The publication scope is `(repositoryId, channel)`; the default channel is `branch:main`.
+
+### 01B target workspace
+
+The target flow reuses the static analysis, adapter registry, unified IR, module discovery, and first boundary review. After Gate 1, the host derives callable implementation states and aggregates them to class, file, module, and workspace:
+
+- `implemented`: a non-placeholder implementation body was detected; this is not behavioral proof.
+- `unimplemented`: a high-confidence explicit stub was detected.
+- `partial`: TODOs, placeholder returns, or similar incomplete evidence was detected.
+- `unknown`: evidence is insufficient or no detector exists for the language.
+- `not-applicable`: interfaces, abstract/extern declarations, or explicitly excluded entities are outside the completion denominator.
+
+Run **Initialize 01B Target Workspace**, **Review 01B Target Module Boundaries**, and **Open 01B Target Workspace** in that order. A callable with unknown implementation state or no executable route cannot enter migration. A body-only change can be remapped as `body-only-compatible`, but it still requires Gate 1 review and state re-detection; structural changes require rediscovery.
+
+After write-back or recovery, the old 01B snapshot is invalid. The host rechecks snapshot, hash, and entity identity before later retrieval, adaptation, or write-back. 01B does not run the 01A Summary Agent or publish module knowledge.
+
+### Mapping and execution Overlay
+
+01A and 01B `RepositoryModuleCatalog` records approved through Gate 1 are the module-boundary facts. Cross-repository correspondence is represented by `ModuleMappingProposal -> ModuleMappingReview -> MigrationExecutionOverlay`, supporting 1:1, 1:N, and N:1 mappings.
+
+The host accepts an Overlay only when the referenced catalog/review heads are current and a materialized runtime route capability snapshot exists. A target entity must have one current Overlay before migration starts. Any catalog, overlay, route, runtime, or policy change makes the binding stale. The UI may display a candidate or summary, but display state is not authorization.
+
+The old `FunctionalModule` plan is not the default entry point. It is retained only by commands and identifiers explicitly marked **Legacy**, for compatibility with existing runs.
+
+## Legacy migration waves
+
+The Legacy wave flow is reviewed and committed in a controlled worktree:
+
+1. Review the next wave and its dependency evidence.
+2. Import a local patch bundle and prepare it in an isolated Git worktree. The host performs scope checks and local joint validation, then computes `preparedHash`.
+3. Review the patch, validation records, and hash. Approval binds to that exact hash and publishes one atomic Git commit on `codex/forexplore-migration/<runId>`.
+
+The current workspace is not partially modified. Patch bundles are untrusted input: Webview, browser, and HTTP requests cannot submit them; bundles cannot contain validation conclusions, source text, content hashes, or execution commands. The host reruns validation locally. Restarting the extension invalidates in-memory prepared state; recovery requires preparing and approving the wave again.
+
+### Patch bundle schema
+
+The imported file must be a strict JSON object containing only `schemaVersion`, `snapshotId`, `planId`, `planHash`, `waveId`, and `modules`. `schemaVersion` is `forexplore-module-wave-patch-bundle/v1`. IDs are safe identifiers. `planHash` is either `sha256:<64 lowercase hexadecimal characters>` or the same 64-character digest without the prefix; the host normalizes it.
 
 ```json
 {
@@ -76,39 +119,33 @@ $env:FOREXPLORE_MODULE_INDEX_WRITER_TOKEN = $env:RETRIEVAL_MODULE_INDEX_TOKEN
   "planId": "plan-20260827",
   "planHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "waveId": "wave-01",
-  "modules": [
-    {
-      "moduleId": "orders",
-      "files": [
-        {
-          "path": "src/Orders/OrderService.cs",
-          "status": "modified",
-          "expectedOriginalSha256": "0000000000000000000000000000000000000000000000000000000000000000",
-          "additions": 1,
-          "deletions": 1,
-          "hunks": [
-            {
-              "header": "@@ -1 +1 @@",
-              "lines": [
-                { "type": "remove", "content": "old implementation" },
-                { "type": "add", "content": "new implementation" }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  ]
+  "modules": [{
+    "moduleId": "orders",
+    "files": [{
+      "path": "src/Orders/OrderService.cs",
+      "status": "modified",
+      "expectedOriginalSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "additions": 1,
+      "deletions": 1,
+      "hunks": [{
+        "header": "@@ -1 +1 @@",
+        "lines": [
+          { "type": "remove", "content": "old implementation" },
+          { "type": "add", "content": "new implementation" }
+        ]
+      }]
+    }]
+  }]
 }
 ```
 
-每个 `files` 项只能是 `modified` 或 `created`。`modified` 需要 `expectedOriginalSha256`；`created` 必须使用 `expectedAbsent: true` 替代它。两种形式都需要 `path`、`status`、`additions`、`deletions` 和非空 `hunks`。每个 hunk 仅含 `header` 和 `lines`，每行仅含 `type`（`context`、`add` 或 `remove`）及单行 `content`；`additions`、`deletions` 必须与 hunk 行数一致。v1 不支持删除文件。
+A file is either `modified` or `created`. Modified files require `expectedOriginalSha256`; created files require `expectedAbsent: true` instead. Every file requires a normalized relative `path`, `status`, `additions`, `deletions`, and non-empty `hunks`. Hunk lines contain only `type` (`context`, `add`, or `remove`) and single-line `content`; addition/deletion counts must match.
 
-路径必须是正斜杠的规范仓库相对路径，不能使用绝对路径、`..`、空段或反斜杠。模块和写入路径不能重复，补丁包必须精确覆盖当前下一波次的所有模块，并且每个补丁路径都必须属于相应模块已经审批的源码、测试、生成文件或写集。写集本身只能引用快照中由该模块显式拥有的文件；唯一的例外是具备资源锁、显式排属的 `shared-contract` 模块配置文件。`.forexplore/` 下的摘要和运行制品由协调器生成，补丁包不能写入。未知字段会被拒绝，尤其不能提供 `validation`、`contentHash`、源码全文或任何执行指令；宿主会自行计算内容哈希并产生验证证据。
+Paths must be canonical repository-relative POSIX paths. Absolute paths, `..`, empty segments, backslashes, duplicate module/write paths, and writes below `.forexplore/` are rejected. The bundle must exactly cover the selected next wave and each path must belong to the module's approved source, test, generated-file, or write set. Unknown fields, especially `validation`, `contentHash`, full source text, and execution instructions, are rejected. V1 does not support file deletion.
 
-### 波次联合验证配置
+### Wave validation
 
-`forexplore.moduleWaveValidationCommands` 是本机用户级 VS Code 配置，不从补丁包、Webview 或工作区 `.vscode/settings.json` 读取。工作区尝试覆盖该值会被拒绝，避免仓库内容变成可执行宿主配置。配置的命令只在隔离波次 worktree 中执行，使用 `shell: false`，因此不能依赖 `&&`、管道、重定向或 shell 变量展开。没有配置时，扩展会产生必需的 `unverified` 记录并阻止波次准备。
+`forexplore.moduleWaveValidationCommands` is a machine-scoped, user-level VS Code setting. It is not read from the patch bundle, Webview, or workspace `.vscode/settings.json`. Commands run only in the isolated worktree with `shell: false`; shell operators and expansion are unavailable. With no configured commands, the host records required `unverified` validation and blocks preparation.
 
 ```json
 {
@@ -126,39 +163,11 @@ $env:FOREXPLORE_MODULE_INDEX_WRITER_TOKEN = $env:RETRIEVAL_MODULE_INDEX_TOKEN
 }
 ```
 
-每项只允许 `id`、`label`、`executable`、`args`、`cwd`、`required` 和 `timeoutMs`。`id`、`label`、`executable` 必填；其余分别默认为空数组、`.`、`true` 和 10 分钟。最多配置 32 条命令，`timeoutMs` 必须在 1 秒到 30 分钟之间。`cwd` 必须是 worktree 内的相对路径；`executable` 可以是受 PATH 解析的简单命令名，或使用正斜杠的 worktree 内相对可执行文件，不能是绝对路径或使用反斜杠。任何必需检查失败或未验证都会阻止准备和后续审批提交。
+Only `id`, `label`, `executable`, `args`, `cwd`, `required`, and `timeoutMs` are accepted. At most 32 commands may be configured. `cwd` must be relative to the worktree; `executable` must be a PATH-resolved command name or a worktree-relative executable. Required failures or `unverified` results block preparation and approval. Compilation success is only an engineering check; it does not prove business behavior, concurrency, timeout, cancellation, or idempotency semantics.
 
-## 运行方式
+## Configuration
 
-1. 在仓库根目录运行 `npm run dev:extension`。脚本会启动 SeekDB、两个本地服务，并打开 Extension Development Host。
-2. 在开发宿主中打开要处理的任意受支持目标工作区；`fixtures/target-system/commons-fileupload-java-skeleton` 只是在需要复跑历史回归时使用的夹具，不是默认产品目标。
-3. 若要使用 01B，依次运行初始化、模块边界人审和打开目标工作区命令，再从目标树中显式启动某个可调用实体。
-4. 输入需求并检索语料候选。只有运行时 route capability snapshot 精确支持的源/目标语言与策略组合才能继续生成补丁。
-
-插件只调用真实的 SeekDB 检索服务和语言无关的适配服务。任一服务不可用时，插件会报错，不会回退到本地样例。
-
-按目标语言安装对应的 VS Code 语言扩展即可；ForeXplore 本身不依赖某个语言扩展。
-
-## 服务要求
-
-运行插件需要一台具备以下条件的机器：
-
-- SeekDB 检索服务已经建立并加载完整的多语言 `code-corpus` 索引；
-- 适配服务具备 `DEEPSEEK_API_KEY`、精确 route 所需的目标工程 adapter/编译器和外部隔离行为 verifier；
-- V2 部署提供权威 request artifact store，并允许 Host 只组合 source/target analysis 与 workspace apply/rollback 四个宿主阶段；
-- `ADAPTATION_PROJECT_ROOT`、`ADAPTATION_SKELETON_PROJECT_PATH` 只服务 deprecated V1 集成编译，不授权 V2 路线。
-
-历史 V1 回归环境示例：
-
-```bash
-# 服务端环境；密钥只保留在这里
-export DEEPSEEK_API_KEY='…'
-export ADAPTATION_PROJECT_ROOT='/absolute/path/to/commons-fileupload-java-skeleton'
-export ADAPTATION_SKELETON_PROJECT_PATH="$ADAPTATION_PROJECT_ROOT"
-npm run dev:adaptation
-```
-
-插件默认使用以下 VS Code 配置：
+The extension defaults to:
 
 ```json
 {
@@ -167,46 +176,41 @@ npm run dev:adaptation
   "forexplore.adaptationApiUrl": "http://127.0.0.1:8788",
   "forexplore.topK": 4,
   "forexplore.repositoryKnowledgeChannel": "branch:main",
-  "forexplore.repositoryPaths": []
+  "forexplore.repositoryPaths": [],
+  "forexplore.targetRepositoryPaths": []
 }
 ```
 
-前端设置页的“添加路径”由扩展 Host 打开本地文件夹选择器，Host 只把规范化后的选择返回设置草稿；只有点击“保存设置”才会持久化路径和 Top K，“取消”不会保留草稿。保存后，每个绝对路径成为一个稳定的历史仓注册项，并可在左侧单独选择。添加或删除路径只改变本地注册，不会自动执行知识入库、发布或撤回；这些操作必须通过历史仓生命周期按钮分别触发。`forexplore.repositoryPaths` 也不等于服务端“已经索引”，真实检索范围仍由检索服务的已授权索引决定。
+The Settings view uses the host's native folder picker. Saving persists normalized repository paths and Top K; cancelling discards the draft. Registering or removing a path does not itself withdraw a publication. A target directory must be explicitly selected and must be within the current VS Code workspace; an opened workspace is only a candidate, not an implicit target.
 
-## 写回保护
+## Write-back protection
 
-- Webview 只能发送受限意图；设置页可以提交本地历史仓配置，但不能提交迁移目标路径、写回路径、候选对象或补丁。
-- 扩展宿主保存当前运行的目标语言、候选、原始文件 SHA-256 和适配结果；候选必须由用户明确选择。
-- 仅接受 route-owned allowed write set 内的非重复相对路径；路径遍历、绝对路径和经符号链接逃逸都会被拒绝。
-- 所有文件在任何写入前统一完成原始 SHA-256、缺失前置条件、dirty buffer、realpath 和 hunk 预检。
-- 多文件写入使用单次 `WorkspaceEdit`，并持久化 prepared/committing/committed/rolled-back 事务 journal、不可变 V2 manifest 和恢复点。启动时会先恢复可证明的中断事务；出现未知文件 hash 时停止并要求人工处理。
-- 可使用 **ForeXplore: 恢复最近一次回填** 恢复；若文件随后又被编辑，恢复会拒绝覆盖该编辑。
-- HTTP `POST /v1/backfill` 已禁用。写回只能由经过用户确认的 VS Code 宿主执行。
+- Webview messages express constrained intent; they cannot submit arbitrary target paths, write paths, candidates, patches, or source.
+- The host stores the selected candidate, target language, original SHA-256 values, and adaptation result. Candidate selection is explicit.
+- Only non-duplicate relative paths in the route-owned allowed write set are accepted. Traversal, absolute paths, symlink escape, dirty buffers, missing preconditions, and hash mismatches are rejected before writing.
+- Multi-file writes use one `WorkspaceEdit` and a persistent transaction journal with prepared, committing, committed, and rolled-back states, plus an immutable manifest and recovery point.
+- **ForeXplore: Restore Last Backfill** refuses to overwrite a file that changed after the transaction.
+- HTTP `POST /v1/backfill` is disabled. Write-back is performed only by the confirmed VS Code host.
 
-编译或集成编译通过仅代表相应工程检查通过；它不证明业务行为、并发、超时、取消或幂等语义正确。
-
-## 开发与验证
+## Packaging and development
 
 ```bash
-npm ci
 npm run typecheck --workspace forexplore-vscode
 npm run test --workspace forexplore-vscode
 npm run build:extension
 npm run package:extension
 ```
 
-集成测试需要图形界面 VS Code 运行时：
+The extension build keeps `vscode` and Tree-sitter runtime/grammar packages external. It copies `node-gyp-build`, `tree-sitter`, and the supported `tree-sitter-*` grammar packages into `dist/extension/node_modules` so their platform-native `.node` bindings resolve from their package directories. It also copies `node_modules/sql.js/dist/sql-wasm.wasm` to `dist/extension/sql-wasm.wasm`; the portable `sql.js` registry uses that WASM file and does not depend on an Electron native SQLite ABI.
+
+VS Code integration tests require a graphical VS Code runtime:
 
 ```bash
 npm run test:integration --workspace forexplore-vscode
 ```
 
-## 消息协议
+## Message boundary
 
-Webview → 宿主：`READY`、`REFRESH_MODULE_EXPLORER`、`PICK_REPOSITORY_PATH`、`SAVE_SETTINGS`、`SELECT_HISTORY_REPOSITORY`、`SELECT_HISTORY_MODULE`、`RUN_MODULE_WORKSPACE_ACTION`、`REFRESH_TARGET_WORKSPACE`、`SELECT_TARGET_ENTITY`、`START_TARGET_TRANSLATION`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`COPY_TARGET_PATH`、`REVEAL_TARGET_IN_EXPLORER`、`OPEN_TARGET`。
+`PROJECT_EXPLORER` carries descriptive project results; `MODULE_EXPLORER` carries the reviewed migration directory. Switching project views must not replace an active V2 target, its catalog mapping, or its route authorization.
 
-宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`SETTINGS_UPDATED`、`REPOSITORY_PATH_PICKED`、`HISTORY_REPOSITORY_SELECTED`、`HISTORY_MODULE_SELECTED`、`TARGET_WORKSPACE_SNAPSHOT`、`TARGET_WORKSPACE_REFRESHING`、`TARGET_WORKSPACE_INVALIDATED`、`TARGET_ENTITY_SELECTED`、`SEARCH_RESULT`、`CANDIDATE_SELECTED`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`SERVICE_STATUS`、`ERROR`。
-
-历史模块选择消息绑定 `repositoryRegistrationId + repositoryId + catalogId + catalogHash + moduleId`。Host 在确认选择以及绑定目标时都会重新检查当前快照、ready 发布和 active catalog；草稿、已撤回或 hash 已变化的目录只能浏览。该选择只能收窄已有且已审的跨目录 mapping/Overlay，不会自行创建映射；真正的检索范围仍来自最终绑定的 mapping。目标实体同样继续绑定 01B snapshot/hash，前端展示状态不是授权依据。
-
-共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。
+Webview-to-host messages include `READY`, repository/target selection, `START_SEARCH`, `SELECT_CANDIDATE`, `START_ADAPT`, `APPLY_CURRENT_RUN`, settings, indexing, and recovery intents. Host-to-Webview messages include `INIT`, module/revision status, target selection, settings, search/adaptation/apply results, service status, and errors. Messages carry host-issued IDs and snapshot/catalog hashes rather than arbitrary paths or source. The shared contracts and workflow state machine live in `@forexplore/contracts` and `@forexplore/workflow-core`.

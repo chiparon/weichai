@@ -21,6 +21,15 @@ export interface AdaptationServiceConfig {
   /** Server-owned verification evidence artifacts. */
   verificationArtifactRoot: string;
   verificationTimeoutMs: number;
+  /**
+   * Optional host-owned read-only semantic-query endpoint for revision-scoped
+   * plans. The adaptation process never receives a database or index-runtime
+   * configuration.
+   */
+  semanticQueryPort?: {
+    endpoint: string;
+    bearerToken?: string;
+  };
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -48,6 +57,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
     skeletonProjectPath,
   );
 
+  const semanticPlanningEnabled = env.ADAPTATION_SEMANTIC_INDEX_ENABLED?.trim().toLowerCase() === "true";
+  const semanticQueryPort = semanticPlanningEnabled
+    ? loadSemanticQueryPortConfig(env)
+    : undefined;
   return {
     host: env.ADAPTATION_HOST?.trim() || "127.0.0.1",
     port: positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
@@ -72,6 +85,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
       300000,
       "ADAPTATION_VERIFICATION_TIMEOUT_MS",
     ),
+    ...(semanticQueryPort ? { semanticQueryPort } : {}),
+  };
+}
+
+function loadSemanticQueryPortConfig(
+  env: NodeJS.ProcessEnv,
+): NonNullable<AdaptationServiceConfig["semanticQueryPort"]> {
+  const endpoint = env.SEMANTIC_QUERY_PORT_URL?.trim();
+  if (!endpoint) {
+    throw new Error(
+      "SEMANTIC_QUERY_PORT_URL is required when ADAPTATION_SEMANTIC_INDEX_ENABLED=true.",
+    );
+  }
+  if (!/^https?:\/\//i.test(endpoint)) {
+    throw new Error("SEMANTIC_QUERY_PORT_URL must be an http(s) URL.");
+  }
+  // Constructing a URL rejects malformed hosts and credentials before the
+  // executable can start. The transport itself applies the same guard so it
+  // is also safe when constructed programmatically.
+  try {
+    new URL(endpoint);
+  } catch {
+    throw new Error("SEMANTIC_QUERY_PORT_URL must be an http(s) URL.");
+  }
+
+  return {
+    endpoint,
+    ...(env.SEMANTIC_QUERY_PORT_TOKEN?.trim()
+      ? { bearerToken: env.SEMANTIC_QUERY_PORT_TOKEN.trim() }
+      : {}),
   };
 }
 

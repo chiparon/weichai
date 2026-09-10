@@ -22,6 +22,7 @@ import type {
   ModuleWorkspaceAction,
   RepositoryStatus,
   ServiceStatus,
+  CodeIntelligencePresentation,
 } from '../ui-types';
 
 /**
@@ -184,7 +185,11 @@ export interface PanelInitPayload {
   workspaceRoot: string;
   settings: PanelSettingsPresentation;
   moduleExplorer: ModuleExplorerPresentation;
+  /** Descriptive project analysis only; it never authorizes a migration target. */
+  projectExplorer?: ModuleExplorerPresentation;
   repositoryStatuses: RepositoryStatus[];
+  /** Path-free status for the shared versioned structural/semantic index. */
+  codeIntelligence: CodeIntelligencePresentation;
   serviceStatus: ServiceStatus;
   searchProvider: 'SeekDB';
   adaptationProvider: 'DeepSeek';
@@ -222,8 +227,10 @@ export type HostToWebviewMessage =
   | { type: 'ADAPT_RESULT'; result: AdaptationResultV2 }
   | { type: 'APPLY_RESULT'; result: ApplyResult; manifest: MigrationRunManifestV2 }
   | { type: 'REPOSITORY_STATUS'; statuses: RepositoryStatus[] }
+  | { type: 'CODE_INTELLIGENCE_STATUS'; presentation: CodeIntelligencePresentation }
   | { type: 'SERVICE_STATUS'; status: ServiceStatus }
   | { type: 'MODULE_EXPLORER'; explorer: ModuleExplorerPresentation }
+  | { type: 'PROJECT_EXPLORER'; explorer: ModuleExplorerPresentation }
   | { type: 'SETTINGS_UPDATED'; settings: PanelSettingsPresentation }
   | { type: 'REPOSITORY_PATH_PICKED'; path: string }
   | { type: 'HISTORY_REPOSITORY_SELECTED'; repositoryRegistrationId: string }
@@ -236,6 +243,7 @@ export type HostToWebviewMessage =
  */
 export type WebviewToHostMessage =
   | { type: 'READY' }
+  | { type: 'ADD_TARGET_WORKSPACE'; mode: 'browse' | 'input' | 'workspace' }
   | {
       type: 'REFRESH_TARGET_WORKSPACE';
       expectedSnapshotId?: string;
@@ -258,6 +266,14 @@ export type WebviewToHostMessage =
   | { type: 'SELECT_HISTORY_REPOSITORY'; repositoryRegistrationId: string }
   | ({ type: 'SELECT_HISTORY_MODULE' } & HistoryModuleSelectionIdentity)
   | { type: 'RUN_MODULE_WORKSPACE_ACTION'; workspaceId: string; action: ModuleWorkspaceAction }
+  | { type: 'REFRESH_REPOSITORY'; repositoryId: string }
+  /**
+   * Opaque IDs only. The extension host verifies that the exact revision
+   * already belongs to the registered repository before using it read-only.
+   */
+  | { type: 'SELECT_CODE_INTELLIGENCE_REVISION'; repositoryId: string; analysisRevision: string }
+  | { type: 'SELECT_CODE_INTELLIGENCE_PROJECT'; repositoryId: string; analysisRevision: string; projectId: string }
+  | { type: 'RETRY_PROJECT_ANALYSIS'; repositoryId: string; analysisRevision: string; projectId: string; force: boolean }
   | { type: 'COPY_TARGET_PATH' }
   | { type: 'REVEAL_TARGET_IN_EXPLORER' }
   | { type: 'OPEN_TARGET' };
@@ -273,8 +289,10 @@ const hostMessageTypes = new Set<string>([
   'ADAPT_RESULT',
   'APPLY_RESULT',
   'REPOSITORY_STATUS',
+  'CODE_INTELLIGENCE_STATUS',
   'SERVICE_STATUS',
   'MODULE_EXPLORER',
+  'PROJECT_EXPLORER',
   'SETTINGS_UPDATED',
   'REPOSITORY_PATH_PICKED',
   'HISTORY_REPOSITORY_SELECTED',
@@ -299,6 +317,8 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (typeof value !== 'object' || value === null) return false;
   const message = value as Record<string, unknown>;
   switch (message.type) {
+    case 'ADD_TARGET_WORKSPACE':
+      return hasOnlyKeys(message, ['type', 'mode']) && typeof message.mode === 'string' && ['browse', 'input', 'workspace'].includes(message.mode);
     case 'READY':
     case 'APPLY_CURRENT_RUN':
     case 'CHECK_REPOSITORIES':
@@ -372,6 +392,24 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         message.candidateId.length > 0 &&
         message.candidateId.length <= 256
       );
+    case 'RETRY_PROJECT_ANALYSIS':
+      return hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision', 'projectId', 'force']) &&
+        [message.repositoryId, message.analysisRevision, message.projectId].every((id) => typeof id === 'string' && /^[A-Za-z0-9._-]{1,256}$/.test(id)) && typeof message.force === 'boolean';
+    case 'REFRESH_REPOSITORY':
+      return hasOnlyKeys(message, ['type', 'repositoryId']) && typeof message.repositoryId === 'string' && /^[A-Za-z0-9._-]{1,256}$/.test(message.repositoryId);
+    case 'SELECT_CODE_INTELLIGENCE_REVISION':
+      return (
+        hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision']) &&
+        isOpaqueIdentifier(message.repositoryId) &&
+        isOpaqueIdentifier(message.analysisRevision)
+      );
+    case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      return (
+        hasOnlyKeys(message, ['type', 'repositoryId', 'analysisRevision', 'projectId']) &&
+        isOpaqueIdentifier(message.repositoryId) &&
+        isOpaqueIdentifier(message.analysisRevision) &&
+        isOpaqueIdentifier(message.projectId)
+      );
     case 'START_ADAPT':
       return (
         hasOnlyKeys(message, ['type', 'decisionNotes']) &&
@@ -381,6 +419,11 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     default:
       return false;
   }
+}
+
+/** IDs are looked up by the host; this rejects control data, not local paths. */
+function isOpaqueIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 function isPanelSettings(value: unknown): value is PanelSettingsPresentation {

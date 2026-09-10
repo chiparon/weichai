@@ -24,7 +24,13 @@ export function RequirementStage({
   const repositorySummary = summarizeRepositories(repositoryStatuses);
 
   return (
-    <div className="stage-stack">
+    <form
+      className="stage-stack"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!searching) onSearch();
+      }}
+    >
       <section className="card target-edit-card">
         <div className="card-heading">
           <span>01 · 迁移目标</span>
@@ -68,6 +74,7 @@ export function RequirementStage({
           }
           placeholder="例如：解析 multipart 请求并保留字段顺序、文件阈值和大小限制；保持现有接口不变。留空时按目标名称、签名与注释检索。"
           rows={4}
+          maxLength={8000}
         />
         <div className="requirement-meta">
           <span>{state.requirement.length} 字符</span>
@@ -129,15 +136,14 @@ export function RequirementStage({
       </section>
 
       <button
-        type="button"
+        type="submit"
         className="primary-action"
-        onClick={onSearch}
         disabled={searching}
       >
         {searching ? <span className="spinner" /> : <Search size={15} />}
         {searching ? '正在检索相似实现…' : '检索相似实现'}
       </button>
-    </div>
+    </form>
   );
 }
 

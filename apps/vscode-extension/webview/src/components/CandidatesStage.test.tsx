@@ -140,6 +140,26 @@ describe('CandidatesStage', () => {
     reactTestEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   });
 
+  it('keeps candidates from different repositories in separate groups', () => {
+    const first = candidate('create', 'createOrder', 'src/shared/Order.java');
+    const second = candidate('cancel', 'cancelOrder', 'src/shared/Order.java');
+    second.candidate.lineage.repositoryId = 'fixture/other-orders';
+    const markup = renderToStaticMarkup(
+      <CandidatesStage
+        state={{ ...state, candidates: [first, second] }}
+        dispatch={vi.fn()}
+        adaptationProvider="DeepSeek"
+        migrationSelection={null}
+        onSelectCandidate={vi.fn()}
+        onAdapt={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('fixture/payments');
+    expect(markup).toContain('fixture/other-orders');
+    expect(markup).toContain('<strong>2</strong> 模块');
+  });
+
   it('shows an actionable empty state', () => {
     const markup = renderToStaticMarkup(
       <CandidatesStage
@@ -154,5 +174,21 @@ describe('CandidatesStage', () => {
 
     expect(markup).toContain('没有找到可复用实现');
     expect(markup).toContain('返回“定义任务”调整目标或需求后重新检索');
+  });
+
+  it('blocks adaptation when a selection has no reviewed route or resolved source bundle', () => {
+    const markup = renderToStaticMarkup(
+      <CandidatesStage
+        state={{ ...state, selectedCandidateId: candidates[0]!.id }}
+        dispatch={vi.fn()}
+        adaptationProvider="DeepSeek"
+        migrationSelection={null}
+        onSelectCandidate={vi.fn()}
+        onAdapt={vi.fn()}
+      />,
+    );
+    expect(markup).toContain('没有与当前源/目标语言精确匹配的可执行路线');
+    expect(markup).toContain('完整来源尚未复验');
+    expect(markup).toContain('disabled=""');
   });
 });

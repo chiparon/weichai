@@ -703,7 +703,7 @@ it('retrieves the selected historical snapshot and visible references without wa
   expect(result).toBe(response);
   expect(search).toHaveBeenCalledWith(expect.objectContaining({
     requestId: 'request-1', requirement: '限制上传大小', granularity: 'function',
-    budget: { maxTokens: 4000, maxLatencyMs: 30_000, maxFiles: 30, maxSourceLines: 600 },
+    budget: { maxLatencyMs: 30_000 },
     scopes: [{ ...oldScope, role: 'target' }, { ...await host.activeScopeForPath(history), role: 'reference' }],
   }), signal);
   expect(fullRead).not.toHaveBeenCalled();

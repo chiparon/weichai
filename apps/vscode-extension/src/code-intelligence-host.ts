@@ -589,7 +589,7 @@ export class CodeIntelligenceHost {
       requirement: request.requirement.trim(),
       granularity: request.granularity,
       scopes,
-      budget: { maxTokens: 4000, maxLatencyMs: 30_000, maxFiles: 30, maxSourceLines: 600 },
+      budget: { maxLatencyMs: 30_000 },
     }, signal);
   }
 

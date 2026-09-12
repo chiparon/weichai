@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getEncoding } from 'js-tiktoken';
-import type { ProjectModuleProposal, TaskRetrievalRequest } from '@forexplore/contracts';
+import type { DependencyEdgeRecord, ProjectModuleProposal, TaskRetrievalRequest } from '@forexplore/contracts';
 import { createCodeIntelligenceRuntime, InMemoryIndexStore, ProjectAnalysisCoordinator, projectAnalysisObjective, projectPlanHash } from './index.js';
 import { TaskRetrievalService } from './task-retrieval.js';
 
@@ -77,7 +77,7 @@ describe('task retrieval and context compilation', () => {
     expect(Object.values(stages).every(value => Number.isFinite(value) && value >= 0)).toBe(true);
     expect(Object.values(stages).reduce((sum, value) => sum + value, 0)).toBeLessThanOrEqual(packet.usage.latencyMs + 2);
     expect(packet.usage.tokens).toBe(getEncoding('cl100k_base').encode(packet.markdown, [], []).length);
-    expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens);
+    expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens!);
     for (const item of packet.evidence) expect(item.contentHash).toBe(createHash('sha256').update(item.content).digest('hex'));
   });
 
@@ -138,17 +138,72 @@ describe('task retrieval and context compilation', () => {
     expect(packet.results.some((item) => item.symbolKey === symbol.symbolKey)).toBe(true);
   });
 
-  it('reads the matched tail block of a long function and marks the partial implementation', async () => {
+  it('assembles the complete long function when recall only matched its tail block', async () => {
     const { root, runtime, store, service, request, scope } = await setup();
-    await writeFile(path.join(root, 'payment.ts'), `export function longImplementation(value: number) {\n${'  value += 1;\n'.repeat(1500)}  return "TAIL_PROOF";\n}\n`);
+    const implementation = `export function longImplementation(value: number) {\n${'  value += 1;\n'.repeat(3000)}  return "TAIL_PROOF";\n}`;
+    await writeFile(path.join(root, 'payment.ts'), implementation + '\n');
     const run = await runtime.coordinator.run({ repositoryId: scope.repositoryId });
     const documents = await store.listSearchDocuments(run.scope);
     const document = documents.find((item) => item.kind === 'source-fragment' && item.symbolKey && item.text.includes('TAIL_PROOF'))!;
     expect(document?.sourceRange).toBeDefined();
     vi.spyOn(store, 'searchSearchDocuments').mockImplementation(async (_scope, _query, _limit, kind) => kind === 'source-fragment' ? [document] : []);
-    const packet = await service.search({ ...request, requirement: 'TAIL_PROOF', scopes: [{ ...scope, ...run.scope }], budget: { maxTokens: 5000, maxLatencyMs: 30000 } });
-    expect(packet.evidence.some((item) => item.content.includes('TAIL_PROOF') && item.sourceRange.startLine > 1)).toBe(true);
-    expect(packet.gaps.some((gap) => gap.code === 'IMPLEMENTATION_EXCERPT')).toBe(true);
+    const reads = vi.spyOn(store, 'getSourceSlice');
+    const packet = await service.search({ ...request, requirement: 'TAIL_PROOF', scopes: [{ ...scope, ...run.scope }], budget: { maxLatencyMs: 30000 } });
+    const full = packet.evidence.find(item => item.role === 'implementation')!;
+    expect(full.content).toBe(implementation.slice('export '.length));
+    expect(full.sourceRange.startLine).toBe(1);
+    expect(full.truncated).toBe(false);
+    expect(packet.usage.tokens).toBeGreaterThan(8000);
+    expect(reads.mock.calls.filter(([, file]) => file === 'payment.ts').length).toBeGreaterThan(1);
+    expect(reads.mock.calls.every(([, , , maxChars]) => maxChars <= 32000)).toBe(true);
+    expect(packet.gaps.some(gap => gap.code === 'IMPLEMENTATION_EXCERPT' || gap.code === 'SOURCE_TRUNCATED')).toBe(false);
+  });
+
+  it('follows indexed calls across files, terminates cycles, and excludes unrelated implementations', async () => {
+    const { root, runtime, store, service, request, scope } = await setup();
+    await writeFile(path.join(root, 'payment.ts'), `
+import { issueReceipt } from './support.js';
+import type { Receipt } from './types.js';
+export function submitPayment(value: number): Receipt { return issueReceipt(value); }
+export function unrelatedFeature() { return unrelatedHelper(); }
+export function unrelatedHelper() { return 'UNRELATED_SOURCE'; }
+`);
+    await writeFile(path.join(root, 'support.ts'), `import { validateAmount } from './checks.js';\nimport type { Receipt } from './types.js';\nexport function issueReceipt(value: number): Receipt { return validateAmount(value); }\n`);
+    await writeFile(path.join(root, 'checks.ts'), `import { submitPayment } from './payment.js';\nimport type { Receipt } from './types.js';\nexport function validateAmount(value: number): Receipt { if (value < 0) return submitPayment(0); return { accepted: true }; }\n`);
+    await writeFile(path.join(root, 'types.ts'), 'export interface Receipt { accepted: boolean; }\n');
+    const run = await runtime.coordinator.run({ repositoryId: scope.repositoryId });
+    const index = (await store.getStructuralIndex(run.scope))!;
+    const entry = index.symbols.find(symbol => symbol.name === 'submitPayment')!;
+    // The structural TS frontend indexes imports/exports; this fixture supplies compiler-resolved edges.
+    const edge = (from: string, to: string, kind: string): DependencyEdgeRecord => {
+      const source = index.symbols.find(symbol => symbol.name === from)!;
+      const target = index.symbols.find(symbol => symbol.name === to)!;
+      return { ...run.scope, dependencyEdgeId: `${from}:${kind}:${to}`, kind, sourceSymbolKey: source.symbolKey, targetSymbolKey: target.symbolKey,
+        sourceRelativePath: source.relativePath, targetRelativePath: target.relativePath, internal: true, resolution: 'resolved',
+        provider: 'lsp', confidence: 1, evidenceLevel: 'semantic', evidenceRanges: [source.sourceRange] };
+    };
+    const edges = [edge('submitPayment', 'issueReceipt', 'invocation'), edge('issueReceipt', 'validateAmount', 'invocation'),
+      edge('validateAmount', 'Receipt', 'type-reference'), edge('unrelatedFeature', 'unrelatedHelper', 'invocation'),
+      edge('validateAmount', 'submitPayment', 'invocation'), edge('submitPayment', 'issueReceipt', 'import')];
+    const queryDependencies = store.queryDependencies.bind(store);
+    vi.spyOn(store, 'queryDependencies').mockImplementation(async (queryScope, query, signal) => {
+      const result = await queryDependencies(queryScope, query, signal);
+      return { ...result, dependencies: [...result.dependencies, ...edges.filter(item =>
+        query.symbolKeys?.includes(item.sourceSymbolKey!) || query.relativePaths?.includes(item.sourceRelativePath))] };
+    });
+    const documents = await store.listSearchDocuments(run.scope);
+    const document = documents.find(item => item.kind === 'symbol' && item.symbolKey === entry.symbolKey)!;
+    vi.spyOn(store, 'searchSearchDocuments').mockImplementation(async (_scope, _query, _limit, kind) => kind === 'symbol' ? [document] : []);
+    const packet = await service.search({ ...request, scopes: [{ ...scope, ...run.scope }], budget: { maxLatencyMs: 30000 } });
+    expect(packet.results.map(item => item.name)).toEqual(['submitPayment']);
+    expect(packet.evidence.map(item => item.name)).toEqual(expect.arrayContaining(['submitPayment', 'issueReceipt', 'validateAmount']));
+    expect(packet.evidence.some(item => item.content.includes('UNRELATED_SOURCE'))).toBe(false);
+    expect(packet.evidence.filter(item => item.name === 'submitPayment')).toHaveLength(1);
+    expect(packet.evidence.find(item => item.name === 'validateAmount')?.relativePath).toBe('checks.ts');
+    expect(packet.evidence.find(item => item.name === 'validateAmount')?.reason).toContain('issueReceipt --invocation--> validateAmount');
+    expect(packet.declarations?.some(item => item.name === 'Receipt')).toBe(true);
+    expect(packet.markdown).toContain('Supporting Declarations');
+    expect(packet.usage.maxTokens).toBeNull();
   });
 
   it('preserves an exact recalled implementation despite hundreds of same-file declarations', async () => {
@@ -200,7 +255,7 @@ export function enforceUploadSize(size: number) {
     expect(packet.results.some((item) => item.name === 'enforceUploadSize' && item.granularity === 'function')).toBe(true);
     expect(packet.results.some((item) => item.granularity === 'class')).toBe(true);
     expect(packet.evidence.some((item) => item.name === 'enforceUploadSize' && item.content.includes('requestSize > sizeMax || requestSize > fileSizeMax'))).toBe(true);
-    expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens);
+    expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens!);
   });
 
   it('returns validated current-project modules and marks incomplete module context', async () => {
@@ -236,7 +291,7 @@ export function enforceUploadSize(size: number) {
     expect(packet.results).toHaveLength(1);
     expect(packet.results[0]).toMatchObject({ moduleId: 'subsystem', granularity: 'subsystem', reason: expect.stringContaining('descendant summary') });
     expect(packet.evidence.some((item) => item.content.includes('return issueReceipt(value)'))).toBe(true);
-    expect(dependencies.mock.calls.every(([, filter]) => Boolean(filter.relativePaths?.length) && filter.relativePaths!.length <= 20)).toBe(true);
+    expect(dependencies.mock.calls.every(([, filter]) => Boolean(filter.symbolKeys?.length || filter.relativePaths?.length))).toBe(true);
     expect(packet.evidence.every((item) => !item.relativePath.startsWith('other/'))).toBe(true);
     expect(projectPlanHash(proposal)).toBe(before);
     expect(packet.usage.tokens).toBe(getEncoding('cl100k_base').encode(packet.markdown, [], []).length);

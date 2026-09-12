@@ -8,7 +8,8 @@ export interface TaskRetrievalRequest {
   requirement: string;
   granularity?: RetrievalGranularity;
   scopes: TaskRetrievalScope[];
-  budget: { maxTokens: number; maxLatencyMs?: number; maxFiles?: number; maxSourceLines?: number };
+  /** Content limits are opt-in; an empty budget retains all selected context. */
+  budget: { maxTokens?: number; maxLatencyMs?: number; maxFiles?: number; maxSourceLines?: number };
   knownEvidence?: Array<{ evidenceId: string; contentHash: string }>;
 }
 export interface TaskRetrievalRouting {
@@ -45,6 +46,15 @@ export interface TaskContextEvidence extends RepositoryRevisionScope {
   symbolKey?: string;
 }
 export interface TaskRetrievalGap { code: string; message: string; repositoryId?: string; relativePath?: string }
+/** Indexed signatures, not verbatim source excerpts. The range locates the original declaration. */
+export interface TaskContextDeclaration extends RepositoryRevisionScope {
+  symbolKey: string;
+  name: string;
+  relativePath: string;
+  sourceRange: SourceRange;
+  signature: string;
+  reason: string;
+}
 export interface TaskRetrievalSnapshot extends TaskRetrievalScope { repositoryName: string; analysisHash: string; sourceRevision?: string }
 export interface ContextPacket {
   packetId: string;
@@ -55,10 +65,11 @@ export interface ContextPacket {
   routing: TaskRetrievalRouting;
   results: TaskRetrievalResult[];
   evidence: TaskContextEvidence[];
+  declarations?: TaskContextDeclaration[];
   relations: DependencyEdgeRecord[];
   gaps: TaskRetrievalGap[];
   markdown: string;
-  usage: { tokenizer: 'cl100k_base'; tokens: number; maxTokens: number; characters: number; files: number; sourceLines: number; latencyMs: number;
+  usage: { tokenizer: 'cl100k_base'; tokens: number; maxTokens: number | null; characters: number; files: number; sourceLines: number; latencyMs: number;
     /** Source payload only; excludes database internals and transport overhead. */
     retrieval?: { sourceBytesRead: number; sourceBytesDelivered: number; sourceReadAmplification: number | null;
       sourceExcerptsRead: number; recallAndExpansionMs: number; compilationMs: number;
@@ -68,7 +79,7 @@ export interface ContextPacket {
 }
 
 /** Shared serialization for the service and user-selected evidence exports. */
-export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' | 'snapshots' | 'routing' | 'results' | 'evidence' | 'relations' | 'gaps'>): string {
+export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' | 'snapshots' | 'routing' | 'results' | 'evidence' | 'declarations' | 'relations' | 'gaps'>): string {
   const sections = ['# Code Context', packet.requirement, '## Snapshots', ...packet.snapshots.map((snapshot) =>
     `- ${snapshot.repositoryName}: ${snapshot.repositoryId}@${snapshot.analysisRevision}${snapshot.projectId ? ` project=${snapshot.projectId}` : ''} analysis=${snapshot.analysisHash}`),
   `## Retrieval\n${packet.routing.requestedGranularity} -> ${packet.routing.resolvedGranularities.join(', ') || 'unavailable'} (${packet.routing.source})\n${packet.routing.reason}`];
@@ -76,12 +87,22 @@ export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' 
     `- ${result.name} [${result.granularity}] ${result.repositoryId}@${result.analysisRevision}${result.relativePath ? `:${result.relativePath}` : ''}\n  ${result.reason}`));
   if (packet.relations.length) sections.push('## Relations', ...packet.relations.map((edge) =>
     `- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`));
-  for (const item of packet.evidence) {
-    // Source may itself contain Markdown fences; choose a strictly longer fence.
-    const longest = Math.max(2, ...Array.from(item.content.matchAll(/`+/g), (match) => match[0].length));
-    const fence = '`'.repeat(longest + 1);
-    sections.push(`## ${item.name} [${item.role}]\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}:${item.sourceRange.startColumn}-${item.sourceRange.endLine}:${item.sourceRange.endColumn}\nEvidence: ${item.evidenceId}; SHA256: ${item.contentHash}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}\n${item.reason}\n\n${fence}\n${item.content}\n${fence}`);
+  const titles = { implementation: 'Core Implementations', interface: 'Type Definitions', dependency: 'Supporting Implementations', configuration: 'Build Configuration' };
+  for (const role of ['implementation', 'interface', 'dependency', 'configuration'] as const) {
+    const items = packet.evidence.filter(item => item.role === role);
+    if (items.length) sections.push(`## ${titles[role]}`);
+    for (const item of items) {
+      sections.push(`### ${item.name} [${item.role}]\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}:${item.sourceRange.startColumn}-${item.sourceRange.endLine}:${item.sourceRange.endColumn}\nEvidence: ${item.evidenceId}; SHA256: ${item.contentHash}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}\n${item.reason}\n\n${fenced(item.content)}`);
+    }
   }
+  if (packet.declarations?.length) sections.push('## Supporting Declarations', ...packet.declarations.map(item =>
+    `### ${item.name}\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}\nIndexed declaration signatures; implementation bodies are not included.\n${item.reason}\n\n${fenced(item.signature)}`));
   if (packet.gaps.length) sections.push('## Gaps', ...packet.gaps.map((gap) => `- ${gap.code}: ${gap.message}`));
   return sections.join('\n\n');
+}
+
+function fenced(content: string): string {
+  const longest = Math.max(2, ...Array.from(content.matchAll(/`+/g), match => match[0].length));
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}\n${content}\n${fence}`;
 }

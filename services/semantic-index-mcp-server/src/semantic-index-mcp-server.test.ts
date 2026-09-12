@@ -115,15 +115,44 @@ describe("semantic-index MCP server", () => {
     expect(contentText(second)).toContain('does not match');
   });
 
-  it('rejects task requests carrying arbitrary paths or unbounded budgets', async () => {
+  it('rejects task requests carrying arbitrary paths or invalid budgets', async () => {
     const search = vi.fn(async () => taskPacket());
     const { client } = await connectedClient(createQueryPort(), { search });
     const arguments_ = { requestId: 'request-1', requirement: 'quote service', scopes: [scope], budget: { maxTokens: 4000 } };
     const result = await client.callTool({ name: 'search_task_context', arguments: { ...arguments_, localPath: '/tmp/private' } });
-    const oversized = await client.callTool({ name: 'search_task_context', arguments: { ...arguments_, budget: { maxTokens: 999999 } } });
+    const oversized = await client.callTool({ name: 'search_task_context', arguments: { ...arguments_, budget: { maxTokens: -1 } } });
     expect(isToolError(result)).toBe(true);
     expect(isToolError(oversized)).toBe(true);
     expect(search).not.toHaveBeenCalled();
+  });
+  it('accepts omitted content limits and large caller-supplied token windows', async () => {
+    const packet = taskPacket();
+    packet.usage.maxTokens = null;
+    const search = vi.fn(async () => packet);
+    const { client } = await connectedClient(createQueryPort(), { search });
+    for (const budget of [{}, { maxTokens: 128000 }]) {
+      const result = await client.callTool({ name: 'search_task_context', arguments: {
+        requestId: 'request-1', requirement: 'quote service', scopes: [scope], budget,
+      } });
+      expect(isToolError(result)).toBe(false);
+    }
+  });
+  it('validates the snapshot identity of supporting declarations', async () => {
+    const packet = taskPacket();
+    packet.declarations = [{ ...scope, symbolKey: 'type:Quote', name: 'Quote', relativePath: 'src/quote.ts', sourceRange: range,
+      signature: 'interface Quote { total: number }', reason: 'Return type of quote.' }];
+    packet.markdown = formatContextMarkdown(packet);
+    const search = vi.fn(async () => packet);
+    const { client } = await connectedClient(createQueryPort(), { search });
+    const request = { requestId: 'request-1', requirement: 'quote service', scopes: [scope], budget: {} };
+    const result = await client.callTool({ name: 'search_task_context', arguments: request });
+    expect(isToolError(result)).toBe(false);
+    expect(contentText(result)).toContain('Supporting Declarations');
+    packet.declarations[0]!.analysisRevision = 'another-revision';
+    packet.markdown = formatContextMarkdown(packet);
+    const invalid = await client.callTool({ name: 'search_task_context', arguments: request });
+    expect(isToolError(invalid)).toBe(true);
+    expect(contentText(invalid)).toContain('different repository revision');
   });
   it("exposes exactly the SSD read-only tool set", async () => {
     const { client } = await connectedClient();

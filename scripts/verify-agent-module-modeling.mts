@@ -6,7 +6,7 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { parseArgs, parseEnv } from 'node:util';
 import mysql from 'mysql2/promise';
 import { getEncoding } from 'js-tiktoken';
-import type { ContextPacket, ModuleArtifactRecord, ProjectAnalysisRecord, ProjectAnalysisScope, TaskRetrievalRequest } from '@forexplore/contracts';
+import type { ContextPacket, ModuleArtifactRecord, ProjectAnalysisRecord, ProjectAnalysisScope, SourceRange, TaskRetrievalRequest } from '@forexplore/contracts';
 import { SeekDbIndexStore } from '../services/code-intelligence-service/src/seekdb-index-store.js';
 import { projectAnalysisProfile, projectPlanHash, validateProjectResult } from '../services/code-intelligence-service/src/project-analysis.js';
 
@@ -102,7 +102,7 @@ async function verifyContext(packet: ContextPacket, request: TaskRetrievalReques
   }
   assert.equal(packet.usage.tokenizer, 'cl100k_base');
   assert.equal(packet.usage.tokens, tokenizer.encode(packet.markdown, [], []).length);
-  assert(packet.usage.tokens <= request.budget.maxTokens);
+  if (request.budget.maxTokens !== undefined) assert(packet.usage.tokens <= request.budget.maxTokens);
   assert.equal(packet.usage.characters, packet.markdown.length);
   assert.equal(new Set(packet.evidence.map((evidence) => evidence.evidenceId)).size, packet.evidence.length);
 }
@@ -187,7 +187,7 @@ async function run(scope: ProjectAnalysisScope) {
     else {
       assert(packet.results.some((result) => result.symbolKey === symbol.symbolKey), 'Queried declaration was absent from ranked results.');
       const beforeOrEqual = (line: number, column: number, otherLine: number, otherColumn: number) => line < otherLine || line === otherLine && column <= otherColumn;
-      const range = symbol.sourceRange;
+      const range: SourceRange = symbol.sourceRange;
       const covering = packet.evidence.filter((evidence) => evidence.relativePath === symbol.relativePath
         && beforeOrEqual(evidence.sourceRange.startLine, evidence.sourceRange.startColumn, range.startLine, range.startColumn)
         && beforeOrEqual(range.endLine, range.endColumn, evidence.sourceRange.endLine, evidence.sourceRange.endColumn));

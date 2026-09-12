@@ -164,10 +164,10 @@ const taskSearchSchema = z.object({
   granularity: z.enum(["auto", "function", "class", "module", "subsystem"]).optional(),
   scopes: z.array(scopeSchema.extend({ projectId: repositoryIdSchema.optional(), role: z.enum(["target", "reference"]).optional() }).strict()).min(1).max(8),
   budget: z.object({
-    maxTokens: z.number().int().min(256).max(32000),
+    maxTokens: z.number().int().min(256).max(Number.MAX_SAFE_INTEGER).optional(),
     maxLatencyMs: z.number().int().min(100).max(60000).optional(),
-    maxFiles: z.number().int().min(1).max(40).optional(),
-    maxSourceLines: z.number().int().min(1).max(4000).optional(),
+    maxFiles: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    maxSourceLines: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   }).strict(),
   knownEvidence: z.array(z.object({ evidenceId: z.string().min(1).max(512), contentHash: z.string().min(1).max(512) }).strict()).max(200).optional(),
 }).strict();
@@ -187,7 +187,7 @@ export function createSemanticIndexMcpServer(
 
   if (options.taskRetrieval) server.registerTool("search_task_context", {
     title: "Search Task Context",
-    description: "Read task-related source context from the local host at an explicit or automatic granularity, with a token budget and fixed repository revisions.",
+    description: "Read task-related implementations and supporting declarations at fixed repository revisions. Content limits are optional; omit them to retain all selected context.",
     inputSchema: taskSearchSchema,
     annotations: readOnlyAnnotations,
   }, async (input, extra) => {
@@ -367,10 +367,12 @@ function assertTaskPacketBoundary(value: ContextPacket, request: TaskRetrievalRe
   if (value.requestId !== request.requestId || !["complete", "partial", "unavailable"].includes(value.status) ||
     !Array.isArray(value.snapshots) || !Array.isArray(value.results) || !Array.isArray(value.evidence) ||
     !Array.isArray(value.relations) || !Array.isArray(value.gaps) || typeof value.markdown !== "string" ||
-    !value.usage || !Number.isInteger(value.usage.tokens) || value.usage.tokens < 0 || value.usage.tokens > request.budget.maxTokens) {
+    !value.usage || !Number.isInteger(value.usage.tokens) || value.usage.tokens < 0 ||
+    request.budget.maxTokens !== undefined && value.usage.tokens > request.budget.maxTokens ||
+    value.declarations !== undefined && !Array.isArray(value.declarations)) {
     throw new SemanticResultBoundaryError("Task retrieval returned an invalid context packet.");
   }
-  for (const item of [...value.snapshots, ...value.results, ...value.evidence, ...value.relations]) {
+  for (const item of [...value.snapshots, ...value.results, ...value.evidence, ...value.relations, ...(value.declarations ?? [])]) {
     if (!request.scopes.some((scope) => scope.repositoryId === item.repositoryId && scope.analysisRevision === item.analysisRevision)) {
       throw new SemanticResultBoundaryError("Task retrieval returned evidence from a different repository revision.");
     }
@@ -382,6 +384,12 @@ function assertTaskPacketBoundary(value: ContextPacket, request: TaskRetrievalRe
       typeof item.content !== "string" || typeof item.contentHash !== "string" || !item.contentHash ||
       typeof item.fileHash !== "string" || !item.fileHash) {
       throw new SemanticResultBoundaryError("Task retrieval returned invalid source evidence.");
+    }
+  }
+  for (const item of value.declarations ?? []) {
+    if (!sourceRangeSchema.safeParse(item.sourceRange).success || typeof item.symbolKey !== 'string' || !item.symbolKey ||
+      typeof item.name !== 'string' || typeof item.signature !== 'string' || !item.signature || typeof item.reason !== 'string') {
+      throw new SemanticResultBoundaryError('Task retrieval returned invalid declaration signatures.');
     }
   }
   if (formatContextMarkdown(value) !== value.markdown) {

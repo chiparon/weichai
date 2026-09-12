@@ -126,7 +126,7 @@ try {
     assert.equal(markdown.split(expectedSource).length - 1, 1, 'The complete primary implementation must occur exactly once.');
     assert(/throw new SizeLimitExceededException/.test(markdown) && /throw new FileSizeLimitExceededException/.test(markdown));
     const tokens = tokenizer.encode(markdown, [], []).length;
-    assert(tokens <= request.budget.maxTokens, 'MCP text exceeds the complete exported token budget.');
+    if (request.budget.maxTokens !== undefined) assert(tokens <= request.budget.maxTokens, 'MCP text exceeds the complete exported token budget.');
     return { requestId: request.requestId, granularity: request.granularity, maxTokens: request.budget.maxTokens, tokenizer: 'cl100k_base', tokens,
       characters: markdown.length, markdownHash: createHash('sha256').update(markdown).digest('hex'), textBlocks: 1, sourceOccurrences: 1, structuredSourcePacket: false };
   });

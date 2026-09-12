@@ -127,7 +127,7 @@ async function verifyPacket(packet: ContextPacket, request: TaskRetrievalRequest
   for (const item of packet.evidence) await sourceEvidenceMatches(item);
   assert.equal(packet.usage.tokenizer, 'cl100k_base');
   assert.equal(packet.usage.tokens, tokenizer.encode(packet.markdown, [], []).length, 'Token count does not cover the exported Markdown.');
-  assert(packet.usage.tokens <= request.budget.maxTokens, 'Actual Markdown exceeds the requested token budget.');
+  if (request.budget.maxTokens !== undefined) assert(packet.usage.tokens <= request.budget.maxTokens, 'Actual Markdown exceeds the requested token budget.');
   assert.equal(packet.usage.characters, packet.markdown.length);
   if (packet.evidence.some((item) => item.truncated)) assert.equal(packet.status, 'partial', 'Truncated evidence must not be reported as complete.');
 }

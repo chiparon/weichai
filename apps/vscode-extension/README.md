@@ -145,7 +145,7 @@ export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
 SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexplore/semantic-index-mcp-server
 ```
 
-`search_task_context` 接收 `requestId`、`requirement`、`granularity`、固定 `scopes` 和 `budget.maxTokens`。Agent 先用已有 `list_repositories`、`list_projects` 获取身份，再调用任务检索；补查仍可使用 `get_symbol`、`get_dependencies`、`read_source_excerpt` 等原有工具。任务工具只返回一次已计量的 Markdown，不重复传输包含相同源码的 JSON。HTTP `POST /v1/task-search` 则返回完整 `ContextPacket`，`usage.tokens` 计量其 `markdown`，不是整个 HTTP 信封。
+`search_task_context` 接收 `requestId`、`requirement`、`granularity`、固定 `scopes` 和 `budget`。内容上限为可选项：`budget: {}` 保留全部已选上下文，前端宿主默认只设置 30 秒时限；需要适配模型窗口时可显式设置 `budget.maxTokens`。Agent 先用已有 `list_repositories`、`list_projects` 获取身份，再调用任务检索；补查仍可使用 `get_symbol`、`get_dependencies`、`read_source_excerpt` 等原有工具。任务工具只返回一次已计量的 Markdown，不重复传输包含相同源码的 JSON。HTTP `POST /v1/task-search` 返回完整 `ContextPacket`，其中 `evidence` 为源码、`declarations` 为辅助声明签名；`usage.tokens` 计量 `markdown`，未设置 Token 上限时 `usage.maxTokens` 为 `null`。
 
 新增任务 HTTP 适配器仅接受 `http://127.0.0.1` 或 `http://[::1]`，不接受远端主机、DNS 名称、URL 凭据或重定向；MCP 不注册或扫描工程。Host 在每次查询中核验窗口可见工程及可读版本。配置 `SEMANTIC_QUERY_PORT_TOKEN` 时，扩展和 MCP 使用相同本机 token。
 

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { indexModuleHierarchy } from '@forexplore/contracts';
 import type {
   ContextPacket, ConcreteRetrievalGranularity, DependencyEdgeRecord, ProjectAnalysisRecord, ProjectModule,
-  SearchDocumentRecord, SourceRange, SymbolRecord, TaskContextEvidence, TaskRetrievalGap, TaskRetrievalRequest,
+  SearchDocumentRecord, SourceRange, SymbolRecord, TaskContextDeclaration, TaskContextEvidence, TaskRetrievalGap, TaskRetrievalRequest,
   TaskRetrievalResult, TaskRetrievalScope, TaskRetrievalSnapshot,
 } from '@forexplore/contracts';
 import type { TaskRetrievalPort } from '@forexplore/workflow-core';
@@ -30,10 +30,10 @@ export function validateTaskRetrievalRequest(value: unknown): asserts value is T
   if (value.granularity !== undefined && (typeof value.granularity !== 'string' || !granularities.includes(value.granularity))) throw new Error('Invalid retrieval granularity.');
   if (!Array.isArray(value.scopes) || value.scopes.length < 1 || value.scopes.length > 8 || value.scopes.some((scope) =>
     !record(scope) || !identifier(scope.repositoryId) || !identifier(scope.analysisRevision) || scope.projectId !== undefined && !identifier(scope.projectId) || scope.role !== undefined && !['target', 'reference'].includes(String(scope.role)))) throw new Error('Task retrieval requires 1..8 revision-scoped repositories.');
-  if (!record(value.budget) || !integer(value.budget.maxTokens, 256, 32000) ||
+  if (!record(value.budget) || value.budget.maxTokens !== undefined && !integer(value.budget.maxTokens, 256, Number.MAX_SAFE_INTEGER) ||
     value.budget.maxLatencyMs !== undefined && !integer(value.budget.maxLatencyMs, 100, 60000) ||
-    value.budget.maxFiles !== undefined && !integer(value.budget.maxFiles, 1, 40) ||
-    value.budget.maxSourceLines !== undefined && !integer(value.budget.maxSourceLines, 1, 4000)) throw new Error('Invalid task retrieval budget.');
+    value.budget.maxFiles !== undefined && !integer(value.budget.maxFiles, 1, Number.MAX_SAFE_INTEGER) ||
+    value.budget.maxSourceLines !== undefined && !integer(value.budget.maxSourceLines, 1, Number.MAX_SAFE_INTEGER)) throw new Error('Invalid task retrieval budget.');
   if (value.knownEvidence !== undefined && (!Array.isArray(value.knownEvidence) || value.knownEvidence.length > 200 || value.knownEvidence.some((item) => !record(item) || !identifier(item.evidenceId) || !identifier(item.contentHash)))) throw new Error('Invalid known evidence.');
 }
 
@@ -71,6 +71,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     const requestedGranularity = request.granularity ?? 'auto';
     const gaps: TaskRetrievalGap[] = [];
     const evidence: TaskContextEvidence[] = [];
+    const declarations: TaskContextDeclaration[] = [];
     const relations: DependencyEdgeRecord[] = [];
     const hits: Hit[] = [];
     const availableNodeKinds = new Set<string>();
@@ -231,11 +232,11 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       ...(requestedGranularity === 'auto' ? { confidence: null } : {}) };
     const expansionStarted = performance.now();
     const candidateResolutionMs = Math.max(0, expansionStarted - candidateStarted - recallMs);
-    // Put the primary implementations ahead of module samples and dependency
-    // expansions so supporting context cannot exhaust the source budget first.
+    const seeds: Array<{ scope: TaskRetrievalScope; symbol: SymbolRecord }> = [];
     for (const hit of selected.filter((candidate) => candidate.symbol)) {
       signal.throwIfAborted();
-      await this.readEvidence(hit.scope, hit.symbol!.relativePath, hit.symbol, 'implementation', hit.result.reason, evidence, gaps, signal, hit.sourceRange);
+      await this.readEvidence(hit.scope, hit.symbol!.relativePath, hit.symbol, 'implementation', hit.result.reason, evidence, gaps, signal);
+      seeds.push({ scope: hit.scope, symbol: hit.symbol! });
     }
     for (const hit of selected) {
       signal.throwIfAborted();
@@ -247,41 +248,17 @@ export class TaskRetrievalService implements TaskRetrievalPort {
         const representatives = symbols.filter((symbol, index) => symbols.findIndex((candidate) => candidate.relativePath === symbol.relativePath) === index).slice(0, 3);
         for (const symbol of representatives) {
           this.assertSymbol(hit.scope, symbol);
-          const document = hit.implementationDocuments!.find((document) => document.symbolKey === symbol.symbolKey && document.kind === 'source-fragment');
-          await this.readEvidence(hit.scope, symbol.relativePath, symbol, 'implementation', `Representative implementation within ${hit.module.name}.`, evidence, gaps, signal, document?.sourceRange);
+          await this.readEvidence(hit.scope, symbol.relativePath, symbol, 'implementation', `Representative implementation within ${hit.module.name}.`, evidence, gaps, signal);
+          seeds.push({ scope: hit.scope, symbol });
         }
         if (!representatives.length) for (const path of hit.modulePaths!.slice(0, 2)) await this.readEvidence(hit.scope, path, undefined, 'implementation', `Indexed source within ${hit.module.name}.`, evidence, gaps, signal);
         if (hit.modulePathsTruncated || hit.modulePaths!.length > representatives.length || symbols.length > representatives.length || found.truncated || exact.truncated) gaps.push({ code: 'MODULE_CONTEXT_PARTIAL', message: `Only bounded representative implementation excerpts from ${hit.module.name} were included; this is not its complete source subtree.`, repositoryId: hit.scope.repositoryId });
       }
     }
-    for (const hit of selected) {
-      signal.throwIfAborted();
-      const dependencies = await this.store.queryDependencies(hit.scope, { ...(hit.symbol ? { symbolKeys: [hit.symbol.symbolKey], relativePaths: [hit.symbol.relativePath] } : { relativePaths: hit.modulePaths! }), direction: 'both', projectId: hit.scope.projectId, limit: 12 }, signal);
-      if (dependencies.truncated) gaps.push({ code: 'DEPENDENCY_BUDGET_EXCEEDED', message: `Additional dependencies of ${hit.result.name} were not expanded.`, repositoryId: hit.scope.repositoryId });
-      for (const edge of dependencies.dependencies) {
-        if (edge.repositoryId !== hit.scope.repositoryId || edge.analysisRevision !== hit.scope.analysisRevision) throw new Error('Dependency belongs to another revision.');
-        if (!relations.some((item) => item.repositoryId === edge.repositoryId && item.analysisRevision === edge.analysisRevision && item.dependencyEdgeId === edge.dependencyEdgeId)) relations.push(edge);
-        if (edge.resolution !== 'resolved') gaps.push({ code: 'UNRESOLVED_DEPENDENCY', message: `${edge.sourceRelativePath}: ${edge.targetReference ?? edge.kind} is ${edge.resolution}.`, repositoryId: edge.repositoryId });
-      }
-      const neighbors = [...new Set(dependencies.dependencies.flatMap((edge) => edge.resolution === 'resolved' ? [edge.sourceSymbolKey, edge.targetSymbolKey].filter((symbolKey): symbolKey is string => Boolean(symbolKey) && symbolKey !== hit.symbol?.symbolKey) : []))].slice(0, 6);
-      if (neighbors.length) {
-        const found = await this.store.querySymbols(hit.scope, { symbolKeys: neighbors, limit: 6 }, signal);
-        if (found.symbols.length < neighbors.length) gaps.push({ code: 'DEPENDENCY_SYMBOL_UNAVAILABLE', message: `Some referenced declarations of ${hit.result.name} are unavailable in the pinned index.`, repositoryId: hit.scope.repositoryId });
-        for (const symbol of found.symbols) { this.assertSymbol(hit.scope, symbol, false); await this.readEvidence(hit.scope, symbol.relativePath, symbol, classKinds.includes(symbol.kind) ? 'interface' : 'dependency', `Required by a recorded relation of ${hit.result.name}.`, evidence, gaps, signal); }
-      }
-      const linkedPaths = [...new Set(dependencies.dependencies.flatMap((edge) => edge.resolution === 'resolved' && edge.internal
-        ? [edge.sourceRelativePath, edge.targetRelativePath].filter((path): path is string => Boolean(path) && path !== hit.symbol?.relativePath)
-        : []))].slice(0, 3);
-      for (const path of linkedPaths) if (!evidence.some((item) => item.repositoryId === hit.scope.repositoryId && item.analysisRevision === hit.scope.analysisRevision && item.relativePath === path)) {
-        const found = await this.store.querySymbols(hit.scope, { relativePaths: [path], limit: 3 }, signal);
-        if (found.truncated) gaps.push({ code: 'DEPENDENCY_CONTEXT_PARTIAL', message: `Additional declarations from dependency ${path} were not included.`, repositoryId: hit.scope.repositoryId });
-        if (found.symbols.length) for (const symbol of found.symbols) { this.assertSymbol(hit.scope, symbol, false); await this.readEvidence(hit.scope, path, symbol, 'dependency', `File dependency of ${hit.result.name}.`, evidence, gaps, signal); }
-        else await this.readEvidence(hit.scope, path, undefined, 'dependency', `File dependency of ${hit.result.name}.`, evidence, gaps, signal);
-      }
-    }
+    await this.expandContext(seeds, evidence, declarations, relations, gaps, signal);
     for (const scope of [...new Map(selected.filter((hit) => hit.scope.projectId).map((hit) => [key(hit.scope), hit.scope])).values()]) {
       const project = await this.store.getProject(scope, scope.projectId!, signal);
-      for (const path of project?.manifestPaths.slice(0, 2) ?? []) await this.readEvidence(scope, path, undefined, 'configuration', 'Project build and dependency configuration.', evidence, gaps, signal);
+      for (const path of project?.manifestPaths ?? []) await this.readEvidence(scope, path, undefined, 'configuration', 'Project build and dependency configuration.', evidence, gaps, signal);
     }
     for (const snapshot of snapshots) {
       const revision = await this.store.getRevision(snapshot, signal);
@@ -289,7 +266,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     }
     signal.throwIfAborted();
     const compileStarted = performance.now();
-    const packet = compileTaskContext(request, { snapshots, routing, results: selected.map((hit) => hit.result), evidence, relations,
+    const packet = compileTaskContext(request, { snapshots, routing, results: selected.map((hit) => hit.result), evidence, declarations, relations,
       gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()].slice(0, 32), status: unavailable ? 'unavailable' : 'complete' }, Math.round(performance.now() - started));
     signal.throwIfAborted();
     const sourceBytesRead = evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);
@@ -306,23 +283,125 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     if (symbol.repositoryId !== scope.repositoryId || symbol.analysisRevision !== scope.analysisRevision || requireProject && scope.projectId && symbol.projectId !== scope.projectId) throw new Error('Symbol does not belong to the requested scope.');
   }
 
+  private async expandContext(seeds: Array<{ scope: TaskRetrievalScope; symbol: SymbolRecord }>, evidence: TaskContextEvidence[],
+    declarations: TaskContextDeclaration[], relations: DependencyEdgeRecord[], gaps: TaskRetrievalGap[], signal: AbortSignal): Promise<void> {
+    const queue = [...seeds];
+    const visited = new Set<string>();
+    const outlined = new Set<string>();
+    const fileEdges = new Map<string, Awaited<ReturnType<NonNullable<IndexStore['queryDependencies']>>>>();
+    const fileSymbols = new Map<string, Awaited<ReturnType<NonNullable<IndexStore['querySymbols']>>>>();
+    const identity = (scope: TaskRetrievalScope, value: string) => `${scope.repositoryId}\0${scope.analysisRevision}\0${value}`;
+    const queued = new Set(seeds.map(({ scope, symbol }) => identity(scope, symbol.symbolKey)));
+    const outline = async (scope: TaskRetrievalScope, symbol: SymbolRecord, reason: string) => {
+      const symbolId = identity(scope, symbol.symbolKey);
+      if (outlined.has(symbolId)) return;
+      outlined.add(symbolId);
+      let signature = symbol.signature ?? symbol.name;
+      if (classKinds.includes(symbol.kind)) {
+        const fileId = identity(scope, symbol.relativePath);
+        let members = fileSymbols.get(fileId);
+        if (!members) { members = await this.store.querySymbols!(scope, { relativePaths: [symbol.relativePath], limit: 200 }, signal); fileSymbols.set(fileId, members); }
+        for (const member of members.symbols) this.assertSymbol(scope, member, false);
+        signature = [signature, ...members.symbols.filter(member => member.containerSymbolKey === symbol.symbolKey)
+          .map(member => member.signature ?? member.name)].join('\n');
+        if (members.truncated) gaps.push({ code: 'DECLARATION_OUTLINE_PARTIAL', message: `Some member signatures of ${symbol.qualifiedName} were not available in the local query.`, repositoryId: scope.repositoryId, relativePath: symbol.relativePath });
+      }
+      declarations.push({ repositoryId: scope.repositoryId, analysisRevision: scope.analysisRevision, symbolKey: symbol.symbolKey,
+        name: symbol.qualifiedName || symbol.name, relativePath: symbol.relativePath, sourceRange: symbol.sourceRange, signature, reason });
+    };
+    // Traverse implementation dependencies; type declarations form explicit expansion boundaries.
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      signal.throwIfAborted();
+      const { scope, symbol } = queue[cursor]!;
+      const symbolId = identity(scope, symbol.symbolKey);
+      if (visited.has(symbolId)) continue;
+      if (visited.size >= 200) { gaps.push({ code: 'DEPENDENCY_EXPANSION_LIMIT', message: 'Dependency traversal reached 200 implementation symbols; additional dependencies remain.' }); break; }
+      visited.add(symbolId);
+      if (symbol.containerSymbolKey) {
+        const owners = await this.store.querySymbols!(scope, { symbolKeys: [symbol.containerSymbolKey], limit: 1 }, signal);
+        for (const owner of owners.symbols) { this.assertSymbol(scope, owner, false); await outline(scope, owner, `Enclosing declaration of ${symbol.qualifiedName}.`); }
+      }
+      const direct = await this.store.queryDependencies!(scope, { symbolKeys: [symbol.symbolKey], direction: 'outgoing', limit: 200 }, signal);
+      const fileId = identity(scope, symbol.relativePath);
+      let local = fileEdges.get(fileId);
+      if (!local) { local = await this.store.queryDependencies!(scope, { relativePaths: [symbol.relativePath], direction: 'outgoing', limit: 200 }, signal); fileEdges.set(fileId, local); }
+      if (direct.truncated || local.truncated) gaps.push({ code: 'DEPENDENCY_QUERY_PARTIAL', message: `The local dependency query for ${symbol.qualifiedName} reached its page limit.`, repositoryId: scope.repositoryId, relativePath: symbol.relativePath });
+      const edges = [...new Map([...direct.dependencies, ...local.dependencies].filter(edge =>
+        edge.sourceSymbolKey === symbol.symbolKey || edge.sourceRelativePath === symbol.relativePath &&
+        (edge.kind === 'import' || (!edge.sourceSymbolKey || classKinds.includes(symbol.kind)) && edge.evidenceRanges.some(range => rangesOverlap(range, symbol.sourceRange))))
+        .map(edge => [edge.dependencyEdgeId, edge])).values()];
+      if (symbol.provider === 'tree-sitter' && functionKinds.includes(symbol.kind) && !edges.some(edge => !['import', 'export'].includes(edge.kind)) &&
+        !gaps.some(gap => gap.code === 'CALL_DEPENDENCIES_UNAVAILABLE' && gap.repositoryId === scope.repositoryId && gap.relativePath === symbol.relativePath)) {
+        gaps.push({ code: 'CALL_DEPENDENCIES_UNAVAILABLE', message: 'The available index has no call/type relations for this implementation; dependency completeness is not established.', repositoryId: scope.repositoryId, relativePath: symbol.relativePath });
+      }
+      const targets = new Map<string, DependencyEdgeRecord>();
+      for (const edge of edges) {
+        if (edge.repositoryId !== scope.repositoryId || edge.analysisRevision !== scope.analysisRevision) throw new Error('Dependency belongs to another revision.');
+        if (!relations.some(item => identity(item, item.dependencyEdgeId) === identity(edge, edge.dependencyEdgeId))) relations.push(edge);
+        if (edge.resolution !== 'resolved') {
+          if (edge.internal) gaps.push({ code: 'UNRESOLVED_DEPENDENCY', message: `${symbol.qualifiedName}: ${edge.targetReference ?? edge.kind} is ${edge.resolution}.`, repositoryId: scope.repositoryId });
+        } else if (edge.targetSymbolKey && edge.targetSymbolKey !== symbol.symbolKey) {
+          const previous = targets.get(edge.targetSymbolKey);
+          if (!previous || previous.kind === 'import' && edge.kind !== 'import') targets.set(edge.targetSymbolKey, edge);
+        }
+        else if (edge.internal && edge.targetRelativePath && edge.targetRelativePath !== symbol.relativePath) {
+          gaps.push({ code: 'DEPENDENCY_TARGET_UNRESOLVED', message: `The ${edge.kind} relation from ${symbol.qualifiedName} identifies ${edge.targetRelativePath}, but no specific declaration.`, repositoryId: scope.repositoryId, relativePath: edge.targetRelativePath });
+        }
+      }
+      const targetKeys = [...targets.keys()];
+      for (let offset = 0; offset < targetKeys.length; offset += 200) {
+        const keys = targetKeys.slice(offset, offset + 200);
+        const found = await this.store.querySymbols!(scope, { symbolKeys: keys, limit: 200 }, signal);
+        if (found.symbols.length < keys.length) gaps.push({ code: 'DEPENDENCY_SYMBOL_UNAVAILABLE', message: `Some declarations referenced by ${symbol.qualifiedName} are unavailable.`, repositoryId: scope.repositoryId });
+        for (const target of found.symbols) {
+          this.assertSymbol(scope, target, false);
+          const edge = targets.get(target.symbolKey)!;
+          const reason = `${symbol.qualifiedName} --${edge.kind}--> ${target.qualifiedName}.`;
+          if (classKinds.includes(target.kind) || edge.kind === 'import') await outline(scope, target, reason);
+          else if (functionKinds.includes(target.kind)) {
+            const targetId = identity(scope, target.symbolKey);
+            if (!queued.has(targetId)) {
+              if (queued.size >= 200) {
+                if (!gaps.some(gap => gap.code === 'DEPENDENCY_EXPANSION_LIMIT')) gaps.push({ code: 'DEPENDENCY_EXPANSION_LIMIT', message: 'Dependency traversal reached 200 implementation symbols; additional dependencies remain.' });
+                continue;
+              }
+              queued.add(targetId);
+              await this.readEvidence(scope, target.relativePath, target, 'dependency', reason, evidence, gaps, signal);
+              queue.push({ scope, symbol: target });
+            }
+          } else await this.readEvidence(scope, target.relativePath, target, 'interface', reason, evidence, gaps, signal);
+        }
+      }
+    }
+  }
+
   private async readEvidence(scope: TaskRetrievalScope, path: string, symbol: SymbolRecord | undefined, role: TaskContextEvidence['role'], reason: string,
-    output: TaskContextEvidence[], gaps: TaskRetrievalGap[], signal: AbortSignal, preferredRange?: SourceRange): Promise<void> {
+    output: TaskContextEvidence[], gaps: TaskRetrievalGap[], signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    const range = preferredRange ?? symbol?.sourceRange;
+    const range = symbol?.sourceRange;
     const evidenceId = `source-${id([scope.repositoryId, scope.analysisRevision, path, JSON.stringify(range ?? null)])}`;
     if (output.some((item) => item.evidenceId === evidenceId)) return;
-    if (output.length >= 60) { gaps.push({ code: 'SOURCE_READ_LIMIT', message: 'Additional source excerpts were not read because the query reached its bounded evidence limit.' }); return; }
-    const source = await this.store.getSourceSlice!(scope, path, range, 12000, signal);
+    const source = await this.store.getSourceSlice!(scope, path, range, 32000, signal);
     if (!source) { gaps.push({ code: 'SOURCE_UNAVAILABLE', message: `Indexed source is unavailable: ${path}`, repositoryId: scope.repositoryId, relativePath: path }); return; }
     if (source.file.repositoryId !== scope.repositoryId || source.file.analysisRevision !== scope.analysisRevision || source.file.relativePath !== path) throw new Error('Source evidence belongs to another revision or path.');
+    // Keep local reads bounded while assembling the complete indexed declaration.
+    while (range && source.truncated) {
+      signal.throwIfAborted();
+      const nextRange = { ...range, startLine: source.sourceRange.endLine, startColumn: source.sourceRange.endColumn };
+      if (nextRange.startLine === range.endLine && nextRange.startColumn === range.endColumn) { source.truncated = false; break; }
+      const next = await this.store.getSourceSlice!(scope, path, nextRange, 32000, signal);
+      if (!next || !next.text) break;
+      if (next.file.repositoryId !== scope.repositoryId || next.file.analysisRevision !== scope.analysisRevision || next.file.relativePath !== path || next.file.sha256 !== source.file.sha256 ||
+        next.sourceRange.startLine !== nextRange.startLine || next.sourceRange.startColumn !== nextRange.startColumn) throw new Error('Source continuation does not match its pinned declaration.');
+      source.text += next.text;
+      source.sourceRange = { ...source.sourceRange, endLine: next.sourceRange.endLine, endColumn: next.sourceRange.endColumn };
+      source.truncated = next.truncated;
+    }
     if (source.truncated) gaps.push({ code: 'SOURCE_TRUNCATED', message: `Source excerpt is truncated: ${path}`, repositoryId: scope.repositoryId, relativePath: path });
-    const partialImplementation = Boolean(symbol && preferredRange && JSON.stringify(preferredRange) !== JSON.stringify(symbol.sourceRange));
-    if (partialImplementation) gaps.push({ code: 'IMPLEMENTATION_EXCERPT', message: `The matched source block is part of ${symbol!.qualifiedName}; its full declaration is not included.`, repositoryId: scope.repositoryId, relativePath: path });
     if (['failed', 'partial'].includes(source.file.parseStatus)) gaps.push({ code: 'PARSE_INCOMPLETE', message: `Structural parsing is ${source.file.parseStatus}: ${path}`, repositoryId: scope.repositoryId, relativePath: path });
     output.push({ ...scope, evidenceId, role, name: symbol?.qualifiedName ?? path, relativePath: path, sourceRange: source.sourceRange,
       contentHash: sourceContentHash(source.text), fileHash: source.file.sha256, content: source.text, reason,
-      provider: symbol?.provider ?? 'tree-sitter', evidenceLevel: symbol?.evidenceLevel ?? 'structural', truncated: source.truncated || partialImplementation,
+      provider: symbol?.provider ?? 'tree-sitter', evidenceLevel: symbol?.evidenceLevel ?? 'structural', truncated: source.truncated,
       ...(symbol ? { symbolKey: symbol.symbolKey } : {}) });
   }
 }

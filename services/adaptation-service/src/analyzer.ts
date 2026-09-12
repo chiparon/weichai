@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 import type {
   AnalysisRequest,
   AnalysisReport,
@@ -20,7 +21,7 @@ export interface AnalyzerModelClient {
 }
 
 export interface AnalyzerAgentOptions {
-  apiKey?: string;
+  apiKey?: ModelApiKey;
   client?: AnalyzerModelClient;
   modelConfig?: DeepSeekModelConfig;
 }
@@ -219,7 +220,7 @@ function normalizeAnalysisReport(value: Record<string, any>): AnalysisReport {
 }
 
 function createDeepSeekAnalyzerClient(
-  apiKey: string,
+  apiKey: ModelApiKey,
   config: DeepSeekModelConfig,
 ): AnalyzerModelClient {
   return {
@@ -263,7 +264,8 @@ function truncateInvalidOutput(value: string): string {
   return `${value.slice(0, MAX_INVALID_OUTPUT_CHARS)}\n... [truncated]`;
 }
 
-function requireApiKey(apiKey: string | undefined): string {
+function requireApiKey(apiKey: ModelApiKey | undefined): ModelApiKey {
+  if (typeof apiKey === "function") return apiKey;
   if (!apiKey?.trim()) throw new Error("DEEPSEEK_API_KEY is required for AnalyzerAgent.");
   return apiKey.trim();
 }

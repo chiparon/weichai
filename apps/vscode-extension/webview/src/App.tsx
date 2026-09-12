@@ -1,5 +1,10 @@
+import { LLM_PRESETS } from '@forexplore/contracts';
+import { browseReferenceFolders } from './reference-folder-picker';
+import { RecastLogo } from './components/RecastLogo';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { GitBranch, Search, Settings2 } from 'lucide-react';
+import { createTranslationProvider } from './workspace-translation-provider';
+import { TaskSearch, type TaskSearchProvider } from './components/TaskSearch';
 import type { CodeIntelligencePresentation, RepositoryStatus, ServiceStatus } from '../../src/ui-types';
 import type { ModuleExplorerMode, ModuleExplorerNode } from '../../src/ui-types';
 import {
@@ -21,15 +26,30 @@ import { ModuleWorkspace } from './components/ModuleWorkspace';
 import { SettingsPanel } from './components/SettingsPanel';
 import { errorEvent } from './errors';
 import { createMessageBus, type MessageBus } from './vscode-api';
+import { createTaskSearchProvider } from './task-search-provider';
+import { createModuleChildrenProvider } from './module-children-provider';
 
-export default function App() {
+export default function App({ taskSearch, initialMode = 'search' }: { taskSearch?: TaskSearchProvider; initialMode?: 'search' | 'migration' } = {}) {
+  const [taskMode, setTaskMode] = useState(initialMode);
   const bus: MessageBus = useMemo(() => createMessageBus(), []);
+  const translation = useMemo(() => createTranslationProvider(bus), [bus]);
+  const loadModuleChildren = useMemo(() => createModuleChildrenProvider(bus), [bus]);
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState);
   const [payload, setPayload] = useState<PanelInitPayload | null>(null);
   const [repositoryStatuses, setRepositoryStatuses] = useState<RepositoryStatus[]>([]);
   const [codeIntelligence, setCodeIntelligence] = useState<CodeIntelligencePresentation | null>(null);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus | null>(null);
   const [moduleExplorer, setModuleExplorer] = useState<PanelInitPayload['moduleExplorer'] | null>(null);
+  const connectedTaskSearch = useMemo(() => {
+    const target = moduleExplorer?.target;
+    if (taskSearch) return taskSearch;
+    if (!target?.repositoryId || !target.revision) return undefined;
+    return createTaskSearchProvider(bus, {
+      repositoryId: target.repositoryId,
+      analysisRevision: target.revision,
+      ...(target.projectId ? { projectId: target.projectId } : {}),
+    });
+  }, [bus, taskSearch, moduleExplorer?.target.repositoryId, moduleExplorer?.target.projectId, moduleExplorer?.target.revision]);
   const [explorerMode, setExplorerMode] = useState<ModuleExplorerMode>('target');
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -37,6 +57,12 @@ export default function App() {
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  useEffect(() => {
+    bus.post({ type: 'SETTINGS_VISIBILITY_CHANGED', open: settingsOpen });
+    setSettingsSaveMessage('');
+  }, [bus, settingsOpen]);
+  const [modelKeyStatus, setModelKeyStatus] = useState<{ configured: boolean; message?: string }>({ configured: false });
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef<WorkflowState['pending']>(null);
   const targetIdRef = useRef<string | null>(null);
@@ -48,6 +74,9 @@ export default function App() {
     bus.post({ type: 'READY' });
     return bus.subscribe((message) => {
       switch (message.type) {
+        case 'REQUEST_SETTINGS_SAVE':
+          window.dispatchEvent(new Event('recast-save-settings'));
+          break;
         case 'INIT':
           settingsRef.current = message.payload.settings;
           setPayload(message.payload);
@@ -108,11 +137,14 @@ export default function App() {
           setVisibleStep('target');
           break;
         case 'SETTINGS_UPDATED':
+          setSettingsSaveMessage('设置已保存');
           settingsRef.current = message.settings;
           setPayload((current) => current ? { ...current, settings: message.settings } : current);
           dispatch({ type: 'SET_TOP_K', value: message.settings.topK });
           setSettingsSaving(false);
-          setSettingsOpen(false);
+          break;
+        case 'MODEL_KEY_STATUS':
+          setModelKeyStatus({ configured: message.configured, message: message.message });
           break;
         case 'ERROR': {
           setError(message.message);
@@ -187,10 +219,11 @@ export default function App() {
     bus.post({ type: 'REFRESH_MODULE_EXPLORER' });
   }
 
-  function handleSaveSettings(settings: PanelSettingsPresentation): void {
+  function handleSaveSettings(settings: PanelSettingsPresentation, modelKey?: string | null): void {
     setError(null);
     setSettingsSaving(true);
-    bus.post({ type: 'SAVE_SETTINGS', settings });
+    setSettingsSaveMessage('');
+    bus.post({ type: 'SAVE_SETTINGS', settings, ...(modelKey !== undefined ? { modelKey } : {}) });
   }
 
   function handleSelectCodeIntelligenceRevision(repositoryId: string, analysisRevision: string): void {
@@ -236,7 +269,7 @@ export default function App() {
   if (!payload || !moduleExplorer) {
     return (
       <div className="app">
-        <div className="loading-state">正在初始化 ForeXplore 翻译面板…</div>
+        <div className="loading-state">正在初始化 RECAST 智能开发工作台…</div>
       </div>
     );
   }
@@ -247,14 +280,13 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="brand-glyph">FX</span>
-          <strong>ForeXplore</strong>
+          <RecastLogo />
+          <strong>RECAST</strong>
         </div>
-        <StepRail
-          stage={state.stage}
-          activeStep={visibleStep}
-          onStepChange={handleStepChange}
-        />
+        <nav className="workbench-modes" aria-label="工作模式">
+          <button type="button" aria-pressed={taskMode === 'search'} onClick={() => { setTaskMode('search'); setSettingsOpen(false); }}><Search size={14} />任务检索</button>
+          <button type="button" aria-pressed={taskMode === 'migration'} onClick={() => { setTaskMode('migration'); setSettingsOpen(false); }}><GitBranch size={14} />复用迁移</button>
+        </nav>
         <button
           type="button"
           className={`header-settings-button${settingsOpen ? ' is-active' : ''}`}
@@ -267,6 +299,7 @@ export default function App() {
 
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
       <ModuleWorkspace
+        primaryContent={taskMode === 'search'}
         repositories={codeIntelligence?.repositories ?? []}
         onSelectProject={(repositoryId, revision, projectId) => {
           setSelectedNodeId(null);
@@ -280,6 +313,7 @@ export default function App() {
         }}
         onAddTarget={(mode) => { setError(null); bus.post({ type: 'ADD_TARGET_WORKSPACE', mode }); }}
         explorer={moduleExplorer}
+        onLoadChildren={loadModuleChildren}
         mode={explorerMode}
         historyId={historyId}
         currentTargetId={state.target?.id ?? ''}
@@ -294,21 +328,48 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         settingsOpen={settingsOpen}
       >
+        <div hidden={settingsOpen || taskMode !== 'search'}>
+          <TaskSearch key={`${moduleExplorer.target.repositoryId}:${moduleExplorer.target.projectId}:${moduleExplorer.target.revision}`}
+            project={moduleExplorer.target.name} search={connectedTaskSearch} translation={translation}
+            availableGranularities={{
+              target: ['auto', ...(moduleExplorer.target.stats.methods > 0 ? ['function' as const] : []),
+                ...(moduleExplorer.target.stats.types > 0 ? ['class' as const] : []),
+                ...(moduleExplorer.target.analysis?.proposal && moduleExplorer.target.analysis.projection === 'ready' &&
+                  (moduleExplorer.target.analysis.hierarchy?.moduleCount ?? moduleExplorer.target.stats.modules) > 0 ? ['module' as const] : []),
+                ...(moduleExplorer.target.analysis?.projection === 'ready' && (moduleExplorer.target.analysis.hierarchy?.subsystemCount ?? 0) > 0 ? ['subsystem' as const] : [])],
+              all: ['auto', ...([moduleExplorer.target, ...moduleExplorer.history].some((workspace) => workspace.stats.methods > 0) ? ['function' as const] : []),
+                ...([moduleExplorer.target, ...moduleExplorer.history].some((workspace) => workspace.stats.types > 0) ? ['class' as const] : []),
+                ...([moduleExplorer.target, ...moduleExplorer.history].some((workspace) => workspace.analysis?.proposal && workspace.analysis.projection === 'ready' &&
+                  (workspace.analysis.hierarchy?.moduleCount ?? workspace.stats.modules) > 0) ? ['module' as const] : []),
+                ...([moduleExplorer.target, ...moduleExplorer.history].some((workspace) => workspace.analysis?.projection === 'ready' &&
+                  (workspace.analysis.hierarchy?.subsystemCount ?? 0) > 0) ? ['subsystem' as const] : [])],
+            }} onMigrate={(requirement) => {
+              if (state.pending) return;
+              dispatch({ type: 'SET_REQUIREMENT', value: requirement });
+              setTaskMode('migration'); setExplorerMode('target'); setVisibleStep('requirement');
+            }} />
+        </div>
         {settingsOpen ? (
           <SettingsPanel
+            llm={payload.settings.llm}
+            onBrowseReferenceFolders={() => browseReferenceFolders(bus)}
+            modelKeyStatus={modelKeyStatus}
             topK={payload.settings.topK}
             repositoryPaths={payload.settings.repositoryPaths}
             repositoryStatuses={repositoryStatuses}
             codeIntelligence={codeIntelligence}
             saving={settingsSaving}
+            saveMessage={settingsSaveMessage}
             onCheckRepositories={handleCheckRepositories}
             onSelectCodeIntelligenceRevision={handleSelectCodeIntelligenceRevision}
             onSelectCodeIntelligenceProject={handleSelectCodeIntelligenceProject}
             onSave={handleSaveSettings}
             onCancel={() => setSettingsOpen(false)}
           />
-        ) : (
+        ) : taskMode === 'migration' ? (
           <main className="stage-body">
+            <div className="migration-progress"><StepRail stage={state.stage} activeStep={visibleStep} onStepChange={handleStepChange} /></div>
+            {!state.target ? <div className="context-empty"><GitBranch size={25} /><strong>选择待实现的目标模块</strong></div> : null}
             {visibleStep === 'requirement' && state.target ? (
               <RequirementStage
                 key={state.target.id}
@@ -325,7 +386,7 @@ export default function App() {
               <CandidatesStage
                 state={state}
                 dispatch={dispatch}
-                adaptationProvider={payload.adaptationProvider}
+                adaptationProvider={LLM_PRESETS[payload.settings.llm?.provider ?? 'deepseek'].label}
                 onSelectCandidate={handleSelectCandidate}
                 onAdapt={handleAdapt}
               />
@@ -344,7 +405,7 @@ export default function App() {
               />
             ) : null}
           </main>
-        )}
+        ) : null}
       </ModuleWorkspace>
 
       <FooterStatus

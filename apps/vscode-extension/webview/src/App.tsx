@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { GitBranch, Search, Settings2 } from 'lucide-react';
+import { createTranslationProvider } from './workspace-translation-provider';
 import { TaskSearch, type TaskSearchProvider } from './components/TaskSearch';
 import type { CodeIntelligencePresentation, RepositoryStatus, ServiceStatus } from '../../src/ui-types';
 import type { ModuleExplorerMode, ModuleExplorerNode } from '../../src/ui-types';
@@ -28,6 +29,7 @@ import { createModuleChildrenProvider } from './module-children-provider';
 export default function App({ taskSearch, initialMode = 'search' }: { taskSearch?: TaskSearchProvider; initialMode?: 'search' | 'migration' } = {}) {
   const [taskMode, setTaskMode] = useState(initialMode);
   const bus: MessageBus = useMemo(() => createMessageBus(), []);
+  const translation = useMemo(() => createTranslationProvider(bus), [bus]);
   const loadModuleChildren = useMemo(() => createModuleChildrenProvider(bus), [bus]);
   const [state, dispatch] = useReducer(workflowReducer, initialWorkflowState);
   const [payload, setPayload] = useState<PanelInitPayload | null>(null);
@@ -251,7 +253,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   if (!payload || !moduleExplorer) {
     return (
       <div className="app">
-        <div className="loading-state">正在初始化 ForeXplore 翻译面板…</div>
+        <div className="loading-state">正在初始化 RECAST 智能开发工作台…</div>
       </div>
     );
   }
@@ -262,8 +264,8 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     <div className="app">
       <header className="app-header">
         <div className="brand">
-          <span className="brand-glyph">FX</span>
-          <strong>ForeXplore</strong>
+          <span className="brand-glyph">RC</span>
+          <strong>RECAST</strong>
         </div>
         <nav className="workbench-modes" aria-label="工作模式">
           <button type="button" aria-pressed={taskMode === 'search'} onClick={() => { setTaskMode('search'); setSettingsOpen(false); }}><Search size={14} />任务检索</button>
@@ -312,7 +314,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
       >
         <div hidden={settingsOpen || taskMode !== 'search'}>
           <TaskSearch key={`${moduleExplorer.target.repositoryId}:${moduleExplorer.target.projectId}:${moduleExplorer.target.revision}`}
-            project={moduleExplorer.target.name} search={connectedTaskSearch}
+            project={moduleExplorer.target.name} search={connectedTaskSearch} translation={translation}
             availableGranularities={{
               target: ['auto', ...(moduleExplorer.target.stats.methods > 0 ? ['function' as const] : []),
                 ...(moduleExplorer.target.stats.types > 0 ? ['class' as const] : []),

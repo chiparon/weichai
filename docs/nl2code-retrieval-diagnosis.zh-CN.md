@@ -377,7 +377,7 @@ top-5 被 `FileItem.getString`、`QuotedPrintableDecoder.decode`、`Base64Decode
 （`write`/`read`/`copy`/`delete`/`parse`/`encode`/`decode`/`convert`/`generate`/`validate`，
 以及"原样返回""跳过""归组"这类行为表述），重新生成并跑 `verify-query-lexicon.mts`。
 
-## 11. 下一步（按证据排序）
+## 13. 下一步（按证据排序）
 
 1. **补齐词表动词层与行为词**：按 §10 的合规路径执行（需模型凭据），以 dev(12) + 新集(16) 度量。
 2. **在更大的集上评估重排**：新集 MRR 分布为 3 题第 1 名、多数第 2–7 名，排名仍有空间。
@@ -386,7 +386,7 @@ top-5 被 `FileItem.getString`、`QuotedPrintableDecoder.decode`、`Base64Decode
 4. **继续收敛噪声类**：本轮已处理测试路径与构造函数；接口声明 vs 实现、生成代码等类别尚未处理，
    属零成本、可离线验证的方向。
 
-## 12. 复现命令
+## 14. 复现命令
 
 ```bash
 # 基线（dev / holdout，官方口径：无预算）

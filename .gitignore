@@ -47,6 +47,20 @@ results_副本/
 output/
 tmp/
 
+# Competition / defense material (large binaries, archived outside git)
+docs/PPT/
+docs/instruction/
+docs/产业赛道-*/
+
+# LaTeX build intermediates
+*.aux
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.xdv
+
 # Claude Code local overrides (per-developer)
 .claude/settings.local.json
 

@@ -1,5 +1,11 @@
 # ForeXplore 项目介绍
 
+> **口径说明（2026-09-12）**：本文是 **ForeXplore 时期的早期介绍**，描述的 GUI 宿主是已删除的
+> `web/` 独立原型。对外材料请以 RECAST 说明书（`docs/guochuang-front-chapters.zh-CN.md` 等三份主稿）
+> 为准。本文保留的原因：它是检索/适配设计原则的取证锚点，仍被
+> [`docs/code-retrieval-long-context-literature-survey.zh-CN.md`](code-retrieval-long-context-literature-survey.zh-CN.md)
+> 按章节引用（§3.2、§3.3–3.4、§4）。文中的 `web` 模块与 `packages/mock-adapters` 已不存在。
+
 ## 1. 项目定位
 
 ForeXplore 是一个面向软件模块复用的开源工作流框架。它把已有代码仓库中的实现，与目标软件系统中的 `class` 或 `function` 建立关联，帮助开发者完成以下过程：

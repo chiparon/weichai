@@ -179,6 +179,27 @@ function rendering(item: TaskContextEvidence, level: RenderLevel): string | null
   return signatureOf(item.content);
 }
 
+/**
+ * Recall granularity sets an excerpt's floor; the budget buys depth above it.
+ *
+ * A concrete source-fragment hit located the lines that matched, so a window
+ * around them is the honest minimum, and a symbol hit located a declaration, so
+ * that declaration's body is. A summary or module hit only located a node, so
+ * structure is the minimum. Dependency and configuration excerpts are small and
+ * usually sit on the answer path, so they keep their whole body.
+ */
+function defaultLevelOf(item: TaskContextEvidence): RenderLevel {
+  switch (item.recallChannel) {
+    case 'source-fragment':
+    case 'symbol':
+    // A module hit delivers representative implementations of the node, not the
+    // node projection itself, so its excerpts are still implementation bodies.
+    case 'module': return 'region';
+    case 'summary': return 'skeleton';
+    default: return 'full';
+  }
+}
+
 function withLevel(item: TaskContextEvidence, level: RenderLevel, content: string, sourceRange?: TaskContextEvidence['sourceRange']): TaskContextEvidence {
   if (level === 'full') return item;
   if (level === 'region') {
@@ -241,6 +262,7 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
 
   let framingTokens = framingCost(packet);
   let metadataTrimmed = false;
+  let terseGaps = false;
   if (Number.isFinite(maxTokens) && framingTokens > maxTokens * 0.5) {
     // Ranked results are never removed; only their rendered reason is shortened.
     packet.results = packet.results.map(result => ({ ...result, reason: result.reason.length > 60 ? `${result.reason.slice(0, 59)}…` : result.reason }));
@@ -256,41 +278,84 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
   const perItemCap = Number.isFinite(maxTokens) && maxTokens >= 1024 ? maxTokens * PER_ITEM_BUDGET_SHARE : Number.POSITIVE_INFINITY;
   let extraTokens = 0;
   const budgetUsed = (): number => framingTokens + extraTokens + evidenceCost();
+  const withinLimits = (entries: TaskContextEvidence[]): boolean =>
+    new Set(entries.map(entry => `${entry.repositoryId}\0${entry.analysisRevision}\0${entry.relativePath}`)).size <= maxFiles &&
+    entries.reduce((sum, entry) => sum + lineCount(entry), 0) <= maxLines;
+  /**
+   * Trial placement of one excerpt at one render level. `index` is its position in
+   * the current delivery (`-1` appends), and `reclaim` is the cost that same
+   * excerpt already occupies — a deeper rendering may reuse it instead of
+   * competing with its own cheaper rendering for the remaining budget.
+   */
+  const trialAt = (item: TaskContextEvidence, level: RenderLevel, index: number, reclaim: number): TaskContextEvidence[] | null => {
+    let effective = level;
+    let content: string | null;
+    let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
+    if (level === 'region') {
+      const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed() + reclaim) : Number.POSITIVE_INFINITY;
+      const window = regionOf(item, terms, Math.round(Math.min(remaining, perItemCap) * CHARS_PER_TOKEN), 3);
+      // A null window means the allowance already covers the whole excerpt: that
+      // is the excerpt's full body and must not be read as "region unavailable".
+      if (!window) { effective = 'full'; content = item.content; }
+      else { content = window.content; sourceRange = window.sourceRange; }
+    } else content = rendering(item, level);
+    if (content === null) return null;
+    // Keep room for the rest of the delivery: an item larger than the per-item
+    // cap is compacted (region/skeleton/signature) instead of taken whole.
+    if (effective === 'full' && Number.isFinite(maxTokens) && contextTokenCount(content) > perItemCap) return null;
+    const rendered = withLevel(item, effective, content, sourceRange);
+    const trial = index < 0
+      ? [...packet.evidence.filter(selected => priority[item.role] > priority[selected.role] || !contained(selected, rendered)), rendered]
+      : [...packet.evidence.slice(0, index), rendered, ...packet.evidence.slice(index + 1)];
+    if (!withinLimits(trial)) return null;
+    const previousEvidence = packet.evidence;
+    packet.evidence = trial;
+    const affordable = !Number.isFinite(maxTokens) || budgetUsed() <= maxTokens;
+    if (process.env.RECAST_COMPILER_DEBUG === '1' && !affordable) console.error(JSON.stringify({ skip: item.name, role: item.role, level,
+      used: Math.round(budgetUsed()), maxTokens, framingTokens, evidence: trial.length, contentChars: content.length }));
+    packet.evidence = previousEvidence;
+    return affordable ? trial : null;
+  };
+
+  // A deeper rendering of an excerpt must re-render the original excerpt, never
+  // the reduced form that is currently in the delivery.
+  const originals = new Map(candidates.map(item => [item.evidenceId, item]));
+  // Phase 1 — every candidate is placed at the level its recall granularity
+  // implies, before any depth is bought, so the breadth the recall channels
+  // earned is not spent by the first excerpt that happens to be large.
   for (const item of candidates) {
     if (packet.evidence.some(previous => contained(item, previous))) continue;
+    // Granularity floors only exist because a budget forces a choice. An opt-out
+    // budget (no maxTokens) must keep delivering every selected excerpt whole.
+    const floor = Number.isFinite(maxTokens) ? defaultLevelOf(item) : 'full';
     let placed = false;
-    for (const level of renderLevels) {
-      let content: string | null;
-      let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
-      if (level === 'region') {
-        const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed()) : Number.POSITIVE_INFINITY;
-        const allowance = Math.min(remaining, perItemCap);
-        const window = regionOf(item, terms, Math.round(allowance * CHARS_PER_TOKEN), 3);
-        if (!window) continue;
-        content = window.content;
-        sourceRange = window.sourceRange;
-      } else content = rendering(item, level);
-      if (content === null) continue;
-      // Keep room for the rest of the delivery: an item larger than the per-item
-      // cap is compacted (region/skeleton/signature) instead of taken whole.
-      if (level === 'full' && Number.isFinite(maxTokens) && contextTokenCount(content) > perItemCap) continue;
-      const rendered = withLevel(item, level, content, sourceRange);
-      const trial = [...packet.evidence.filter(selected => priority[item.role] > priority[selected.role] || !contained(selected, rendered)), rendered];
-      const trialFiles = new Set(trial.map(entry => `${entry.repositoryId}\0${entry.analysisRevision}\0${entry.relativePath}`));
-      if (trialFiles.size > maxFiles || trial.reduce((sum, entry) => sum + lineCount(entry), 0) > maxLines) continue;
-      const previousEvidence = packet.evidence;
+    // Cheaper renderings are the fallback only when the floor itself cannot fit.
+    for (const level of renderLevels.slice(renderLevels.indexOf(floor))) {
+      const trial = trialAt(item, level, -1, 0);
+      if (!trial) continue;
       packet.evidence = trial;
-      if (Number.isFinite(maxTokens) && budgetUsed() > maxTokens) {
-        if (process.env.RECAST_COMPILER_DEBUG === '1') console.error(JSON.stringify({ skip: item.name, role: item.role, level,
-          used: Math.round(budgetUsed()), maxTokens, framingTokens, evidence: packet.evidence.length, contentChars: content.length }));
-        packet.evidence = previousEvidence; continue;
-      }
-      levels[level] += 1;
-      if (level !== 'full') downgraded.push(`${item.name}→${level}`);
       placed = true;
       break;
     }
     if (!placed) omitted.push(item.name);
+  }
+  // Phase 2 — the budget buys depth in delivery order, one level at a time, so
+  // the highest-priority excerpts reach verbatim source first.
+  for (let pass = 0; pass < renderLevels.length && Number.isFinite(maxTokens); pass++) {
+    let progressed = false;
+    for (const entry of [...packet.evidence]) {
+      const index = packet.evidence.indexOf(entry);
+      const current = renderLevels.indexOf(entry.renderLevel ?? 'full');
+      const original = originals.get(entry.evidenceId);
+      if (index < 0 || current <= 0 || !original) continue;
+      // Charge the excerpt's own current cost as reclaimable, then confirm the
+      // whole delivery still fits with the deeper rendering in place.
+      const trial = trialAt(original, renderLevels[current - 1]!, index, costOf(original, entry.renderLevel ?? 'full', entry.content));
+      if (!trial) continue;
+      packet.evidence = trial;
+      progressed = true;
+    }
+    if (!progressed) break;
   }
 
   const declSet = new Set<string>();
@@ -323,15 +388,32 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
     extraTokens += cost;
   }
 
+  // Render levels and the downgrade record are recomputed from the final
+  // delivery, so they always describe what is actually being handed over.
+  const resyncLevels = (): void => {
+    for (const level of renderLevels) levels[level] = 0;
+    downgraded.length = 0;
+    for (const entry of packet.evidence) {
+      const level = entry.renderLevel ?? 'full';
+      levels[level] += 1;
+      if (level !== 'full') downgraded.push(`${entry.name}→${level}`);
+    }
+  };
+  resyncLevels();
   if (metadataTrimmed && !packet.gaps.includes(metadataGap)) packet.gaps.push(metadataGap);
   if (packet.gaps.length && packet.status === 'complete') packet.status = 'partial';
   const refreshGaps = (): void => {
+    // Gap messages are metadata too, and they are written after the framing cost
+    // was reserved. They stay bounded, and under budget pressure they degrade to
+    // counts only: the machine-readable record lives in `usage.retrieval.compiler`.
+    const enumerate = (entries: string[]): string => terseGaps ? ''
+      : `：${entries.slice(0, 6).map(entry => entry.length > 60 ? `${entry.slice(0, 59)}…` : entry).join('、')}${entries.length > 6 ? '…' : ''}`;
     if (downgraded.length) {
-      downgradeGap.message = `${downgraded.length} 条证据因预算降级交付（未整条丢弃）：${downgraded.slice(0, 12).join('、')}${downgraded.length > 12 ? '…' : ''}`;
+      downgradeGap.message = `${downgraded.length} 条证据未以全文交付（按召回粒度与预算渲染，未整条丢弃）${enumerate(downgraded)}`;
       if (!packet.gaps.includes(downgradeGap)) packet.gaps.push(downgradeGap);
     }
     if (omitted.length) {
-      omittedGap.message = `${omitted.length} 项内容因内容上限未交付：${omitted.slice(0, 12).join('、')}${omitted.length > 12 ? '…' : ''}`;
+      omittedGap.message = `${omitted.length} 项内容因内容上限未交付${enumerate(omitted)}`;
       if (!packet.gaps.includes(omittedGap)) packet.gaps.push(omittedGap);
     }
   };
@@ -341,26 +423,41 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
   packet.markdown = formatContextMarkdown(packet);
   let tokens = contextTokenCount(packet.markdown);
   let repaired = 0;
-  while (Number.isFinite(maxTokens) && tokens > maxTokens && repaired < 24) {
+  // The repair loop may only touch evidence, declarations and relations, and each
+  // of them can need up to one step per render level plus a removal. A fixed step
+  // cap silently gives up on large deliveries, so the cap scales with them.
+  const repairLimit = 8 + 5 * packet.evidence.length + (packet.declarations?.length ?? 0) + packet.relations.length;
+  while (Number.isFinite(maxTokens) && tokens > maxTokens && repaired < repairLimit) {
     const last = packet.evidence.at(-1);
     if (last) {
-      if (last.renderLevel === 'signature') { packet.evidence.pop(); omitted.push(last.name); }
-      else {
-        const step = renderLevels.indexOf(last.renderLevel ?? 'full');
-        const nextLevel: RenderLevel = renderLevels[Math.min(step + 1, renderLevels.length - 1)] ?? 'signature';
-        const content = rendering(last, nextLevel);
-        if (content !== null) { packet.evidence[packet.evidence.length - 1] = withLevel(last, nextLevel, content); downgraded.push(`${last.name}→${nextLevel}(repair)`); }
-        else { packet.evidence.pop(); omitted.push(last.name); }
-      }
+      const step = renderLevels.indexOf(last.renderLevel ?? 'full');
+      const original = originals.get(last.evidenceId) ?? last;
+      const nextLevel: RenderLevel = renderLevels[Math.min(step + 1, renderLevels.length - 1)] ?? 'signature';
+      // Repair must make real progress. A compacted rendering of the *original*
+      // excerpt can be larger than the window currently delivered (a declaration
+      // skeleton is bigger than a slice of it), so only a strictly smaller
+      // rendering is applied, and an excerpt that cannot shrink is dropped and
+      // recorded instead of being retried until the step cap runs out.
+      const window = nextLevel === 'region'
+        ? regionOf(original, terms, Math.max(200, Math.round(contextTokenCount(last.content) * 0.6 * CHARS_PER_TOKEN)), 3)
+        : null;
+      const content = nextLevel === 'region' ? window?.content ?? null : rendering(original, nextLevel);
+      if (content !== null && contextTokenCount(content) < contextTokenCount(last.content)) {
+        packet.evidence[packet.evidence.length - 1] = withLevel(original, nextLevel, content, window?.sourceRange);
+      } else { packet.evidence.pop(); omitted.push(last.name); }
     } else if (packet.relations.length) packet.relations.pop();
     else if (packet.declarations?.length) { packet.declarations.pop(); omitted.push('declaration'); }
+    // Nothing left to trim but the diagnostic lists themselves: they are the last
+    // metadata that can be given up, and only their names, never their counts.
+    else if (!terseGaps) terseGaps = true;
     else break;
     repaired += 1;
+    resyncLevels();
     refreshGaps();
     packet.markdown = formatContextMarkdown(packet);
     tokens = contextTokenCount(packet.markdown);
   }
-  if (Number.isFinite(maxTokens) && tokens > maxTokens) throw new Error('The token budget is too small for the task and snapshot metadata.');
+  if (Number.isFinite(maxTokens) && tokens > maxTokens) throw new Error(`The token budget is too small for the task and snapshot metadata (tokens=${tokens}, maxTokens=${maxTokens}, framing=${framingTokens}, evidence=${packet.evidence.length}, declarations=${packet.declarations?.length ?? 0}, relations=${packet.relations.length}, gaps=${packet.gaps.length}, repairs=${repaired}).`);
 
   const codeTokens = packet.evidence.reduce((sum, item) => sum + contentTokens(item), 0);
   const prior = (input as { usage?: ContextPacket['usage'] }).usage?.retrieval;

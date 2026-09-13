@@ -46,6 +46,13 @@ export interface TaskContextEvidence extends RepositoryRevisionScope {
   /** How much of the declaration body this excerpt carries. Absent means full; `region` is a verbatim contiguous slice carrying its own source range. */
   renderLevel?: 'full' | 'region' | 'skeleton' | 'signature';
   symbolKey?: string;
+  /**
+   * Recall granularity that produced this excerpt. A concrete source-fragment
+   * hit points at matched lines, a symbol hit only at a declaration, and a
+   * summary/module hit at a node. The compiler derives the excerpt's default
+   * render level from it and spends the remaining budget on depth.
+   */
+  recallChannel?: 'symbol' | 'source-fragment' | 'summary' | 'module' | 'dependency' | 'configuration';
 }
 export interface TaskRetrievalGap { code: string; message: string; repositoryId?: string; relativePath?: string }
 /** Indexed signatures, not verbatim source excerpts. The range locates the original declaration. */

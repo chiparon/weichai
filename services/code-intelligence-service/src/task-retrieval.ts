@@ -269,7 +269,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     const seeds: Array<{ scope: TaskRetrievalScope; symbol: SymbolRecord }> = [];
     for (const hit of selected.filter((candidate) => candidate.symbol)) {
       signal.throwIfAborted();
-      await this.readEvidence(hit.scope, hit.symbol!.relativePath, hit.symbol, 'implementation', hit.result.reason, evidence, gaps, signal);
+      await this.readEvidence(hit.scope, hit.symbol!.relativePath, hit.symbol, 'implementation', hit.result.reason, evidence, gaps, signal, hit.sourceRange ? 'source-fragment' : 'symbol');
       seeds.push({ scope: hit.scope, symbol: hit.symbol! });
     }
     for (const hit of selected) {
@@ -282,17 +282,17 @@ export class TaskRetrievalService implements TaskRetrievalPort {
         const representatives = symbols.filter((symbol, index) => symbols.findIndex((candidate) => candidate.relativePath === symbol.relativePath) === index).slice(0, 3);
         for (const symbol of representatives) {
           this.assertSymbol(hit.scope, symbol);
-          await this.readEvidence(hit.scope, symbol.relativePath, symbol, 'implementation', `Representative implementation within ${hit.module.name}.`, evidence, gaps, signal);
+          await this.readEvidence(hit.scope, symbol.relativePath, symbol, 'implementation', `Representative implementation within ${hit.module.name}.`, evidence, gaps, signal, 'module');
           seeds.push({ scope: hit.scope, symbol });
         }
-        if (!representatives.length) for (const path of hit.modulePaths!.slice(0, 2)) await this.readEvidence(hit.scope, path, undefined, 'implementation', `Indexed source within ${hit.module.name}.`, evidence, gaps, signal);
+        if (!representatives.length) for (const path of hit.modulePaths!.slice(0, 2)) await this.readEvidence(hit.scope, path, undefined, 'implementation', `Indexed source within ${hit.module.name}.`, evidence, gaps, signal, 'module');
         if (hit.modulePathsTruncated || hit.modulePaths!.length > representatives.length || symbols.length > representatives.length || found.truncated || exact.truncated) gaps.push({ code: 'MODULE_CONTEXT_PARTIAL', message: `Only bounded representative implementation excerpts from ${hit.module.name} were included; this is not its complete source subtree.`, repositoryId: hit.scope.repositoryId });
       }
     }
     await this.expandContext(seeds, evidence, declarations, relations, gaps, signal);
     for (const scope of [...new Map(selected.filter((hit) => hit.scope.projectId).map((hit) => [key(hit.scope), hit.scope])).values()]) {
       const project = await this.store.getProject(scope, scope.projectId!, signal);
-      for (const path of project?.manifestPaths ?? []) await this.readEvidence(scope, path, undefined, 'configuration', 'Project build and dependency configuration.', evidence, gaps, signal);
+      for (const path of project?.manifestPaths ?? []) await this.readEvidence(scope, path, undefined, 'configuration', 'Project build and dependency configuration.', evidence, gaps, signal, 'configuration');
     }
     for (const snapshot of snapshots) {
       const revision = await this.store.getRevision(snapshot, signal);
@@ -405,17 +405,17 @@ export class TaskRetrievalService implements TaskRetrievalPort {
                 continue;
               }
               queued.add(targetId);
-              await this.readEvidence(scope, target.relativePath, target, 'dependency', reason, evidence, gaps, signal);
+              await this.readEvidence(scope, target.relativePath, target, 'dependency', reason, evidence, gaps, signal, 'dependency');
               queue.push({ scope, symbol: target });
             }
-          } else await this.readEvidence(scope, target.relativePath, target, 'interface', reason, evidence, gaps, signal);
+          } else await this.readEvidence(scope, target.relativePath, target, 'interface', reason, evidence, gaps, signal, 'symbol');
         }
       }
     }
   }
 
   private async readEvidence(scope: TaskRetrievalScope, path: string, symbol: SymbolRecord | undefined, role: TaskContextEvidence['role'], reason: string,
-    output: TaskContextEvidence[], gaps: TaskRetrievalGap[], signal: AbortSignal): Promise<void> {
+    output: TaskContextEvidence[], gaps: TaskRetrievalGap[], signal: AbortSignal, recallChannel?: TaskContextEvidence['recallChannel']): Promise<void> {
     signal.throwIfAborted();
     const range = symbol?.sourceRange;
     const evidenceId = `source-${id([scope.repositoryId, scope.analysisRevision, path, JSON.stringify(range ?? null)])}`;
@@ -441,6 +441,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     output.push({ ...scope, evidenceId, role, name: symbol?.qualifiedName ?? path, relativePath: path, sourceRange: source.sourceRange,
       contentHash: sourceContentHash(source.text), fileHash: source.file.sha256, content: source.text, reason,
       provider: symbol?.provider ?? 'tree-sitter', evidenceLevel: symbol?.evidenceLevel ?? 'structural', truncated: source.truncated,
+      ...(recallChannel ? { recallChannel } : {}),
       ...(symbol ? { symbolKey: symbol.symbolKey } : {}) });
   }
 }

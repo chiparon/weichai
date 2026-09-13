@@ -50,7 +50,10 @@ tmp/
 # Competition / defense material (large binaries, archived outside git)
 docs/PPT/
 docs/instruction/
-docs/产业赛道-*/
+docs/产业赛道-*
+
+# Development logs (experiment evidence under logs/experiments/ is tracked explicitly)
+logs/
 
 # LaTeX build intermediates
 *.aux

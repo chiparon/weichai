@@ -92,8 +92,15 @@ describe("single-session Host runtime controls", () => {
         code: ++calls < 3 ? "EPERM" : "ESRCH",
       });
     });
-    await expect(stopRegisteredCommands(path)).resolves.toBeUndefined();
-    expect(calls).toBeGreaterThanOrEqual(3);
+    // 该断言针对 POSIX 进程组分支;win32 走 taskkill,这里固定为 POSIX 语义。
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await expect(stopRegisteredCommands(path)).resolves.toBeUndefined();
+      expect(calls).toBeGreaterThanOrEqual(3);
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+    }
   });
   it("never treats persistent permission errors as confirmed process cleanup", async () => {
     const f = fixture();
@@ -103,6 +110,9 @@ describe("single-session Host runtime controls", () => {
       throw Object.assign(new Error("denied"), { code: "EPERM" });
     });
     vi.useFakeTimers();
+    // 该断言针对 POSIX 进程组分支;win32 走 taskkill,这里固定为 POSIX 语义。
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux" });
     try {
       const result = expect(stopRegisteredCommands(path)).rejects.toThrow(
         "cleanup could not be confirmed",
@@ -110,6 +120,7 @@ describe("single-session Host runtime controls", () => {
       await vi.advanceTimersByTimeAsync(2010);
       await result;
     } finally {
+      Object.defineProperty(process, "platform", descriptor);
       vi.useRealTimers();
     }
   });

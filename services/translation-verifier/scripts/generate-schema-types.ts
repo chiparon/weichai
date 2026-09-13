@@ -23,7 +23,11 @@ if (process.argv.includes("--check")) {
       throw error;
     },
   );
-  if (existing !== declaration) {
+  // Normalize line endings: the repo stores LF, but Windows checkouts with
+  // core.autocrlf=true read CRLF, so a byte-for-byte comparison reports a false
+  // "stale" mismatch. Compare semantically instead.
+  const normalize = (value: string) => value.replace(/\r\n/g, "\n");
+  if (existing === undefined || normalize(existing) !== normalize(declaration)) {
     throw new Error(
       "Verifier schema types are stale. Run npm run generate:schema-types --workspace @forexplore/translation-verifier.",
     );

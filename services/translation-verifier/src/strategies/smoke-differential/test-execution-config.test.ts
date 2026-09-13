@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   packageRoot,
@@ -7,7 +7,8 @@ import {
 
 describe("smoke helper paths", () => {
   it("resolves package and verifier-command paths", () => {
-    expect(packageRoot.endsWith("services/translation-verifier")).toBe(true);
+    expect(basename(packageRoot)).toBe("translation-verifier");
+    expect(basename(dirname(packageRoot))).toBe("services");
     expect(VERIFIER_COMMAND_ENTRY).toBe(
       join(
         packageRoot,

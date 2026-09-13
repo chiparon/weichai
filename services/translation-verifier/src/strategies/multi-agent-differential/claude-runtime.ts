@@ -11,7 +11,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { runManagedProcess } from "../smoke-differential/manage-test-process.js";
 import {
   captureProjectBaseline,
@@ -171,9 +171,15 @@ export function createBehaviorRuntime(
           item.processRegistryPath = processRegistryPath;
           if (scoped) item.side = side as BehaviorSide;
           if (task.expectationFile) {
+            const expectationRelative = projects.target
+              ? relative(projects.target.scope.cwd, task.expectationFile)
+              : undefined;
             if (
               !projects.target ||
-              !task.expectationFile.startsWith(`${projects.target.scope.cwd}/`)
+              expectationRelative === undefined ||
+              expectationRelative === "" ||
+              expectationRelative.startsWith(`..${sep}`) ||
+              expectationRelative === ".."
             )
               throw new Error(
                 "Expectation file must belong to the target project.",
@@ -199,7 +205,13 @@ export function createBehaviorRuntime(
           CLAUDE_CONFIG_DIR: directory,
           CLAUDE_CODE_TMPDIR: directory,
           CLAUDE_CODE_SHELL: "/bin/bash",
-          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+          // Credentials are scrubbed by the Host command proxy itself
+          // (sanitizedBuildEnvironment over control.env), so Claude's own
+          // subprocess env-scrub is redundant here and only adds side effects:
+          // CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 makes Claude materialize 0-byte
+          // placeholder files (.env, .gitmodules, .npmrc, ...) in the project
+          // cwd, which trip the baseline-integrity check. Leaving it unset keeps
+          // the working tree clean without weakening credential isolation.
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1",

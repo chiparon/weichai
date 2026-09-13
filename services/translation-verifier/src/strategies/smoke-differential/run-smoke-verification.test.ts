@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SpawnClaude } from "./claude-session.js";
 import { SmokeVerificationError } from "./smoke-errors.js";
@@ -342,7 +342,7 @@ describe("runSmoke verify-only prepared fixtures", () => {
       // 内部暂存布局:claude cwd = agent 目录。
       const cwd = h.cwd();
       expect(cwd).toBeTruthy();
-      expect(cwd).toMatch(/\/agent$/);
+      expect(basename(cwd)).toBe("agent");
       const { args, options, env } = h.lastCall();
       expect(args[1]).toContain("REPORT CONTRACT");
       expect(args[1]).toContain("EXECUTION CONTEXT");

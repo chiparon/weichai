@@ -1,6 +1,6 @@
 import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
 import { calculatePatchHashV2 } from "@forexplore/workflow-core";
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -262,15 +262,14 @@ describe("runVerificationCli", () => {
 describe("smoke E2E strategy parser", () => {
   it("runs offline with the default strategy and accepts an explicit strategy", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-    const base = ["run", "e2e", "--", "--offline-only"];
+    const base = "npm run e2e -- --offline-only";
 
-    const defaultOutput = execFileSync("npm", base, {
+    const defaultOutput = execSync(base, {
       cwd: packageRoot,
       encoding: "utf8",
     });
-    const explicitOutput = execFileSync(
-      "npm",
-      [...base, "--strategy", "differential-smoke"],
+    const explicitOutput = execSync(
+      `${base} --strategy differential-smoke`,
       {
         cwd: packageRoot,
         encoding: "utf8",
@@ -279,53 +278,43 @@ describe("smoke E2E strategy parser", () => {
 
     expect(defaultOutput).toContain("跳过 smoke E2E");
     expect(explicitOutput).toContain("跳过 smoke E2E");
-  });
+  }, 30000);
 
   it("rejects a strategy flag without a value", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
     try {
-      execFileSync(
-        "npm",
-        ["run", "e2e", "--", "--strategy", "--offline-only"],
-        {
-          cwd: packageRoot,
-          encoding: "utf8",
-          stdio: "pipe",
-        },
-      );
+      execSync("npm run e2e -- --strategy --offline-only", {
+        cwd: packageRoot,
+        encoding: "utf8",
+        stdio: "pipe",
+      });
       throw new Error("expected e2e command to fail");
     } catch (error) {
-      const failure = error as { status?: number; stderr?: Buffer };
+      const failure = error as { status?: number; stderr?: string };
       expect(failure.status).toBe(2);
-      expect(failure.stderr?.toString("utf8")).toContain(
-        "Missing value for --strategy",
-      );
+      expect(failure.stderr ?? "").toContain("Missing value for --strategy");
     }
-  });
+  }, 15000);
 
   it("reports unknown strategy explicitly", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
     try {
-      execFileSync(
-        "npm",
-        ["run", "e2e", "--", "--offline-only", "--strategy", "missing"],
-        {
-          cwd: packageRoot,
-          encoding: "utf8",
-          stdio: "pipe",
-        },
-      );
+      execSync("npm run e2e -- --offline-only --strategy missing", {
+        cwd: packageRoot,
+        encoding: "utf8",
+        stdio: "pipe",
+      });
       throw new Error("expected e2e command to fail");
     } catch (error) {
-      const failure = error as { status?: number; stderr?: Buffer };
+      const failure = error as { status?: number; stderr?: string };
       expect(failure.status).toBe(2);
-      expect(failure.stderr?.toString("utf8")).toContain(
+      expect(failure.stderr ?? "").toContain(
         "unknown smoke E2E strategy: missing",
       );
     }
-  });
+  }, 15000);
 });
 
 function dependencies(

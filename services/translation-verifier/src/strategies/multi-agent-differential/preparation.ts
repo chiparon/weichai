@@ -119,10 +119,12 @@ export function restorePreparationFiles(
       (file.mode & 0o7000) !== 0
     )
       throw new Error("Invalid preparation handoff file.");
-    const parts = file.path.split("/");
+    const normalizedPath =
+      process.platform === "win32" ? file.path.replace(/\\/g, "/") : file.path;
+    const parts = normalizedPath.split("/");
     if (
       isAbsolute(file.path) ||
-      file.path.includes("\\") ||
+      normalizedPath.includes("\\") ||
       parts.some((part) => !part || part === "." || part === "..")
     )
       throw new Error("Unsafe preparation file path.");

@@ -301,7 +301,8 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     signal.throwIfAborted();
     const compileStarted = performance.now();
     const packet = compileTaskContext(request, { snapshots, routing, results: selected.map((hit) => hit.result), evidence, declarations, relations,
-      gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()].slice(0, 32), status: unavailable ? 'unavailable' : 'complete' }, Math.round(performance.now() - started));
+      gaps: [...new Map(gaps.map((gap) => [JSON.stringify(gap), gap])).values()].slice(0, 32), status: unavailable ? 'unavailable' : 'complete' }, Math.round(performance.now() - started),
+      { queryTerms: expansion?.terms ?? [] });
     signal.throwIfAborted();
     const sourceBytesRead = evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);
     const sourceBytesDelivered = packet.evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);

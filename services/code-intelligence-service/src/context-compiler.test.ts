@@ -33,7 +33,8 @@ describe('adaptive context compiler', () => {
     const adaptive = compile(items, { budget: { maxTokens: 256 } });
     expect(adaptive.usage.tokens).toBeLessThanOrEqual(256);
     expect(adaptive.evidence.length).toBeGreaterThan(0);
-    expect(adaptive.evidence.every(item => item.renderLevel === 'signature' || item.renderLevel === 'skeleton')).toBe(true);
+    expect(adaptive.evidence.every(item => ['region', 'skeleton', 'signature'].includes(item.renderLevel ?? 'full'))).toBe(true);
+    expect(adaptive.evidence.some(item => item.renderLevel !== undefined)).toBe(true);
     const legacy = compile(items, { budget: { maxTokens: 256 } }, 'legacy');
     expect(legacy.evidence).toHaveLength(0);
   });
@@ -43,7 +44,7 @@ describe('adaptive context compiler', () => {
     const huge = packet.evidence.find(item => item.name === 'huge');
     expect(huge).toBeDefined();
     expect(huge?.renderLevel).toBeDefined();
-    expect(['skeleton', 'signature']).toContain(huge?.renderLevel);
+    expect(['region', 'skeleton', 'signature']).toContain(huge?.renderLevel);
     expect(packet.gaps.some(gap => gap.code === 'CONTEXT_EVIDENCE_DOWNGRADED')).toBe(true);
     expect(packet.gaps.find(gap => gap.code === 'CONTEXT_EVIDENCE_DOWNGRADED')?.message).toContain('huge');
   });

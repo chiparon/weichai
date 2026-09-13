@@ -8,8 +8,13 @@ export function contextTokenCount(text: string): number { return tokenizer.encod
 type ContextInput = Omit<ContextPacket, 'packetId' | 'requestId' | 'requirement' | 'markdown' | 'usage'>;
 const priority = { implementation: 0, interface: 1, dependency: 2, configuration: 3 };
 /** Rendering levels tried in order; the highest level that fits the budget wins. */
-export type RenderLevel = 'full' | 'skeleton' | 'signature';
-const renderLevels: readonly RenderLevel[] = ['full', 'skeleton', 'signature'];
+export type RenderLevel = 'full' | 'region' | 'skeleton' | 'signature';
+const renderLevels: readonly RenderLevel[] = ['full', 'region', 'skeleton', 'signature'];
+/** Cap on the share of the budget that indexed declaration signatures may take. */
+const DECLARATION_BUDGET_SHARE = 0.2;
+const DECLARATION_MEMBER_LIMIT = 12;
+/** Rough characters per token, used only to size a region window before exact accounting. */
+const CHARS_PER_TOKEN = 3.6;
 /** Structural keywords that survive skeletonisation; everything else in a long run is elided. */
 const structural = /^(?:[{}()[\];,]+|[}\])].*|.*\b(?:if|else|for|while|do|switch|case|default|try|catch|finally|throw|throws|return|await|yield|break|continue|new|extends|implements|interface|class|enum|struct|func|function|=>)\b.*)$/;
 const SKELETON_MIN_LINES = 14;
@@ -56,20 +61,67 @@ export function signatureOf(content: string): string | null {
   return signature.length < content.length * 0.6 ? `${signature}\n… 仅签名，正文省略 …` : null;
 }
 
+/**
+ * Verbatim contiguous window of an oversized declaration, re-ranged to its own
+ * source lines. Unlike skeleton/signature this stays byte-exact source text, so
+ * consumers can still verify it against the checkout; it just covers less than
+ * the whole declaration. The window grows outwards from the line that best
+ * matches the query terms, falling back to the declaration head.
+ */
+export function regionOf(item: TaskContextEvidence, terms: readonly string[], budgetChars: number): { content: string; sourceRange: TaskContextEvidence['sourceRange'] } | null {
+  const lines = item.content.split('\n');
+  if (lines.length < 6 || budgetChars < 200) return null;
+  const needles = [...new Set(terms.map((term) => term.toLowerCase()).filter((term) => term.length >= 3))];
+  let best = 0;
+  let bestScore = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const lowered = lines[index]!.toLowerCase();
+    const value = needles.reduce((total, needle) => total + (lowered.includes(needle) ? 1 : 0), 0);
+    if (value > bestScore) { bestScore = value; best = index; }
+  }
+  let start = best;
+  let end = best;
+  let size = lines[best]!.length + 1;
+  while ((start > 0 || end < lines.length - 1) && size < budgetChars) {
+    const growStart = start > 0 ? lines[start - 1]!.length + 1 : Number.POSITIVE_INFINITY;
+    const growEnd = end < lines.length - 1 ? lines[end + 1]!.length + 1 : Number.POSITIVE_INFINITY;
+    if (growStart <= growEnd && size + growStart <= budgetChars) { start -= 1; size += growStart; }
+    else if (size + growEnd <= budgetChars) { end += 1; size += growEnd; }
+    else break;
+  }
+  if (end - start + 1 >= lines.length) return null;
+  const base = item.sourceRange.startLine;
+  return {
+    content: lines.slice(start, end + 1).join('\n'),
+    sourceRange: {
+      startLine: base + start,
+      startColumn: start === 0 ? item.sourceRange.startColumn : 1,
+      endLine: base + end,
+      endColumn: end === lines.length - 1 ? item.sourceRange.endColumn : lines[end]!.length + 1,
+    },
+  };
+}
+
 function rendering(item: TaskContextEvidence, level: RenderLevel): string | null {
   if (level === 'full') return item.content;
   if (level === 'skeleton') return skeletonize(item.content);
   return signatureOf(item.content);
 }
 
-function withLevel(item: TaskContextEvidence, level: RenderLevel, content: string): TaskContextEvidence {
+function withLevel(item: TaskContextEvidence, level: RenderLevel, content: string, sourceRange?: TaskContextEvidence['sourceRange']): TaskContextEvidence {
   if (level === 'full') return item;
-  // A downgraded excerpt is no longer verbatim source: it carries its own hash
-  // and is flagged as truncated so consumers never treat it as the full body.
+  if (level === 'region') {
+    // A narrower window of the declaration: the delivered slice carries its own
+    // hash and range, and stays flagged truncated because it is not the whole
+    // declaration a consumer may have been promised.
+    return { ...item, content, contentHash: sourceContentHash(content), truncated: true, renderLevel: level, ...(sourceRange ? { sourceRange } : {}) };
+  }
+  // A skeleton/signature excerpt is no longer verbatim source: it carries its own
+  // hash and is flagged as truncated so consumers never treat it as the full body.
   return { ...item, content, contentHash: sourceContentHash(content), truncated: true, renderLevel: level };
 }
 
-interface CompileOptions { mode?: 'adaptive' | 'legacy' }
+interface CompileOptions { mode?: 'adaptive' | 'legacy'; queryTerms?: readonly string[] }
 
 /**
  * Adaptive context compiler.
@@ -81,7 +133,7 @@ interface CompileOptions { mode?: 'adaptive' | 'legacy' }
  *    dropped, and every downgrade/omission is recorded in `gaps`;
  *  - the ranked primary results are never removed to make room for evidence.
  */
-export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input: ContextInput, latencyMs: number): ContextPacket {
+export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input: ContextInput, latencyMs: number, options: CompileOptions = {}): ContextPacket {
   const maxTokens = request.budget.maxTokens ?? Infinity;
   const maxFiles = request.budget.maxFiles ?? Infinity;
   const maxLines = request.budget.maxSourceLines ?? Infinity;
@@ -126,16 +178,25 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
     if (framingTokens > maxTokens * 0.5) packet.gaps.push(metadataGap);
   }
 
-  const levels: Record<RenderLevel, number> = { full: 0, skeleton: 0, signature: 0 };
+  const levels: Record<RenderLevel, number> = { full: 0, region: 0, skeleton: 0, signature: 0 };
+  const terms = options.queryTerms ?? [];
   let extraTokens = 0;
   const budgetUsed = (): number => framingTokens + extraTokens + evidenceCost();
   for (const item of candidates) {
     if (packet.evidence.some(previous => contained(item, previous))) continue;
     let placed = false;
     for (const level of renderLevels) {
-      const content = rendering(item, level);
+      let content: string | null;
+      let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
+      if (level === 'region') {
+        const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed()) : Number.POSITIVE_INFINITY;
+        const window = regionOf(item, terms, Math.round(remaining * CHARS_PER_TOKEN));
+        if (!window) continue;
+        content = window.content;
+        sourceRange = window.sourceRange;
+      } else content = rendering(item, level);
       if (content === null) continue;
-      const rendered = withLevel(item, level, content);
+      const rendered = withLevel(item, level, content, sourceRange);
       const trial = [...packet.evidence.filter(selected => priority[item.role] > priority[selected.role] || !contained(selected, rendered)), rendered];
       const trialFiles = new Set(trial.map(entry => `${entry.repositoryId}\0${entry.analysisRevision}\0${entry.relativePath}`));
       if (trialFiles.size > maxFiles || trial.reduce((sum, entry) => sum + lineCount(entry), 0) > maxLines) continue;
@@ -155,17 +216,27 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
   }
 
   const declSet = new Set<string>();
+  const declarationCap = Number.isFinite(maxTokens) ? maxTokens * DECLARATION_BUDGET_SHARE : Number.POSITIVE_INFINITY;
+  let declarationTokens = 0;
   for (const item of input.declarations ?? []) {
+    if (declarationTokens >= declarationCap) { omitted.push(item.name); continue; }
     const identity = `${item.repositoryId}\0${item.analysisRevision}\0${item.symbolKey}`;
     if (declSet.has(identity) || [...packet.evidence, ...knownRanges].some(source => source.repositoryId === item.repositoryId && source.analysisRevision === item.analysisRevision &&
       source.relativePath === item.relativePath && !source.truncated && (source.symbolKey === item.symbolKey ||
         contained({ ...source, sourceRange: item.sourceRange }, source)))) continue;
     declSet.add(identity);
-    packet.declarations!.push(item);
-    const cost = contextTokenCount(`### ${item.name}\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}\nIndexed declaration signatures; implementation bodies are not included.\n${item.reason}\n\n${item.signature}`);
-    const trialFiles = new Set([...packet.evidence, ...packet.declarations!].map(entry => `${entry.repositoryId}\0${entry.analysisRevision}\0${entry.relativePath}`));
-    if (trialFiles.size > maxFiles || Number.isFinite(maxTokens) && budgetUsed() + cost > maxTokens) { packet.declarations!.pop(); omitted.push(item.name); continue; }
+    // Signature outlines are supporting material: keep their heads bounded.
+    const signatureLines = item.signature.split('\n');
+    const entry = signatureLines.length > DECLARATION_MEMBER_LIMIT + 1
+      ? { ...item, signature: [...signatureLines.slice(0, DECLARATION_MEMBER_LIMIT + 1), `… 另有 ${signatureLines.length - DECLARATION_MEMBER_LIMIT - 1} 个成员签名省略 …`].join('\n') }
+      : item;
+    packet.declarations!.push(entry);
+    const cost = contextTokenCount(`### ${entry.name}\n${entry.repositoryId}@${entry.analysisRevision}:${entry.relativePath}:${entry.sourceRange.startLine}\nIndexed declaration signatures; implementation bodies are not included.\n${entry.reason}\n\n${entry.signature}`);
+    const trialFiles = new Set([...packet.evidence, ...packet.declarations!].map(entryItem => `${entryItem.repositoryId}\0${entryItem.analysisRevision}\0${entryItem.relativePath}`));
+    if (trialFiles.size > maxFiles || Number.isFinite(maxTokens) && budgetUsed() + cost > maxTokens ||
+      declarationTokens + cost > declarationCap) { packet.declarations!.pop(); omitted.push(item.name); continue; }
     extraTokens += cost;
+    declarationTokens += cost;
   }
   for (const edge of input.relations) {
     packet.relations.push(edge);
@@ -197,7 +268,8 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
     if (last) {
       if (last.renderLevel === 'signature') { packet.evidence.pop(); omitted.push(last.name); }
       else {
-        const nextLevel: RenderLevel = last.renderLevel === 'skeleton' ? 'signature' : 'skeleton';
+        const step = renderLevels.indexOf(last.renderLevel ?? 'full');
+        const nextLevel: RenderLevel = renderLevels[Math.min(step + 1, renderLevels.length - 1)] ?? 'signature';
         const content = rendering(last, nextLevel);
         if (content !== null) { packet.evidence[packet.evidence.length - 1] = withLevel(last, nextLevel, content); downgraded.push(`${last.name}→${nextLevel}(repair)`); }
         else { packet.evidence.pop(); omitted.push(last.name); }
@@ -285,7 +357,7 @@ export function compileTaskContextLegacy(request: TaskRetrievalRequest, input: C
 /** Dispatches on RECAST_CONTEXT_COMPILER (default: adaptive). */
 export function compileTaskContext(request: TaskRetrievalRequest, input: ContextInput, latencyMs: number, options: CompileOptions = {}): ContextPacket {
   const mode = options.mode ?? (process.env.RECAST_CONTEXT_COMPILER?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'adaptive');
-  return mode === 'legacy' ? compileTaskContextLegacy(request, input, latencyMs) : compileTaskContextAdaptive(request, input, latencyMs);
+  return mode === 'legacy' ? compileTaskContextLegacy(request, input, latencyMs) : compileTaskContextAdaptive(request, input, latencyMs, options);
 }
 
 export function sourceContentHash(text: string): string { return createHash('sha256').update(text).digest('hex'); }

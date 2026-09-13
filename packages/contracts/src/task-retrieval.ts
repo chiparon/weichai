@@ -43,8 +43,8 @@ export interface TaskContextEvidence extends RepositoryRevisionScope {
   provider: EvidenceProvider;
   evidenceLevel: EvidenceLevel;
   truncated: boolean;
-  /** How much of the declaration body this excerpt carries. Absent means full. */
-  renderLevel?: 'full' | 'skeleton' | 'signature';
+  /** How much of the declaration body this excerpt carries. Absent means full; `region` is a verbatim contiguous slice carrying its own source range. */
+  renderLevel?: 'full' | 'region' | 'skeleton' | 'signature';
   symbolKey?: string;
 }
 export interface TaskRetrievalGap { code: string; message: string; repositoryId?: string; relativePath?: string }

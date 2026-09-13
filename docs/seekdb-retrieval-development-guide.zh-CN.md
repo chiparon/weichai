@@ -1,5 +1,11 @@
 # 工作区、代码索引、SeekDB 检索与适配开发总览
 
+> **历史文档（2026-09-12 标注）**：本文描述的是 `web/` 独立原型时期的接线方式。
+> 该原型及其 `mock-adapters`、`seekdb-adapter`、`workspace-adapters` 三个包已于
+> 2026-09-12 删除，前端全部迁移到 VS Code 扩展。文中 `web/src/main.tsx` 等文件路径
+> 均已不存在，**不可照抄执行**；保留本文仅作检索/索引/适配服务的历史设计参考。
+> 当前入口见 [`docs/task-code-context-implementation.zh-CN.md`](task-code-context-implementation.zh-CN.md)。
+
 本文档以 2026-07-25 的最新 `upstream/main`（`851df04`）为准，覆盖 SeekDB
 检索、工作区目标、独立代码索引器和 Java→C# 适配流水线的实现与后续集成，
 面向需要继续开发、调试或替换实现的同事。

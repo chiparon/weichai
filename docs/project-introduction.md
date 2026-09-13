@@ -178,14 +178,17 @@ ForeXplore 支持四种适配策略：
 
 ## 8. 架构边界
 
+> 说明（2026-09-12）：早期独立的 `web` 原型与 `packages/mock-adapters` 已删除，
+> 前端交互现由 VS Code 扩展承载（`apps/vscode-extension`）。
+
 ```text
-web
+apps/vscode-extension
         |
         v
 packages/workflow-core ----> packages/contracts
         ^                            ^
         |                            |
-packages/mock-adapters        production adapters
+ 宿主提供的端口               production adapters
                                      |
               +----------------------+----------------------+
               |                      |                      |
@@ -196,10 +199,9 @@ packages/mock-adapters        production adapters
 
 | 模块 | 职责 |
 | --- | --- |
-| `web` | 模块选择、需求输入、候选对比、补丁审阅等 GUI 交互 |
+| `apps/vscode-extension` | 模块选择、需求输入、候选对比、补丁审阅等 GUI 交互 |
 | `packages/contracts` | 检索、候选、适配、补丁和模块符号的共享类型 |
 | `packages/workflow-core` | 工作流状态、状态转换和能力端口 |
-| `packages/mock-adapters` | 用于演示完整链路的静态数据和 Mock 实现 |
 | `services/code-indexer` | 仓库发现、语言解析、符号和依赖索引 |
 | `services/retrieval-service` | 多路召回、过滤、重排与 Top-K 返回 |
 | `services/adaptation-service` | 翻译、桥接、接口映射、补丁生成和验证 |

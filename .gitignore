@@ -24,9 +24,6 @@ coverage/
 
 # Editor and operating-system files
 .vscode/
-!web/.vscode/
-!web/.vscode/launch.json
-!web/.vscode/tasks.json
 !apps/vscode-extension/.vscode/
 !apps/vscode-extension/.vscode/launch.json
 !apps/vscode-extension/.vscode/tasks.json

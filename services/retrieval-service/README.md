@@ -41,11 +41,12 @@ npm run index:corpus --workspace @forexplore/retrieval-service -- --replace
 npm run dev:retrieval
 ```
 
-In another terminal:
+In another terminal, start the browser workbench (the former standalone web
+prototype was removed on 2026-09-12; both product chains now run in the VS Code
+extension and this workbench):
 
 ```text
-copy apps\workflow-web\.env.example apps\workflow-web\.env
-npm run dev:web
+npm run dev:code-workbench -- --target <target-repo> --reference <reference-repo>
 ```
 
 The service listens on `http://127.0.0.1:8787` by default. Check both layers:

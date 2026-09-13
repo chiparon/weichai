@@ -98,7 +98,6 @@ npm run build:code-intelligence
 npm run build:adaptation
 npm run typecheck --workspace forexplore-vscode
 npm run build
-npm run build:web
 ```
 
 ## 未由本次测试证明的范围

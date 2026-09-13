@@ -43,19 +43,21 @@
 
 | 工作区 | 通过 | 跳过 |
 | --- | ---: | ---: |
-| workspace-adapters | 2 | 0 |
 | workflow-core | 35 | 0 |
-| code-indexer | 48 | 0 |
-| seekdb-adapter | 3 | 0 |
+| code-indexer | 50 | 0 |
 | adaptation-http-adapter | 5 | 0 |
 | retrieval-service | 50 | 0 |
-| code-intelligence-service | 157 | 0 |
-| adaptation-service | 192 | 1 |
+| code-intelligence-service | 177 | 0 |
+| adaptation-service | 202 | 1 |
 | adaptation-mcp-server | 7 | 0 |
-| semantic-index-mcp-server | 16 | 0 |
-| workflow-web | 4 | 0 |
-| vscode-extension | 134 | 0 |
-| 合计 | 653 | 1 |
+| semantic-index-mcp-server | 18 | 0 |
+| vscode-extension | 156 | 0 |
+| guochuang 端到端 | 2 | 0 |
+| 合计 | 702 | 1 |
+
+> 上表为 2026-09-12 复测结果（`codex/recast-latest`，含离线词表查询扩展）。原表记录的是
+> 9-09 的 653 项，其中 `workspace-adapters`(2)、`seekdb-adapter`(3)、`workflow-web`(4)
+> 三个工作区随旧 web 原型于 2026-09-12 删除；其余工作区因新增测试而增长。
 
 跳过项是原有 `RUN_DOTNET_INTEGRATION=1` 开关控制的 .NET 集成测试。测试中同时修正了三个与机器或随机身份有关的夹具问题：明确召回同名顶层函数而非随机选到类方法；固定临时 Git 仓库的换行转换；将 Windows 临时短路径转为规范路径。这些修正保留原有产品断言。本次最新代码回归还发现，执行真实 Git worktree 创建与提交的集成用例连续耗时 5.9～6.3 秒，超过默认 5 秒上限；仅将该用例限时设为 15 秒，全部断言保留后通过。上游 `a02e903` 删除了一项旧界面展示测试，因此最新总数比此前的 654 项少 1 项。
 

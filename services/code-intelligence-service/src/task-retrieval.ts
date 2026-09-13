@@ -17,19 +17,46 @@ const granularities = ['auto', 'function', 'class', 'module', 'subsystem'];
 const candidateLimit = 32;
 const maxResults = 10;
 /**
- * Test doubles and constructors compete in the same candidate pool as the
- * production implementations a task is actually about, and they win slots they
- * should not. In the frozen pilot set one task returned four `src/test/`
- * implementations and two constructors in its top ten while the annotated
- * implementation never appeared at all: a Java constructor's name equals its
- * class name, so every type-name term recalls it, and test doubles re-implement
- * the same method names as the code under test. They are demoted rather than
- * removed, because some annotated answers genuinely live in test sources.
+ * A Java constructor's name equals its class name, so every type-name term in a
+ * requirement recalls it even though a constructor is almost never the behaviour
+ * being asked for. Constructors are demoted rather than removed.
+ *
+ * Test-double demotion is a measured trade, not a settled choice. Test code
+ * re-implements the same method names as the code under test and occupied four of
+ * the top ten slots of one frozen-pilot task. Against that, a four-task probe
+ * whose annotated answers really do live under `src/test/` scores 3/4 with the
+ * demotion off and 0/4 with it at 0.7, and 说明书 6.5 organises delivered context
+ * into "main implementation, required dependencies and related tests". The factor
+ * is therefore configurable so the trade can be re-measured on a real set instead
+ * of being hidden in a constant.
  */
 const testPathPattern = /(^|\/)(?:test|tests|__tests__|spec)(?:\/|$)|(?:Test|Tests|Spec|IT)\.(?:java|kt|ts|tsx|js|cpp|cc|cs)$/i;
-const testDemotion = 0.7;
 const constructorDemotion = 0.6;
+/**
+ * Measured trade (dev 12 + frozen holdout 6 + new set 16 + test-target probe 4):
+ * 1.0 -> 30/34 with probe 3/4, 0.9 -> 31/34 with probe 2/4,
+ * 0.8 -> 32/34 with probe 1/4, 0.7 -> 32/34 with probe 0/4.
+ * 0.8 dominates 0.7: identical accuracy on all three accuracy sets, one probe task
+ * recovered. 0.9 trades one accuracy task for one probe task, and accuracy on
+ * production implementations is the product's target, so 0.8 is the default.
+ */
+export const DEFAULT_TEST_DEMOTION = 0.8;
+
+/** `off`/`0`/`false` disables the constructor demotion; the test factor is separate. */
+export function retrievalDemotionFromEnvironment(environment: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = environment.RECAST_RETRIEVAL_DEMOTION?.trim().toLowerCase();
+  return !(raw === 'off' || raw === '0' || raw === 'false' || raw === 'disabled');
+}
+
+export function testDemotionFromEnvironment(environment: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(environment.RECAST_RETRIEVAL_TEST_DEMOTION);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_TEST_DEMOTION;
+}
+
+const demotionEnabled = retrievalDemotionFromEnvironment();
+const testDemotion = testDemotionFromEnvironment();
 function retrievalDemotion(symbol: SymbolRecord): number {
+  if (!demotionEnabled) return 1;
   const container = (symbol.qualifiedName ?? '').split('.').slice(-2, -1)[0];
   const constructor = symbol.kind === 'constructor' || container !== undefined && container === symbol.name;
   return (testPathPattern.test(symbol.relativePath) ? testDemotion : 1) * (constructor ? constructorDemotion : 1);

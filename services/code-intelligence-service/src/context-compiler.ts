@@ -62,42 +62,81 @@ export function signatureOf(content: string): string | null {
 }
 
 /**
- * Verbatim contiguous window of an oversized declaration, re-ranged to its own
- * source lines. Unlike skeleton/signature this stays byte-exact source text, so
- * consumers can still verify it against the checkout; it just covers less than
- * the whole declaration. The window grows outwards from the line that best
- * matches the query terms, falling back to the declaration head.
+ * Verbatim windows of an oversized declaration, re-ranged to their own source
+ * lines. Windows grow outwards from the lines that best match the query terms,
+ * so a task that spans two distant methods (for example a size check and the
+ * exception it throws) can be covered by one excerpt. Everything between
+ * windows is replaced by an explicit elision marker; the excerpt stays flagged
+ * as derived (`truncated`) because it is not the whole declaration.
  */
-export function regionOf(item: TaskContextEvidence, terms: readonly string[], budgetChars: number): { content: string; sourceRange: TaskContextEvidence['sourceRange'] } | null {
+export function regionOf(item: TaskContextEvidence, terms: readonly string[], budgetChars: number, maxRegions = 3): { content: string; sourceRange: TaskContextEvidence['sourceRange']; regions: number } | null {
   const lines = item.content.split('\n');
   if (lines.length < 6 || budgetChars < 200) return null;
   const needles = [...new Set(terms.map((term) => term.toLowerCase()).filter((term) => term.length >= 3))];
-  let best = 0;
-  let bestScore = 0;
-  for (let index = 0; index < lines.length; index += 1) {
+  const score = (index: number): number => {
+    if (!needles.length) return index === 0 ? 1 : 0;
     const lowered = lines[index]!.toLowerCase();
-    const value = needles.reduce((total, needle) => total + (lowered.includes(needle) ? 1 : 0), 0);
-    if (value > bestScore) { bestScore = value; best = index; }
+    return needles.reduce((total, needle) => total + (lowered.includes(needle) ? 1 : 0), 0);
+  };
+  // Seed one window per highest-value line. Lines are ranked by how many query
+  // terms they cover, and seeds are forced apart so an excerpt can span distant
+  // methods (a size check and the exception it throws often live apart).
+  const separation = Math.max(4, Math.floor(lines.length / Math.max(1, maxRegions * 4)));
+  const seeds: number[] = [];
+  const covered = new Set<string>();
+  for (let pass = 0; pass < maxRegions; pass += 1) {
+    let best = -1;
+    let bestScore = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      if (seeds.some((seed) => Math.abs(seed - index) < separation)) continue;
+      const lowered = lines[index]!.toLowerCase();
+      let fresh = 0;
+      let hits = 0;
+      for (const needle of needles) if (lowered.includes(needle)) { hits += 1; if (!covered.has(needle)) fresh += 1; }
+      const value = fresh * 1000 + hits;
+      if (value > bestScore) { bestScore = value; best = index; }
+    }
+    if (best < 0) break;
+    seeds.push(best);
+    const lowered = lines[best]!.toLowerCase();
+    for (const needle of needles) if (lowered.includes(needle)) covered.add(needle);
   }
-  let start = best;
-  let end = best;
-  let size = lines[best]!.length + 1;
-  while ((start > 0 || end < lines.length - 1) && size < budgetChars) {
-    const growStart = start > 0 ? lines[start - 1]!.length + 1 : Number.POSITIVE_INFINITY;
-    const growEnd = end < lines.length - 1 ? lines[end + 1]!.length + 1 : Number.POSITIVE_INFINITY;
-    if (growStart <= growEnd && size + growStart <= budgetChars) { start -= 1; size += growStart; }
-    else if (size + growEnd <= budgetChars) { end += 1; size += growEnd; }
-    else break;
+  if (!seeds.length) seeds.push(0);
+  seeds.sort((left, right) => left - right);
+  const perWindow = Math.max(200, Math.floor(budgetChars / seeds.length));
+  const windows: Array<{ start: number; end: number }> = [];
+  for (const seed of seeds) {
+    let start = seed;
+    let end = seed;
+    let size = lines[seed]!.length + 1;
+    while ((start > 0 || end < lines.length - 1) && size < perWindow) {
+      const growStart = start > 0 ? lines[start - 1]!.length + 1 : Number.POSITIVE_INFINITY;
+      const growEnd = end < lines.length - 1 ? lines[end + 1]!.length + 1 : Number.POSITIVE_INFINITY;
+      if (growStart <= growEnd && size + growStart <= perWindow) { start -= 1; size += growStart; }
+      else if (size + growEnd <= perWindow) { end += 1; size += growEnd; }
+      else break;
+    }
+    const previous = windows.at(-1);
+    if (previous && start <= previous.end + 1) previous.end = Math.max(previous.end, end);
+    else windows.push({ start, end });
   }
-  if (end - start + 1 >= lines.length) return null;
+  if (windows.length === 1 && windows[0]!.start === 0 && windows[0]!.end === lines.length - 1) return null;
   const base = item.sourceRange.startLine;
+  const content = windows.map((window, index) => {
+    const gap = index === 0 ? 0 : window.start - windows[index - 1]!.end - 1;
+    const marker = gap > 0 ? `… 省略 ${gap} 行 …\n` : '';
+    return `${marker}${lines.slice(window.start, window.end + 1).join('\n')}`;
+  }).join('\n');
+  const first = windows[0]!;
+  const last = windows.at(-1)!;
   return {
-    content: lines.slice(start, end + 1).join('\n'),
+    content,
+    regions: windows.length,
     sourceRange: {
-      startLine: base + start,
-      startColumn: start === 0 ? item.sourceRange.startColumn : 1,
-      endLine: base + end,
-      endColumn: end === lines.length - 1 ? item.sourceRange.endColumn : lines[end]!.length + 1,
+      startLine: base + first.start,
+      startColumn: first.start === 0 ? item.sourceRange.startColumn : 1,
+      endLine: base + last.end,
+      endColumn: last.end === lines.length - 1 ? item.sourceRange.endColumn : lines[last.end]!.length + 1,
     },
   };
 }
@@ -190,7 +229,7 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
       let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
       if (level === 'region') {
         const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed()) : Number.POSITIVE_INFINITY;
-        const window = regionOf(item, terms, Math.round(remaining * CHARS_PER_TOKEN));
+        const window = regionOf(item, terms, Math.round(remaining * CHARS_PER_TOKEN), 3);
         if (!window) continue;
         content = window.content;
         sourceRange = window.sourceRange;

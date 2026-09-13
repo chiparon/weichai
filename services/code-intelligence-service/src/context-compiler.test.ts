@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskContextEvidence, TaskRetrievalRequest } from '@forexplore/contracts';
-import { compileTaskContext, compileTaskContextAdaptive, compileTaskContextLegacy, contextTokenCount, signatureOf, skeletonize, sourceContentHash } from './context-compiler.js';
+import { compileTaskContext, compileTaskContextAdaptive, compileTaskContextLegacy, contextTokenCount, regionOf, signatureOf, skeletonize, sourceContentHash } from './context-compiler.js';
 
 const request: TaskRetrievalRequest = { requestId: 'compiler', requirement: '修改上传大小限制', scopes: [{ repositoryId: 'r', analysisRevision: 'v' }], budget: { maxTokens: 4000 } };
 const evidence = (name: string, content: string, role: TaskContextEvidence['role'] = 'implementation'): TaskContextEvidence => ({
@@ -113,6 +113,25 @@ function contextInput() {
 }
 
 describe('render levels', () => {
+  it('joins several regions when a task spans distant methods', () => {
+    const distant = [
+      'class Service {',                                    // 1
+      ...Array.from({ length: 30 }, (_, i) => `  helper${i}() { return ${i}; }`),
+      '  validateSize(value) { if (value > sizeMax) throw new SizeLimitExceededException(); }',   // 32
+      ...Array.from({ length: 30 }, (_, i) => `  filler${i}() { return ${i}; }`),
+      '  parseRequest(context) { if (context.size > fileSizeMax) throw new FileSizeLimitExceededException(); }',
+      '}',                                                  // 64
+    ].join('\n');
+    const window = regionOf(evidence('service', distant), ['size', 'request', 'parse', 'max'], 900, 3);
+    expect(window).not.toBeNull();
+    expect(window!.regions).toBeGreaterThanOrEqual(2);
+    expect(window!.content).toContain('sizeMax');
+    expect(window!.content).toContain('fileSizeMax');
+    expect(window!.content).toContain('省略');
+    expect(window!.sourceRange.startLine).toBeLessThanOrEqual(32);
+    expect(window!.sourceRange.endLine).toBeGreaterThanOrEqual(63);
+  });
+
   it('skeleton keeps control flow and marks elided runs', () => {
     const skeleton = skeletonize(body('a'));
     expect(skeleton).not.toBeNull();

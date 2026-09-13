@@ -242,7 +242,41 @@ top-5 被 `FileItem.getString`、`QuotedPrintableDecoder.decode`、`Base64Decode
 
 排序分布：3 题 MRR = 1.000（第 1 名命中），其余命中题多在 0.143–0.5（第 2–7 名），说明排名仍有较大改善空间。
 
-### 9.3 合规性说明
+### 9.4 稳定性验证：34 题口径完全可复现
+
+三个集各重复运行 3 次（`--repeats 3`，固定 revision、预热缓存、无预算）：
+
+| 集 | taskSuccessRate | MRR | nDCG@10 |
+| --- | --- | --- | --- |
+| dev(12) | 1.000 | 0.6556547619047618 | 0.7328391852954144 |
+| holdout(6) | 0.8333 | 0.19722222222222222 | 0.3438475853631304 |
+| 新集(16) | 0.9375 | 0.5184523809523809 | 0.6186067976374908 |
+
+三次重复的 MRR 与单次运行**逐位一致**（16 位有效数字相同），即该设置下整条链路是完全确定的。
+**因此 32/34 = 94.1% 是可复现的读数，而非单次抽样。**
+（此前观察到的 legacy 基线 97/171 行差异来自索引换代，不是 HNSW 本身的随机性——这一点在此得到澄清。）
+
+### 9.5 排名错误的成因诊断
+
+对 MRR < 1 的题逐条查看"谁排在答案前面"，模式高度集中：
+
+| 任务 | 目标 | 排在前面的是 | 模式 |
+| --- | --- | --- | --- |
+| java-item-bytes | `DiskFileItem.get` | `DiskFileItem.isInMemory` | **同类兄弟方法** |
+| java-boundary-detect | `MultipartStream.readBoundary` | `MultipartStream.skipPreamble`、`computeBoundaryTable` | **同类兄弟方法** |
+| java-skip-preamble | `MultipartStream.skipPreamble` | `MultipartStream.setBoundary` | **同类兄弟方法** |
+| java-buffer-fill | `ItemInputStream.makeAvailable` | `FileItemStreamImpl.openStream`、`Streams.copy` | 同类兄弟 / 近义方法 |
+| java-item-tempfile | `DiskFileItem.getStoreLocation` | `DiskFileItemFactory.getRepository`、`setRepository` | 近义方法 |
+| java-mime-decode-text | `MimeUtility.decodeText` | `FileItem.getString`（接口声明） | 接口声明 + 解码器类方法 |
+
+**机制**：`task-retrieval.ts` 中，路径级片段文档（`!document.symbolKey && sourceRange === undefined`）会与**同一文件的所有声明**匹配，
+于是同一文件内每个方法都拿到该文件的召回排名（`Math.max(...matched.map(...))`），彼此分数接近，次序由 `result.id.localeCompare` 决定。
+真正的区分只能来自**该声明自身的直接证据**（符号视图命中，或带 sourceRange 的片段命中）。
+
+**而目标往往没有直接证据**——因为需求里最有区分度的词（"字节数组""整体读""原样返回"）不在词表里。
+**结论：这一轮的排名错误与 §8/§9.2 同源，主要仍是词表覆盖问题，不是排序函数问题。**
+
+### 9.6 合规性说明
 
 本集在 §7/§8 的两次尝试**之后**建立，因此它不构成对那两次尝试的洁净验证集（作者已知其失败模式）；
 但它可用于评价**今后**的改动，且规模（16）大于原 holdout（6）。

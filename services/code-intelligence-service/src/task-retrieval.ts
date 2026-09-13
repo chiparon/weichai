@@ -16,6 +16,24 @@ const classKinds = ['class', 'interface', 'struct', 'record', 'trait', 'enum'];
 const granularities = ['auto', 'function', 'class', 'module', 'subsystem'];
 const candidateLimit = 32;
 const maxResults = 10;
+/**
+ * Test doubles and constructors compete in the same candidate pool as the
+ * production implementations a task is actually about, and they win slots they
+ * should not. In the frozen pilot set one task returned four `src/test/`
+ * implementations and two constructors in its top ten while the annotated
+ * implementation never appeared at all: a Java constructor's name equals its
+ * class name, so every type-name term recalls it, and test doubles re-implement
+ * the same method names as the code under test. They are demoted rather than
+ * removed, because some annotated answers genuinely live in test sources.
+ */
+const testPathPattern = /(^|\/)(?:test|tests|__tests__|spec)(?:\/|$)|(?:Test|Tests|Spec|IT)\.(?:java|kt|ts|tsx|js|cpp|cc|cs)$/i;
+const testDemotion = 0.7;
+const constructorDemotion = 0.6;
+function retrievalDemotion(symbol: SymbolRecord): number {
+  const container = (symbol.qualifiedName ?? '').split('.').slice(-2, -1)[0];
+  const constructor = symbol.kind === 'constructor' || container !== undefined && container === symbol.name;
+  return (testPathPattern.test(symbol.relativePath) ? testDemotion : 1) * (constructor ? constructorDemotion : 1);
+}
 interface Hit {
   result: TaskRetrievalResult; scope: TaskRetrievalScope; symbol?: SymbolRecord; sourceRange?: SourceRange;
   module?: ProjectModule; modulePaths?: string[]; modulePathsTruncated?: boolean; implementationDocuments?: SearchDocumentRecord[];
@@ -166,7 +184,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
           this.assertSymbol(scope, symbol);
           const matched = documents.filter((document) => document.symbolKey && documentOwners.get(document.symbolKey) === symbol.symbolKey || !document.symbolKey && document.relativePath === symbol.relativePath && (document.sourceRange === undefined || rangesOverlap(document.sourceRange, symbol.sourceRange)));
           if (!matched.length) continue;
-          const score = Math.max(...matched.map((document) => documentRanks.get(document.searchDocumentId) ?? 1 / 61));
+          const score = Math.max(...matched.map((document) => documentRanks.get(document.searchDocumentId) ?? 1 / 61)) * retrievalDemotion(symbol);
           const sourceHit = matched.filter((document) => document.kind === 'source-fragment' && document.symbolKey === symbol.symbolKey && document.sourceRange)
             .sort((a, b) => (b.retrievalScore?.fusion ?? 0) - (a.retrievalScore?.fusion ?? 0))[0];
           hits.push({ scope: { ...scope, ...(symbol.projectId ? { projectId: symbol.projectId } : {}) }, symbol, sourceRange: sourceHit?.sourceRange, result: { ...scope, ...(symbol.projectId ? { projectId: symbol.projectId } : {}), id: `symbol-${id([key(scope), symbol.symbolKey])}`,

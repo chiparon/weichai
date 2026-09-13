@@ -46,6 +46,14 @@ const DOMAINS = [
   '请求、响应、文件、路径、目录、流、缓冲区、集合、数组、映射、队列、排序、过滤、合并、拆分、初始化、注册、释放、' +
   '清理、恢复、回滚、增量、批量、分页、事务、锁、线程、任务、调度、进度、统计、监控、采样、编码、解码、字符集、' +
   '头部、内容类型、输入流、输出流、临时文件',
+  // The core verb list above is covered, but a requirement that phrases the same
+  // action as a *variant* (写出 rather than 写入) matched no entry at all and the
+  // recall query lost the verb entirely. Variant and companion word forms are
+  // listed here so generation covers them. Generic software vocabulary only.
+  '动词变体与配套词形（必须逐条给出条目，均为 2~3 字）：写出、写回、读出、读入、加载、保存、移除、清除、重置、' +
+  '追加、截断、跳过、遍历、迭代、分组、归组、去重、合并、拆分、转换、还原、展开、包装、解包、输出、输入、字节、' +
+  '比特、边界、分隔符、终止符、偏移、位置、序号、索引、哈希、摘要、副本、快照、状态、步骤、阶段、来源、目标、' +
+  '条件、分支、循环、重载、代理、包装器、回调、钩子、装饰、适配、桥接、注册表、清单、清单文件',
 ];
 
 function sha256(value: string): string {

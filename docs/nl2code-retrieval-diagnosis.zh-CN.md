@@ -199,9 +199,21 @@ PRF 只在查询侧已有可用锚点和足够素材时才可能起作用，本�
 | **ts-stream-copy** | **6** | **无 `copy`、无 `output`、无 `bytes`** | **未命中** |
 | ts-stream-copy 需求实际展开 | 6 | `response write save store return result` | — |
 
-**结论：词表收得进名词与概念（`fileName`、`characterSet`、`threshold`、`unique`），
-但系统性地缺失常用编程动词与量词**——`写出`→`write`、`整体写入/复制`→`copy`、`字节数`→`bytes`/`count`。
-两道未命中/靠后的题同源于此。
+**结论（第 5 轮修正，此前版本有误）**：查阅词表实体后确认，词表**已收录**核心动词——
+`写入→write/save/store`、`读取→read/load/fetch`、**`复制→copy/clone/duplicate`**、`解析→parse`、`解码→decode`、
+`编码→encode`、`输出流→outputStream`、`输入流→inputStream`、`缓冲区→buffer`、`阈值→threshold`、`长度→length/size/count`。
+
+因此两类失败必须分开，此前把它们合并成"缺动词层"是不准确的：
+
+| 失败 | 真实原因 | 可修性 |
+| --- | --- | --- |
+| `java-write` 缺 `write` | 需求用的是"**写出**"，而词表收的是"**写入**"——**词形变体未收录** | **可合规补**：属通用软件术语，向 builder 的领域种子表补充变体词形 |
+| `ts-stream-copy` 缺 `copy` | 需求说的是"**整体写入输出对象**"，根本没有出现"复制"这一词 | **词表无解**：这是语义桥接，只能靠模型/嵌入通道（即 §6 的模态鸿沟） |
+
+第 5 轮已把"动词变体与配套词形"作为新的通用领域加入 `scripts/build-query-lexicon.mts` 的 `DOMAINS`
+（写出、写回、读出、读入、移除、清除、追加、截断、跳过、遍历、迭代、分组、归组、去重、输出、字节、边界……）。
+**冻结的 `query-lexicon-data.ts` 未被改动**（`verify-query-lexicon.mts` 仍 `passed: true`、`violations: []`），
+该种子只影响**下一次**生成——需要模型凭据才能执行（见 §10）。
 
 这解释了词表杠杆的双面性：它贡献了 +41.7pp / +33.3pp（说明方向正确），
 但只有 355 条、且动词层缺失，因此其上限被自身覆盖度卡住。

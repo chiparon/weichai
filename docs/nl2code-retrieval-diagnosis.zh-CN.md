@@ -247,16 +247,34 @@ top-5 被 `FileItem.getString`、`QuotedPrintableDecoder.decode`、`Base64Decode
 本集在 §7/§8 的两次尝试**之后**建立，因此它不构成对那两次尝试的洁净验证集（作者已知其失败模式）；
 但它可用于评价**今后**的改动，且规模（16）大于原 holdout（6）。
 
-## 10. 下一步（按证据排序）
+## 10. 词表扩充的硬约束（本轮实测：本环境不可执行）
 
-1. **补齐词表动词层与行为词**（`write`/`read`/`copy`/`delete`/`parse`/`encode`/`decode`/`convert`/`generate`/`validate`，
-   以及"原样返回""跳过""归组"这类行为表述）：§8 与 §9.2 的两次未命中同源于此，
-   而词表是唯一被证明有效的杠杆（+41.7pp / +33.3pp）。
-   以 dev(12) + 新集(16) 度量，**不要用 holdout 调参**（§7.1/§9.3 的合规边界）。
-2. **在更大的集上评估重排**：新集的 MRR 分布（3 题第 1 名、多数第 2–7 名）说明排名仍有空间。
-3. **升级跨模态嵌入模型**：接口已就绪，改配置 + 重建索引。
+§8 与 §9.2 的两次未命中同源于词表覆盖，词表扩充是证据最强的下一步，但**当前环境无法合规执行**：
 
-## 11. 复现命令
+1. **生成流程需要模型凭据**：`scripts/build-query-lexicon.mts` 调用 `deepseek-v4-flash` 生成条目
+   （`--model`、`--chunk-domains`、prompt 构造见该脚本 98/153/158 行）。本环境
+   `services/retrieval-service/.env` 与进程环境中**均无 `DEEPSEEK_API_KEY`**，builder 无法运行。
+2. **手改冻结产物被契约禁止**：`query-lexicon-data.ts` 头部标注 `Generated ... Do not edit by hand`；
+   builder 头部声明 `forbidden inputs: any evaluation task requirement text, target symbol`。
+   而本轮的候选词（`写出`、`整体写入`）正是通过观测评测任务失败得到的，属于被禁止的输入来源。
+   仅有的离线入口 `--from`（从既有 JSON 重建 TS 模块）绕不过这条约束。
+3. **校验脚本有机器化防污染规则**：`scripts/verify-query-lexicon.mts` 检查
+   **任何 6 字符的评测需求子串都不得成为词表的 zh 键**，以及词形必须为单词级（≤3 个驼峰段）。
+
+**合规的扩充路径**（留待有凭据的环境执行）：向 builder 的**通用中文软件术语种子表**补充动词与行为词
+（`write`/`read`/`copy`/`delete`/`parse`/`encode`/`decode`/`convert`/`generate`/`validate`，
+以及"原样返回""跳过""归组"这类行为表述），重新生成并跑 `verify-query-lexicon.mts`。
+
+## 11. 下一步（按证据排序）
+
+1. **补齐词表动词层与行为词**：按 §10 的合规路径执行（需模型凭据），以 dev(12) + 新集(16) 度量。
+2. **在更大的集上评估重排**：新集 MRR 分布为 3 题第 1 名、多数第 2–7 名，排名仍有空间。
+   注意 DeepSeek 重排同样需要凭据；本地 cross-encoder 需先解决模型下载。
+3. **升级跨模态嵌入模型**：接口已就绪，改配置 + 重建索引（同样依赖模型下载）。
+4. **继续收敛噪声类**：本轮已处理测试路径与构造函数；接口声明 vs 实现、生成代码等类别尚未处理，
+   属零成本、可离线验证的方向。
+
+## 12. 复现命令
 
 ```bash
 # 基线（dev / holdout，官方口径：无预算）

@@ -84,7 +84,34 @@ export function regionOf(item: TaskContextEvidence, terms: readonly string[], bu
   const separation = Math.max(4, Math.floor(lines.length / Math.max(1, maxRegions * 4)));
   const seeds: number[] = [];
   const covered = new Set<string>();
-  for (let pass = 0; pass < maxRegions; pass += 1) {
+  const lineHits = (index: number): number => {
+    const lowered = lines[index]!.toLowerCase();
+    let hits = 0;
+    for (const needle of needles) if (lowered.includes(needle)) hits += 1;
+    return hits;
+  };
+  const addSeed = (index: number): void => {
+    seeds.push(index);
+    const lowered = lines[index]!.toLowerCase();
+    for (const needle of needles) if (lowered.includes(needle)) covered.add(needle);
+  };
+  // Requirement slots first. A validation branch, the exception it raises and the
+  // return path frequently live in different methods, so each slot gets its own
+  // window instead of letting the densest method take all of them.
+  const slotPredicates = [/\bthrow\b|\braise\b/, /\bif\s*\(|\bswitch\s*\(|\bcase\b/, /\breturn\b/];
+  for (const predicate of slotPredicates) {
+    if (seeds.length >= maxRegions) break;
+    let best = -1;
+    let bestHits = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      if (!predicate.test(lines[index]!.toLowerCase())) continue;
+      const hits = lineHits(index);
+      if (hits > bestHits) { bestHits = hits; best = index; }
+    }
+    if (best >= 0) addSeed(best);
+  }
+  // Then fill any remaining windows with the densest lines, forced apart.
+  for (let pass = seeds.length; pass < maxRegions; pass += 1) {
     let best = -1;
     let bestScore = 0;
     for (let index = 0; index < lines.length; index += 1) {
@@ -97,9 +124,7 @@ export function regionOf(item: TaskContextEvidence, terms: readonly string[], bu
       if (value > bestScore) { bestScore = value; best = index; }
     }
     if (best < 0) break;
-    seeds.push(best);
-    const lowered = lines[best]!.toLowerCase();
-    for (const needle of needles) if (lowered.includes(needle)) covered.add(needle);
+    addSeed(best);
   }
   if (!seeds.length) seeds.push(0);
   seeds.sort((left, right) => left - right);

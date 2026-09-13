@@ -84,6 +84,25 @@ node --import tsx scripts/verify-task-context-live.mts --endpoint http://127.0.0
 
 ---
 
+### 第四轮（2026-09-13，槽位对齐选点）
+
+**仍未通过**：行数 413 → **613（1.48×，接近 1.5× 阈值）**，代码占比最低仍 47%（最好 66%），编译耗时中位数 3414 → **296 ms（11.5×）**；契约校验仍剩同一例。
+
+**本轮新增**：region 选点从"命中密度"改为**需求槽位对齐**——先按 `throw` / `if|switch|case` / `return` 三类槽位各强制一个窗口（在该槽位内取命中词最多的行），剩余窗口才按密度铺满。窗口 241 → 286 行，4000 档行数 261 → **300 行**。
+
+**这一例契约失败的真实原因（本轮查清，与"切掉方法"无关）**：
+
+断言要求同一实现证据同时含 `/if\s*\([^\n]*fileSizeMax/` 与 `/throw new FileSizeLimitExceededException/`。而该字面量**在整个工作区只出现一次**：
+
+```
+fixtures/code-corpus/commons-fileupload-ts/src/file-upload.ts:414
+  throw new FileSizeLimitExceededException(`The field ${fieldName} exceeds ...`)
+```
+
+Java 原版里**没有这个字面量**——它是先构造 `FileSizeLimitExceededException e = new ...`，再 `throw new FileUploadIOException(e)`（FileUploadBase.java:800-807）。也就是说，**槽位是由另一个仓库的另一个文件满足的**：TS 镜像。legacy 恰好把该 TS 条目装进了预算，adaptive 把预算花在 Java 的 286 行 region 上，把它挤掉了。
+
+**结论**：缺的不是"窗口内选点"，而是**跨条目的槽位覆盖**——压缩某条目后，必须检查需求槽位是否仍在**整个交付集合**中被满足，并优先保留能补上缺失槽位的那一条。这正是下一轮要实现的（也是 S2"必含槽位"的正确落点：槽位是交付集合级别的约束，不是单条目内部的选点启发式）。
+
 ### 第三轮（2026-09-13，多区域渲染）
 
 **仍未通过**，覆盖指标继续改善、但幅度收窄：

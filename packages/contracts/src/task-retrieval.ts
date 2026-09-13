@@ -86,7 +86,7 @@ export interface ContextPacket {
 }
 
 /** Markdown rendering caps: machine-readable fields stay complete; the exported text stays compact. */
-export const CONTEXT_MARKDOWN_LIMITS = { relations: 16, gaps: 8, gapMessage: 140, resultReason: 200 } as const;
+export const CONTEXT_MARKDOWN_LIMITS = { relations: 12, gaps: 4, gapMessage: 100, resultReason: 120 } as const;
 
 function clamp(value: string, limit: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
@@ -97,7 +97,7 @@ function clamp(value: string, limit: number): string {
 export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' | 'snapshots' | 'routing' | 'results' | 'evidence' | 'declarations' | 'relations' | 'gaps'>): string {
   const sections = ['# Code Context', packet.requirement, '## Snapshots', ...packet.snapshots.map((snapshot) =>
     `- ${snapshot.repositoryName}: ${snapshot.repositoryId}@${snapshot.analysisRevision}${snapshot.projectId ? ` project=${snapshot.projectId}` : ''} analysis=${snapshot.analysisHash}`),
-  `## Retrieval\n${packet.routing.requestedGranularity} -> ${packet.routing.resolvedGranularities.join(', ') || 'unavailable'} (${packet.routing.source})\n${clamp(packet.routing.reason, 400)}`];
+  `## Retrieval\n${packet.routing.requestedGranularity} -> ${packet.routing.resolvedGranularities.join(', ') || 'unavailable'} (${packet.routing.source})`];
   if (packet.results.length) sections.push('## Relevant Implementations', ...packet.results.map((result) =>
     `- ${result.name} [${result.granularity}] ${result.repositoryId}@${result.analysisRevision}${result.relativePath ? `:${result.relativePath}` : ''}\n  ${clamp(result.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}`));
   if (packet.relations.length) sections.push('## Relations', ...packet.relations.slice(0, CONTEXT_MARKDOWN_LIMITS.relations).map((edge) =>
@@ -109,7 +109,7 @@ export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' 
     if (items.length) sections.push(`## ${titles[role]}`);
     for (const item of items) {
       const level = item.renderLevel && item.renderLevel !== 'full' ? `; render=${item.renderLevel}` : '';
-      sections.push(`### ${item.name} [${item.role}]\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}:${item.sourceRange.startColumn}-${item.sourceRange.endLine}:${item.sourceRange.endColumn}\nEvidence: ${item.evidenceId}; SHA256: ${item.contentHash}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}${level}\n${clamp(item.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}\n\n${fenced(item.content)}`);
+      sections.push(`### ${item.name} [${item.role}]\n${item.relativePath}:${item.sourceRange.startLine}-${item.sourceRange.endLine}\nEvidence: ${item.evidenceId}; sha256=${item.contentHash.slice(0, 12)}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}${level}\n${clamp(item.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}\n\n${fenced(item.content)}`);
     }
   }
   if (packet.declarations?.length) sections.push('## Supporting Declarations', ...packet.declarations.map(item =>

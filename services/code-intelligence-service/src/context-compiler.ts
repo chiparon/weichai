@@ -378,8 +378,8 @@ function framingCost(packet: ContextPacket): number {
   return contextTokenCount(formatContextMarkdown({ ...packet, evidence: [], declarations: [], relations: [] }));
 }
 
-/** Per-evidence framing overhead (heading, location line, evidence line, fence). */
-const FRAMING_PER_EVIDENCE = 45;
+/** Per-evidence framing overhead (heading, short location line, evidence line, fences). */
+const FRAMING_PER_EVIDENCE = 28;
 
 /** Legacy first-fit packer, kept byte-for-byte for the acceptance control run. */
 export function compileTaskContextLegacy(request: TaskRetrievalRequest, input: ContextInput, latencyMs: number): ContextPacket {

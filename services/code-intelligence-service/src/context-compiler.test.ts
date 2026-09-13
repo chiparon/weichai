@@ -40,7 +40,7 @@ describe('adaptive context compiler', () => {
   });
 
   it('downgrades oversized evidence instead of dropping it, and records the downgrade', () => {
-    const packet = compile([evidence('huge', body('huge')), evidence('small', 'const limit = 1;')], { budget: { maxTokens: 700 } });
+    const packet = compile([evidence('huge', body('huge')), evidence('small', 'const limit = 1;')], { budget: { maxTokens: 400 } });
     const huge = packet.evidence.find(item => item.name === 'huge');
     expect(huge).toBeDefined();
     expect(huge?.renderLevel).toBeDefined();

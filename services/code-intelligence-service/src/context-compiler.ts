@@ -263,12 +263,15 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
   let framingTokens = framingCost(packet);
   let metadataTrimmed = false;
   let terseGaps = false;
-  if (Number.isFinite(maxTokens) && framingTokens > maxTokens * 0.5) {
-    // Ranked results are never removed; only their rendered reason is shortened.
+  if (Number.isFinite(maxTokens) && framingTokens > maxTokens * METADATA_BUDGET_SHARE) {
+    // The metadata quota: provenance and ranked results are never removed, but
+    // they are the first thing that yields when the budget is tight, so that the
+    // payload the budget exists for keeps its room. Every degradation is recorded.
     packet.results = packet.results.map(result => ({ ...result, reason: result.reason.length > 60 ? `${result.reason.slice(0, 59)}…` : result.reason }));
+    terseGaps = true;
     framingTokens = framingCost(packet);
     metadataTrimmed = true;
-    if (framingTokens > maxTokens * 0.5) packet.gaps.push(metadataGap);
+    if (framingTokens > maxTokens * METADATA_BUDGET_SHARE) packet.gaps.push(metadataGap);
   }
 
   const levels: Record<RenderLevel, number> = { full: 0, region: 0, skeleton: 0, signature: 0 };
@@ -287,13 +290,13 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
    * excerpt already occupies — a deeper rendering may reuse it instead of
    * competing with its own cheaper rendering for the remaining budget.
    */
-  const trialAt = (item: TaskContextEvidence, level: RenderLevel, index: number, reclaim: number): TaskContextEvidence[] | null => {
+  const trialAt = (item: TaskContextEvidence, level: RenderLevel, index: number, reclaim: number, cap = perItemCap): TaskContextEvidence[] | null => {
     let effective = level;
     let content: string | null;
     let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
     if (level === 'region') {
       const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed() + reclaim) : Number.POSITIVE_INFINITY;
-      const window = regionOf(item, terms, Math.round(Math.min(remaining, perItemCap) * CHARS_PER_TOKEN), 3);
+      const window = regionOf(item, terms, Math.round(Math.min(remaining, cap) * CHARS_PER_TOKEN), 3);
       // A null window means the allowance already covers the whole excerpt: that
       // is the excerpt's full body and must not be read as "region unavailable".
       if (!window) { effective = 'full'; content = item.content; }
@@ -302,7 +305,7 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
     if (content === null) return null;
     // Keep room for the rest of the delivery: an item larger than the per-item
     // cap is compacted (region/skeleton/signature) instead of taken whole.
-    if (effective === 'full' && Number.isFinite(maxTokens) && contextTokenCount(content) > perItemCap) return null;
+    if (effective === 'full' && Number.isFinite(maxTokens) && contextTokenCount(content) > cap) return null;
     const rendered = withLevel(item, effective, content, sourceRange);
     const trial = index < 0
       ? [...packet.evidence.filter(selected => priority[item.role] > priority[selected.role] || !contained(selected, rendered)), rendered]
@@ -340,7 +343,10 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
     if (!placed) omitted.push(item.name);
   }
   // Phase 2 — the budget buys depth in delivery order, one level at a time, so
-  // the highest-priority excerpts reach verbatim source first.
+  // the highest-priority excerpts reach verbatim source first. Depth is capped by
+  // the budget itself, not by a fixed per-item share: every other excerpt is
+  // already committed at its floor, so what remains is exactly what this excerpt
+  // may grow into.
   for (let pass = 0; pass < renderLevels.length && Number.isFinite(maxTokens); pass++) {
     let progressed = false;
     for (const entry of [...packet.evidence]) {
@@ -350,7 +356,7 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
       if (index < 0 || current <= 0 || !original) continue;
       // Charge the excerpt's own current cost as reclaimable, then confirm the
       // whole delivery still fits with the deeper rendering in place.
-      const trial = trialAt(original, renderLevels[current - 1]!, index, costOf(original, entry.renderLevel ?? 'full', entry.content));
+      const trial = trialAt(original, renderLevels[current - 1]!, index, costOf(original, entry.renderLevel ?? 'full', entry.content), Number.POSITIVE_INFINITY);
       if (!trial) continue;
       packet.evidence = trial;
       progressed = true;
@@ -477,6 +483,12 @@ function framingCost(packet: ContextPacket): number {
 
 /** Per-evidence framing overhead (heading, short location line, evidence line, fences). */
 const FRAMING_PER_EVIDENCE = 28;
+
+/**
+ * Share of a finite budget that provenance, ranked results and diagnostics may
+ * occupy before they start being compressed to protect the source payload.
+ */
+const METADATA_BUDGET_SHARE = 0.35;
 
 /** Legacy first-fit packer, kept byte-for-byte for the acceptance control run. */
 export function compileTaskContextLegacy(request: TaskRetrievalRequest, input: ContextInput, latencyMs: number): ContextPacket {

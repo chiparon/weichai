@@ -9,6 +9,7 @@ import type { TaskRetrievalPort } from '@forexplore/workflow-core';
 import type { IndexStore } from './index-store.js';
 import { compileTaskContext, sourceContentHash } from './context-compiler.js';
 import { projectAnalysisProfile, projectPlanHash } from './project-analysis.js';
+import { queryExpansionFromEnvironment, type QueryExpansionPort, type QueryExpansionResult } from './query-expansion.js';
 
 const functionKinds = ['function', 'method', 'constructor'];
 const classKinds = ['class', 'interface', 'struct', 'record', 'trait', 'enum'];
@@ -25,6 +26,20 @@ function record(value: unknown): value is Record<string, unknown> { return typeo
 function identifier(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f]/.test(value); }
 function integer(value: unknown, minimum: number, maximum: number): boolean { return Number.isInteger(value) && Number(value) >= minimum && Number(value) <= maximum; }
 
+/**
+ * Weight of the raw-requirement recall channels when expansion is active, chosen
+ * by a dev-side sweep (12-task dev set + the repository contract check at 4000
+ * and 8000 tokens): 0 -> 11/12 with a contract failure, 0.1 -> 12/12 with a
+ * contract failure, 0.15 -> 12/12 with the contract satisfied, >=0.2 -> the dev
+ * score falls. The sweep is recorded in docs/query-expansion-result.zh-CN.md.
+ */
+export const DEFAULT_BASELINE_RECALL_WEIGHT = 0.15;
+
+export function baselineRecallWeightFromEnvironment(environment: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(environment.RECAST_QUERY_EXPANSION_BASELINE_WEIGHT);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 4 ? raw : DEFAULT_BASELINE_RECALL_WEIGHT;
+}
+
 export function validateTaskRetrievalRequest(value: unknown): asserts value is TaskRetrievalRequest {
   if (!record(value) || !identifier(value.requestId) || typeof value.requirement !== 'string' || !value.requirement.trim() || value.requirement.length > 8000) throw new Error('Task retrieval requires requestId and a requirement of 1..8000 characters.');
   if (value.granularity !== undefined && (typeof value.granularity !== 'string' || !granularities.includes(value.granularity))) throw new Error('Invalid retrieval granularity.');
@@ -39,7 +54,13 @@ export function validateTaskRetrievalRequest(value: unknown): asserts value is T
 
 /** Task retrieval consumes bounded, authoritative reads after projection recall. */
 export class TaskRetrievalService implements TaskRetrievalPort {
-  constructor(private readonly store: IndexStore) {}
+  readonly #expansion: QueryExpansionPort | null;
+  readonly #baselineRecallWeight: number;
+  /** `expansion: undefined` follows RECAST_QUERY_EXPANSION; `null` disables it explicitly. */
+  constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number } = {}) {
+    this.#expansion = options.expansion === undefined ? queryExpansionFromEnvironment() : options.expansion;
+    this.#baselineRecallWeight = options.baselineRecallWeight ?? baselineRecallWeightFromEnvironment();
+  }
 
   async search(request: TaskRetrievalRequest, parentSignal?: AbortSignal): Promise<ContextPacket> {
     validateTaskRetrievalRequest(request);
@@ -66,6 +87,11 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       revisionStatuses.set(key(scope), revision.status);
     }
     const snapshotMs = performance.now() - started;
+    // Local, offline expansion of the recall query. Runs after the version
+    // snapshot so stage timings stay disjoint; never performs I/O.
+    const queryExpansionStarted = performance.now();
+    const expansion = this.#expansion?.expand(request.requirement);
+    const queryExpansionMs = performance.now() - queryExpansionStarted;
     let recallMs = 0;
     const candidateStarted = performance.now();
     const requestedGranularity = request.granularity ?? 'auto';
@@ -81,13 +107,21 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       const documents: SearchDocumentRecord[] = [];
       const documentRanks = new Map<string, number>();
       const recallStarted = performance.now();
-      const channels = await Promise.all((['symbol', 'source-fragment', 'summary'] as const).map(kind =>
-        this.store.searchSearchDocuments!(scope, request.requirement, candidateLimit, kind, signal)));
+      // Expansion normally replaces the recall query. A non-zero baseline weight
+      // additionally keeps the raw requirement's candidates in the fusion, which
+      // prevents evidence displacement (acceptance §4.6) at the cost of ranking.
+      const plans = expansion?.enabled && this.#baselineRecallWeight > 0
+        ? [{ query: request.requirement, weight: this.#baselineRecallWeight }, { query: expansion.expanded, weight: 1 }]
+        : [{ query: expansion?.enabled ? expansion.expanded : request.requirement, weight: 1 }];
+      const channelKinds = ['symbol', 'source-fragment', 'summary'] as const;
+      const channelSets = await Promise.all(plans.flatMap((plan) =>
+        channelKinds.map((kind) => this.store.searchSearchDocuments!(scope, plan.query, candidateLimit, kind, signal))));
       recallMs += performance.now() - recallStarted;
-      for (const channel of channels) {
-        channel.forEach((document, rank) => documentRanks.set(document.searchDocumentId, (documentRanks.get(document.searchDocumentId) ?? 0) + 1 / (61 + rank)));
+      channelSets.forEach((channel, index) => {
+        const weight = plans[Math.floor(index / channelKinds.length)]!.weight;
+        channel.forEach((document, rank) => documentRanks.set(document.searchDocumentId, (documentRanks.get(document.searchDocumentId) ?? 0) + weight / (61 + rank)));
         documents.push(...channel);
-      }
+      });
       for (const document of documents) if (document.repositoryId !== scope.repositoryId || document.analysisRevision !== scope.analysisRevision) throw new Error('Search returned a document from another revision.');
       const symbolKeys = [...new Set(documents.flatMap((item) => item.symbolKey ? [item.symbolKey] : []))];
       const paths = [...new Set(documents.filter((item) => !item.symbolKey).flatMap((item) => item.relativePath ? [item.relativePath] : []))];
@@ -273,6 +307,8 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     const sourceBytesDelivered = packet.evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);
     packet.usage.retrieval = { sourceBytesRead, sourceBytesDelivered, sourceReadAmplification: sourceBytesDelivered ? sourceBytesRead / sourceBytesDelivered : null,
       stages: { snapshotMs, recallMs, candidateResolutionMs, expansionMs: compileStarted - expansionStarted, compilationMs: performance.now() - compileStarted },
+      ...(expansion ? { expansion: { enabled: expansion.enabled, version: expansion.version, lexiconSha256: expansion.lexiconSha256,
+        matched: [...expansion.matched], terms: [...expansion.terms], expansionMs: Math.round(queryExpansionMs * 1000) / 1000 } } : {}),
       sourceExcerptsRead: evidence.length, recallAndExpansionMs: Math.round(compileStarted - started), compilationMs: Math.round(performance.now() - compileStarted) };
     packet.usage.latencyMs = Math.round(performance.now() - started);
     if (packet.usage.latencyMs > (request.budget.maxLatencyMs ?? 10000)) throw new Error('Task retrieval deadline exceeded during context compilation.');

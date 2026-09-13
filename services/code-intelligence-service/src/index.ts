@@ -29,6 +29,7 @@ import { ModuleImplementationSearchService } from './module-implementation-searc
 import { LocalModuleReranker, type ModuleRerankerConfig } from './module-reranker.js';
 import { ProjectAnalysisCoordinator, type ProjectAnalysisOptions } from './project-analysis.js';
 import { TaskRetrievalService } from './task-retrieval.js';
+import type { QueryExpansionPort } from './query-expansion.js';
 
 export { LocalModuleReranker, type ModuleReranker, type ModuleRerankerConfig } from './module-reranker.js';
 
@@ -99,6 +100,8 @@ export interface CreateCodeIntelligenceRuntimeOptions {
   registryOptions?: RepositoryRegistryOptions;
   coordinatorOptions?: AnalysisCoordinatorOptions;
   projectAnalysis?: Omit<ProjectAnalysisOptions, 'store'>;
+  /** Undefined follows RECAST_QUERY_EXPANSION; null disables offline query expansion explicitly. */
+  queryExpansion?: QueryExpansionPort | null;
   initialize?: boolean;
 }
 
@@ -163,7 +166,7 @@ export async function createCodeIntelligenceRuntime(
   });
   const moduleImplementationSearch = new ModuleImplementationSearchService(store, moduleReranker);
   const projectAnalysis = new ProjectAnalysisCoordinator({ store, ...options.projectAnalysis });
-  const taskRetrieval = new TaskRetrievalService(store);
+  const taskRetrieval = new TaskRetrievalService(store, options.queryExpansion === undefined ? {} : { expansion: options.queryExpansion });
   const coordinator = new AnalysisCoordinator(
     registry,
     store,
@@ -194,3 +197,13 @@ export { buildAdaptiveModuleProposal, adaptiveModuleAlgorithm, type AdaptiveModu
 export { buildProjectModuleProposal, moduleModelingAlgorithm } from './module-modeling.js';
 export { TaskRetrievalService, validateTaskRetrievalRequest } from './task-retrieval.js';
 export { contextTokenCount } from './context-compiler.js';
+export {
+  LexiconQueryExpansion,
+  NoQueryExpansion,
+  expandQuery,
+  queryExpansionFromEnvironment,
+  QUERY_EXPANSION_MAX_TERMS,
+  QUERY_EXPANSION_MAX_CHARS,
+  type QueryExpansionPort,
+  type QueryExpansionResult,
+} from './query-expansion.js';

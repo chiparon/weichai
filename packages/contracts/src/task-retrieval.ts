@@ -74,7 +74,9 @@ export interface ContextPacket {
     retrieval?: { sourceBytesRead: number; sourceBytesDelivered: number; sourceReadAmplification: number | null;
       sourceExcerptsRead: number; recallAndExpansionMs: number; compilationMs: number;
       /** Disjoint wall-clock stages; recall includes query encoding inside the storage adapter. */
-      stages?: { snapshotMs: number; recallMs: number; candidateResolutionMs: number; expansionMs: number; compilationMs: number } };
+      stages?: { snapshotMs: number; recallMs: number; candidateResolutionMs: number; expansionMs: number; compilationMs: number };
+      /** Local offline query expansion applied to the recall query; never involves a model call. */
+      expansion?: { enabled: boolean; version: string; lexiconSha256: string; matched: string[]; terms: string[]; expansionMs: number } };
   };
 }
 

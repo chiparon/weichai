@@ -1,0 +1,2936 @@
+{
+  "version": "query-lexicon/v1",
+  "model": "deepseek-v4-flash",
+  "promptSha256": "cd5269a58b116ee99e877fd3563e323b29451f290444ac9316d0dd45449a1032",
+  "generatedAt": "2026-09-12T15:43:00.952Z",
+  "chunks": [
+    {
+      "chunk": 1,
+      "domains": 4,
+      "entries": 72,
+      "finish": "stop",
+      "completionTokens": 1729,
+      "contentChars": 4527,
+      "reasoningChars": 0
+    },
+    {
+      "chunk": 2,
+      "domains": 4,
+      "entries": 73,
+      "finish": "stop",
+      "completionTokens": 1740,
+      "contentChars": 4457,
+      "reasoningChars": 0
+    },
+    {
+      "chunk": 3,
+      "domains": 4,
+      "entries": 72,
+      "finish": "stop",
+      "completionTokens": 1713,
+      "contentChars": 4585,
+      "reasoningChars": 0
+    },
+    {
+      "chunk": 4,
+      "domains": 4,
+      "entries": 73,
+      "finish": "stop",
+      "completionTokens": 1639,
+      "contentChars": 4200,
+      "reasoningChars": 0
+    },
+    {
+      "chunk": 5,
+      "domains": 3,
+      "entries": 93,
+      "finish": "stop",
+      "completionTokens": 2003,
+      "contentChars": 5163,
+      "reasoningChars": 0
+    }
+  ],
+  "entries": [
+    {
+      "zh": "百分号编码",
+      "en": [
+        "percentEncode",
+        "urlencode",
+        "escape"
+      ]
+    },
+    {
+      "zh": "版本号",
+      "en": [
+        "version",
+        "versionNo",
+        "revision"
+      ]
+    },
+    {
+      "zh": "边界参数",
+      "en": [
+        "boundary",
+        "boundaryParam",
+        "delimiter"
+      ]
+    },
+    {
+      "zh": "边界值",
+      "en": [
+        "boundary",
+        "bound",
+        "edgeValue",
+        "limitValue"
+      ]
+    },
+    {
+      "zh": "编号",
+      "en": [
+        "number",
+        "no",
+        "serialNo",
+        "code"
+      ]
+    },
+    {
+      "zh": "编码",
+      "en": [
+        "encode",
+        "encoding",
+        "code"
+      ]
+    },
+    {
+      "zh": "编码错误",
+      "en": [
+        "encodeError",
+        "codecError",
+        "invalid"
+      ]
+    },
+    {
+      "zh": "编码格式",
+      "en": [
+        "encoding",
+        "charset",
+        "codec"
+      ]
+    },
+    {
+      "zh": "编码检测",
+      "en": [
+        "detect",
+        "detectCharset",
+        "guess"
+      ]
+    },
+    {
+      "zh": "编码名称",
+      "en": [
+        "charsetName",
+        "encodingName",
+        "codecName"
+      ]
+    },
+    {
+      "zh": "编码转换",
+      "en": [
+        "convert",
+        "transcode",
+        "reencode"
+      ]
+    },
+    {
+      "zh": "标识",
+      "en": [
+        "identifier",
+        "id",
+        "key"
+      ]
+    },
+    {
+      "zh": "表单编码",
+      "en": [
+        "formEncode",
+        "urlencode",
+        "encoding"
+      ]
+    },
+    {
+      "zh": "表单提交",
+      "en": [
+        "submit",
+        "formSubmit",
+        "postForm"
+      ]
+    },
+    {
+      "zh": "表单字段",
+      "en": [
+        "formField",
+        "field",
+        "param"
+      ]
+    },
+    {
+      "zh": "别名",
+      "en": [
+        "alias",
+        "aliasName",
+        "nickname"
+      ]
+    },
+    {
+      "zh": "并发",
+      "en": [
+        "concurrency",
+        "concurrent",
+        "parallel"
+      ]
+    },
+    {
+      "zh": "并发数",
+      "en": [
+        "concurrency",
+        "concurrentCount",
+        "parallelism"
+      ]
+    },
+    {
+      "zh": "采样",
+      "en": [
+        "sample",
+        "sampling",
+        "probe"
+      ]
+    },
+    {
+      "zh": "采样率",
+      "en": [
+        "sampleRate",
+        "sampling",
+        "rate"
+      ]
+    },
+    {
+      "zh": "参数",
+      "en": [
+        "param",
+        "parameter",
+        "arg"
+      ]
+    },
+    {
+      "zh": "参数校验",
+      "en": [
+        "validate",
+        "check",
+        "verify",
+        "assert"
+      ]
+    },
+    {
+      "zh": "测试",
+      "en": [
+        "test",
+        "testing",
+        "spec"
+      ]
+    },
+    {
+      "zh": "拆分",
+      "en": [
+        "split",
+        "divide",
+        "separate"
+      ]
+    },
+    {
+      "zh": "超时",
+      "en": [
+        "timeout",
+        "expire",
+        "deadline"
+      ]
+    },
+    {
+      "zh": "超时取消",
+      "en": [
+        "timeoutCancel",
+        "cancelOnTimeout",
+        "abortTimeout"
+      ]
+    },
+    {
+      "zh": "超时时间",
+      "en": [
+        "timeout",
+        "timeLimit",
+        "expireTime"
+      ]
+    },
+    {
+      "zh": "超限",
+      "en": [
+        "exceed",
+        "overflow",
+        "overlimit"
+      ]
+    },
+    {
+      "zh": "超限处理",
+      "en": [
+        "overflow",
+        "exceed",
+        "overLimit",
+        "overflowHandler"
+      ]
+    },
+    {
+      "zh": "持久化",
+      "en": [
+        "persist",
+        "persistence",
+        "store"
+      ]
+    },
+    {
+      "zh": "持续时间",
+      "en": [
+        "duration",
+        "elapsed",
+        "span"
+      ]
+    },
+    {
+      "zh": "初始化",
+      "en": [
+        "init",
+        "initialize",
+        "setup",
+        "prepare"
+      ]
+    },
+    {
+      "zh": "传输编码",
+      "en": [
+        "transferEncoding",
+        "encoding",
+        "chunked"
+      ]
+    },
+    {
+      "zh": "创建",
+      "en": [
+        "create",
+        "build",
+        "make"
+      ]
+    },
+    {
+      "zh": "磁盘",
+      "en": [
+        "disk",
+        "storage",
+        "volume"
+      ]
+    },
+    {
+      "zh": "错误",
+      "en": [
+        "error",
+        "err",
+        "mistake"
+      ]
+    },
+    {
+      "zh": "错误码",
+      "en": [
+        "errorCode",
+        "code",
+        "status"
+      ]
+    },
+    {
+      "zh": "错误日志",
+      "en": [
+        "log",
+        "errorLog",
+        "logger"
+      ]
+    },
+    {
+      "zh": "大端序",
+      "en": [
+        "bigEndian",
+        "be",
+        "networkOrder"
+      ]
+    },
+    {
+      "zh": "大小",
+      "en": [
+        "size",
+        "length",
+        "capacity"
+      ]
+    },
+    {
+      "zh": "大小限制",
+      "en": [
+        "sizeLimit",
+        "maxSize",
+        "sizeCap"
+      ]
+    },
+    {
+      "zh": "大小写转换",
+      "en": [
+        "upper",
+        "lower",
+        "case",
+        "capitalize"
+      ]
+    },
+    {
+      "zh": "代理设置",
+      "en": [
+        "proxy",
+        "agent",
+        "gateway"
+      ]
+    },
+    {
+      "zh": "单例",
+      "en": [
+        "singleton",
+        "singleInstance",
+        "single"
+      ]
+    },
+    {
+      "zh": "当前时间",
+      "en": [
+        "now",
+        "currentTime",
+        "today"
+      ]
+    },
+    {
+      "zh": "到期时间",
+      "en": [
+        "expiry",
+        "expiration",
+        "due"
+      ]
+    },
+    {
+      "zh": "调度",
+      "en": [
+        "schedule",
+        "scheduler",
+        "dispatch"
+      ]
+    },
+    {
+      "zh": "调试日志",
+      "en": [
+        "debugLog",
+        "debug",
+        "trace"
+      ]
+    },
+    {
+      "zh": "定时器",
+      "en": [
+        "timer",
+        "alarm",
+        "tick"
+      ]
+    },
+    {
+      "zh": "定时任务",
+      "en": [
+        "schedule",
+        "cron",
+        "job"
+      ]
+    },
+    {
+      "zh": "读取",
+      "en": [
+        "read",
+        "load",
+        "fetch"
+      ]
+    },
+    {
+      "zh": "读取超时",
+      "en": [
+        "readTimeout",
+        "timeout",
+        "idle"
+      ]
+    },
+    {
+      "zh": "读取数据",
+      "en": [
+        "read",
+        "readData",
+        "load"
+      ]
+    },
+    {
+      "zh": "断言",
+      "en": [
+        "assert",
+        "assertion",
+        "expect"
+      ]
+    },
+    {
+      "zh": "堆栈跟踪",
+      "en": [
+        "stackTrace",
+        "traceback",
+        "stack"
+      ]
+    },
+    {
+      "zh": "队列",
+      "en": [
+        "queue",
+        "fifo",
+        "buffer"
+      ]
+    },
+    {
+      "zh": "多部分表单",
+      "en": [
+        "multipart",
+        "formData",
+        "multipartForm"
+      ]
+    },
+    {
+      "zh": "二进制编码",
+      "en": [
+        "binary",
+        "bin",
+        "raw"
+      ]
+    },
+    {
+      "zh": "反序列化",
+      "en": [
+        "deserialize",
+        "unmarshal",
+        "parse"
+      ]
+    },
+    {
+      "zh": "返回",
+      "en": [
+        "return",
+        "result",
+        "response"
+      ]
+    },
+    {
+      "zh": "范围校验",
+      "en": [
+        "range",
+        "bound",
+        "limit",
+        "minMax"
+      ]
+    },
+    {
+      "zh": "访问令牌",
+      "en": [
+        "token",
+        "accessToken",
+        "bearer"
+      ]
+    },
+    {
+      "zh": "访问日志",
+      "en": [
+        "accessLog",
+        "access",
+        "audit"
+      ]
+    },
+    {
+      "zh": "非法",
+      "en": [
+        "illegal",
+        "invalid",
+        "forbidden"
+      ]
+    },
+    {
+      "zh": "非空校验",
+      "en": [
+        "notNull",
+        "required",
+        "nonEmpty",
+        "mandatory"
+      ]
+    },
+    {
+      "zh": "非阻塞",
+      "en": [
+        "nonBlocking",
+        "nonblock",
+        "unblocked"
+      ]
+    },
+    {
+      "zh": "分段",
+      "en": [
+        "segment",
+        "chunk",
+        "partition"
+      ]
+    },
+    {
+      "zh": "分段边界",
+      "en": [
+        "boundary",
+        "delimiter",
+        "separator"
+      ]
+    },
+    {
+      "zh": "分段标识",
+      "en": [
+        "boundary",
+        "marker",
+        "delimiter"
+      ]
+    },
+    {
+      "zh": "分段解析",
+      "en": [
+        "parse",
+        "parsePart",
+        "split"
+      ]
+    },
+    {
+      "zh": "分段内容",
+      "en": [
+        "partBody",
+        "part",
+        "content"
+      ]
+    },
+    {
+      "zh": "分段头",
+      "en": [
+        "partHeader",
+        "part",
+        "header"
+      ]
+    },
+    {
+      "zh": "分块传输",
+      "en": [
+        "chunked",
+        "chunk",
+        "transfer"
+      ]
+    },
+    {
+      "zh": "分块大小",
+      "en": [
+        "chunkSize",
+        "blockSize",
+        "bufSize"
+      ]
+    },
+    {
+      "zh": "分块读取",
+      "en": [
+        "chunk",
+        "chunked",
+        "block"
+      ]
+    },
+    {
+      "zh": "分页",
+      "en": [
+        "page",
+        "paging",
+        "pagination"
+      ]
+    },
+    {
+      "zh": "分页大小",
+      "en": [
+        "pageSize",
+        "pageLimit",
+        "perPage"
+      ]
+    },
+    {
+      "zh": "复制",
+      "en": [
+        "copy",
+        "clone",
+        "duplicate"
+      ]
+    },
+    {
+      "zh": "覆盖率",
+      "en": [
+        "coverage",
+        "covered",
+        "cover"
+      ]
+    },
+    {
+      "zh": "覆盖配置",
+      "en": [
+        "override",
+        "overwrite",
+        "overrideConfig"
+      ]
+    },
+    {
+      "zh": "格式化输出",
+      "en": [
+        "format",
+        "printf",
+        "template",
+        "render"
+      ]
+    },
+    {
+      "zh": "格式校验",
+      "en": [
+        "format",
+        "pattern",
+        "regex",
+        "match"
+      ]
+    },
+    {
+      "zh": "关闭",
+      "en": [
+        "close",
+        "shutdown",
+        "dispose"
+      ]
+    },
+    {
+      "zh": "关闭流",
+      "en": [
+        "close",
+        "closeStream",
+        "dispose"
+      ]
+    },
+    {
+      "zh": "管道流",
+      "en": [
+        "pipe",
+        "piped",
+        "pipeline"
+      ]
+    },
+    {
+      "zh": "过滤",
+      "en": [
+        "filter",
+        "exclude",
+        "screen"
+      ]
+    },
+    {
+      "zh": "哈希值",
+      "en": [
+        "hash",
+        "hashValue",
+        "digest"
+      ]
+    },
+    {
+      "zh": "合并",
+      "en": [
+        "merge",
+        "combine",
+        "join"
+      ]
+    },
+    {
+      "zh": "环境",
+      "en": [
+        "environment",
+        "env",
+        "profile"
+      ]
+    },
+    {
+      "zh": "环境变量",
+      "en": [
+        "envVar",
+        "environment",
+        "env"
+      ]
+    },
+    {
+      "zh": "缓冲大小",
+      "en": [
+        "bufferSize",
+        "bufSize",
+        "chunkSize"
+      ]
+    },
+    {
+      "zh": "缓冲区",
+      "en": [
+        "buffer",
+        "buffered",
+        "buf"
+      ]
+    },
+    {
+      "zh": "缓存",
+      "en": [
+        "cache",
+        "buffer",
+        "memo"
+      ]
+    },
+    {
+      "zh": "缓存穿透",
+      "en": [
+        "penetration",
+        "missStorm",
+        "bypass"
+      ]
+    },
+    {
+      "zh": "缓存过期",
+      "en": [
+        "expire",
+        "ttl",
+        "timeout",
+        "eviction"
+      ]
+    },
+    {
+      "zh": "缓存命中",
+      "en": [
+        "hit",
+        "cacheHit",
+        "hitRate"
+      ]
+    },
+    {
+      "zh": "缓存失效",
+      "en": [
+        "invalidate",
+        "expire",
+        "evict",
+        "flush"
+      ]
+    },
+    {
+      "zh": "缓存淘汰",
+      "en": [
+        "evict",
+        "eviction",
+        "lru",
+        "recycle"
+      ]
+    },
+    {
+      "zh": "缓存未命中",
+      "en": [
+        "miss",
+        "cacheMiss",
+        "missRate"
+      ]
+    },
+    {
+      "zh": "缓存雪崩",
+      "en": [
+        "avalanche",
+        "cascade",
+        "storm"
+      ]
+    },
+    {
+      "zh": "缓存预热",
+      "en": [
+        "warmup",
+        "preload",
+        "prefetch"
+      ]
+    },
+    {
+      "zh": "恢复",
+      "en": [
+        "recover",
+        "restore",
+        "resume"
+      ]
+    },
+    {
+      "zh": "回调",
+      "en": [
+        "callback",
+        "callbackFn",
+        "cb"
+      ]
+    },
+    {
+      "zh": "回滚",
+      "en": [
+        "rollback",
+        "revert",
+        "undo"
+      ]
+    },
+    {
+      "zh": "回收",
+      "en": [
+        "recycle",
+        "reclaim",
+        "reuse",
+        "pool"
+      ]
+    },
+    {
+      "zh": "会话标识",
+      "en": [
+        "sessionId",
+        "sessionKey",
+        "sid"
+      ]
+    },
+    {
+      "zh": "会话管理",
+      "en": [
+        "session",
+        "cookie",
+        "state"
+      ]
+    },
+    {
+      "zh": "获取",
+      "en": [
+        "get",
+        "fetch",
+        "obtain"
+      ]
+    },
+    {
+      "zh": "集合",
+      "en": [
+        "collection",
+        "set",
+        "list"
+      ]
+    },
+    {
+      "zh": "集合遍历",
+      "en": [
+        "iterate",
+        "traverse",
+        "forEach",
+        "loop"
+      ]
+    },
+    {
+      "zh": "集合查找",
+      "en": [
+        "find",
+        "search",
+        "lookup",
+        "query"
+      ]
+    },
+    {
+      "zh": "集合分组",
+      "en": [
+        "group",
+        "groupBy",
+        "partition"
+      ]
+    },
+    {
+      "zh": "集合更新",
+      "en": [
+        "update",
+        "set",
+        "modify",
+        "put"
+      ]
+    },
+    {
+      "zh": "集合过滤",
+      "en": [
+        "filter",
+        "select",
+        "where"
+      ]
+    },
+    {
+      "zh": "集合合并",
+      "en": [
+        "merge",
+        "union",
+        "concat",
+        "combine"
+      ]
+    },
+    {
+      "zh": "集合排序",
+      "en": [
+        "sort",
+        "order",
+        "compare"
+      ]
+    },
+    {
+      "zh": "集合判空",
+      "en": [
+        "isEmpty",
+        "empty",
+        "blank"
+      ]
+    },
+    {
+      "zh": "集合切片",
+      "en": [
+        "slice",
+        "subList",
+        "range"
+      ]
+    },
+    {
+      "zh": "集合去重",
+      "en": [
+        "distinct",
+        "unique",
+        "dedupe"
+      ]
+    },
+    {
+      "zh": "集合删除",
+      "en": [
+        "remove",
+        "delete",
+        "pop",
+        "erase"
+      ]
+    },
+    {
+      "zh": "集合添加",
+      "en": [
+        "add",
+        "insert",
+        "push",
+        "append"
+      ]
+    },
+    {
+      "zh": "集合统计",
+      "en": [
+        "count",
+        "sum",
+        "aggregate",
+        "reduce"
+      ]
+    },
+    {
+      "zh": "集合映射",
+      "en": [
+        "map",
+        "transform",
+        "convert"
+      ]
+    },
+    {
+      "zh": "计时器",
+      "en": [
+        "timer",
+        "stopwatch",
+        "elapsed"
+      ]
+    },
+    {
+      "zh": "计数器",
+      "en": [
+        "counter",
+        "count",
+        "tally"
+      ]
+    },
+    {
+      "zh": "间隔",
+      "en": [
+        "interval",
+        "period",
+        "gap"
+      ]
+    },
+    {
+      "zh": "监控",
+      "en": [
+        "monitor",
+        "watch",
+        "observe"
+      ]
+    },
+    {
+      "zh": "监控指标",
+      "en": [
+        "metric",
+        "gauge",
+        "indicator"
+      ]
+    },
+    {
+      "zh": "检查",
+      "en": [
+        "check",
+        "inspect",
+        "examine"
+      ]
+    },
+    {
+      "zh": "健康检查",
+      "en": [
+        "healthCheck",
+        "health",
+        "probe"
+      ]
+    },
+    {
+      "zh": "接口",
+      "en": [
+        "interface",
+        "api",
+        "port"
+      ]
+    },
+    {
+      "zh": "接口限流",
+      "en": [
+        "rateLimit",
+        "throttle",
+        "quota"
+      ]
+    },
+    {
+      "zh": "结束时间",
+      "en": [
+        "endTime",
+        "finish",
+        "end"
+      ]
+    },
+    {
+      "zh": "解码",
+      "en": [
+        "decode",
+        "decoding",
+        "parse"
+      ]
+    },
+    {
+      "zh": "解码格式",
+      "en": [
+        "decoding",
+        "decode",
+        "codec"
+      ]
+    },
+    {
+      "zh": "解析",
+      "en": [
+        "parse",
+        "resolve",
+        "decode"
+      ]
+    },
+    {
+      "zh": "解压文件",
+      "en": [
+        "unzip",
+        "extract",
+        "decompress"
+      ]
+    },
+    {
+      "zh": "进度",
+      "en": [
+        "progress",
+        "process",
+        "status"
+      ]
+    },
+    {
+      "zh": "开关",
+      "en": [
+        "switch",
+        "toggle",
+        "flag"
+      ]
+    },
+    {
+      "zh": "开始时间",
+      "en": [
+        "startTime",
+        "begin",
+        "start"
+      ]
+    },
+    {
+      "zh": "空格",
+      "en": [
+        "space",
+        "blank",
+        "whitespace"
+      ]
+    },
+    {
+      "zh": "空值",
+      "en": [
+        "null",
+        "nil",
+        "none"
+      ]
+    },
+    {
+      "zh": "类型校验",
+      "en": [
+        "typeCheck",
+        "instanceof",
+        "cast",
+        "isType"
+      ]
+    },
+    {
+      "zh": "连接超时",
+      "en": [
+        "connectTimeout",
+        "timeout",
+        "deadline"
+      ]
+    },
+    {
+      "zh": "连接池",
+      "en": [
+        "connectionPool",
+        "connPool",
+        "pool"
+      ]
+    },
+    {
+      "zh": "连接释放",
+      "en": [
+        "disconnect",
+        "release",
+        "close",
+        "unbind"
+      ]
+    },
+    {
+      "zh": "临时",
+      "en": [
+        "temp",
+        "temporary",
+        "tmp"
+      ]
+    },
+    {
+      "zh": "临时目录",
+      "en": [
+        "tempDir",
+        "tmpdir",
+        "cache"
+      ]
+    },
+    {
+      "zh": "临时文件",
+      "en": [
+        "tempFile",
+        "tmpFile",
+        "tempPath"
+      ]
+    },
+    {
+      "zh": "令牌",
+      "en": [
+        "token",
+        "accessToken",
+        "authToken"
+      ]
+    },
+    {
+      "zh": "流复制",
+      "en": [
+        "copy",
+        "transfer",
+        "pipe"
+      ]
+    },
+    {
+      "zh": "流关闭",
+      "en": [
+        "close",
+        "closed",
+        "shutdown"
+      ]
+    },
+    {
+      "zh": "流水号",
+      "en": [
+        "sequenceNo",
+        "runningNo",
+        "serialNo"
+      ]
+    },
+    {
+      "zh": "流异常",
+      "en": [
+        "ioError",
+        "streamError",
+        "exception"
+      ]
+    },
+    {
+      "zh": "路径",
+      "en": [
+        "path",
+        "route",
+        "location"
+      ]
+    },
+    {
+      "zh": "乱码",
+      "en": [
+        "garbled",
+        "mojibake",
+        "corrupt"
+      ]
+    },
+    {
+      "zh": "媒体类型",
+      "en": [
+        "mediaType",
+        "mimeType",
+        "contentType"
+      ]
+    },
+    {
+      "zh": "命名空间",
+      "en": [
+        "namespace",
+        "ns",
+        "nameSpace"
+      ]
+    },
+    {
+      "zh": "模拟",
+      "en": [
+        "mock",
+        "stub",
+        "fake"
+      ]
+    },
+    {
+      "zh": "默认编码",
+      "en": [
+        "defaultCharset",
+        "defaultEncoding",
+        "fallback"
+      ]
+    },
+    {
+      "zh": "默认值",
+      "en": [
+        "defaultValue",
+        "default",
+        "fallback"
+      ]
+    },
+    {
+      "zh": "目录",
+      "en": [
+        "directory",
+        "dir",
+        "folder"
+      ]
+    },
+    {
+      "zh": "目录遍历",
+      "en": [
+        "walk",
+        "traverse",
+        "iterate"
+      ]
+    },
+    {
+      "zh": "内存",
+      "en": [
+        "memory",
+        "mem",
+        "heap"
+      ]
+    },
+    {
+      "zh": "内存释放",
+      "en": [
+        "free",
+        "deallocate",
+        "gc",
+        "reclaim"
+      ]
+    },
+    {
+      "zh": "内容编码",
+      "en": [
+        "contentEncoding",
+        "encoding",
+        "gzip"
+      ]
+    },
+    {
+      "zh": "内容处置",
+      "en": [
+        "contentDisposition",
+        "disposition",
+        "attachment"
+      ]
+    },
+    {
+      "zh": "内容类型",
+      "en": [
+        "contentType",
+        "mediaType",
+        "mimeType"
+      ]
+    },
+    {
+      "zh": "内容长度",
+      "en": [
+        "contentLength",
+        "length",
+        "size"
+      ]
+    },
+    {
+      "zh": "排序",
+      "en": [
+        "sort",
+        "order",
+        "rank"
+      ]
+    },
+    {
+      "zh": "抛出",
+      "en": [
+        "throw",
+        "raise",
+        "emit"
+      ]
+    },
+    {
+      "zh": "配额",
+      "en": [
+        "quota",
+        "quotaLimit",
+        "allowance"
+      ]
+    },
+    {
+      "zh": "配置",
+      "en": [
+        "config",
+        "configuration",
+        "settings"
+      ]
+    },
+    {
+      "zh": "配置项",
+      "en": [
+        "configItem",
+        "configKey",
+        "setting"
+      ]
+    },
+    {
+      "zh": "批量",
+      "en": [
+        "batch",
+        "bulk",
+        "mass"
+      ]
+    },
+    {
+      "zh": "批量大小",
+      "en": [
+        "batchSize",
+        "chunkSize",
+        "bulkSize"
+      ]
+    },
+    {
+      "zh": "屏障",
+      "en": [
+        "barrier",
+        "latch",
+        "fence"
+      ]
+    },
+    {
+      "zh": "清理",
+      "en": [
+        "clean",
+        "cleanup",
+        "purge"
+      ]
+    },
+    {
+      "zh": "请求",
+      "en": [
+        "request",
+        "req",
+        "query"
+      ]
+    },
+    {
+      "zh": "请求参数",
+      "en": [
+        "param",
+        "requestParam",
+        "queryParam"
+      ]
+    },
+    {
+      "zh": "请求地址",
+      "en": [
+        "url",
+        "uri",
+        "endpoint"
+      ]
+    },
+    {
+      "zh": "请求方法",
+      "en": [
+        "method",
+        "verb",
+        "httpMethod"
+      ]
+    },
+    {
+      "zh": "请求体",
+      "en": [
+        "body",
+        "requestBody",
+        "payload"
+      ]
+    },
+    {
+      "zh": "请求头",
+      "en": [
+        "requestHeader",
+        "header",
+        "headers"
+      ]
+    },
+    {
+      "zh": "取消",
+      "en": [
+        "cancel",
+        "cancellation",
+        "abort"
+      ]
+    },
+    {
+      "zh": "去除空格",
+      "en": [
+        "trim",
+        "strip",
+        "whitespace"
+      ]
+    },
+    {
+      "zh": "去重",
+      "en": [
+        "deduplicate",
+        "distinct",
+        "unique",
+        "dedup"
+      ]
+    },
+    {
+      "zh": "全局唯一",
+      "en": [
+        "globalUnique",
+        "globallyUnique",
+        "uniqueGlobal"
+      ]
+    },
+    {
+      "zh": "任务",
+      "en": [
+        "task",
+        "job",
+        "work"
+      ]
+    },
+    {
+      "zh": "任务队列",
+      "en": [
+        "taskQueue",
+        "queue",
+        "jobQueue"
+      ]
+    },
+    {
+      "zh": "日期格式",
+      "en": [
+        "dateFormat",
+        "pattern",
+        "format"
+      ]
+    },
+    {
+      "zh": "日志",
+      "en": [
+        "log",
+        "logger",
+        "logging"
+      ]
+    },
+    {
+      "zh": "日志格式",
+      "en": [
+        "logFormat",
+        "pattern",
+        "layout"
+      ]
+    },
+    {
+      "zh": "日志归档",
+      "en": [
+        "archive",
+        "archived",
+        "backup"
+      ]
+    },
+    {
+      "zh": "日志级别",
+      "en": [
+        "logLevel",
+        "level",
+        "severity"
+      ]
+    },
+    {
+      "zh": "日志记录",
+      "en": [
+        "log",
+        "logging",
+        "logger"
+      ]
+    },
+    {
+      "zh": "日志轮转",
+      "en": [
+        "rotation",
+        "rollover",
+        "rotate"
+      ]
+    },
+    {
+      "zh": "日志输出",
+      "en": [
+        "logOutput",
+        "appender",
+        "handler"
+      ]
+    },
+    {
+      "zh": "日志文件",
+      "en": [
+        "logFile",
+        "logfile",
+        "file"
+      ]
+    },
+    {
+      "zh": "容量限制",
+      "en": [
+        "capacity",
+        "capacityLimit",
+        "maxCapacity"
+      ]
+    },
+    {
+      "zh": "容器",
+      "en": [
+        "container",
+        "context",
+        "beanFactory"
+      ]
+    },
+    {
+      "zh": "删除",
+      "en": [
+        "delete",
+        "remove",
+        "drop"
+      ]
+    },
+    {
+      "zh": "上传",
+      "en": [
+        "upload",
+        "put",
+        "send"
+      ]
+    },
+    {
+      "zh": "上传进度",
+      "en": [
+        "progress",
+        "uploadProgress",
+        "percent"
+      ]
+    },
+    {
+      "zh": "上传目录",
+      "en": [
+        "uploadDir",
+        "uploadPath",
+        "destDir"
+      ]
+    },
+    {
+      "zh": "上限阈值",
+      "en": [
+        "upperLimit",
+        "maxThreshold",
+        "thresholdMax",
+        "ceiling"
+      ]
+    },
+    {
+      "zh": "设置",
+      "en": [
+        "set",
+        "config",
+        "assign"
+      ]
+    },
+    {
+      "zh": "身份认证",
+      "en": [
+        "auth",
+        "authentication",
+        "credential"
+      ]
+    },
+    {
+      "zh": "生命周期",
+      "en": [
+        "lifecycle",
+        "lifetime",
+        "scope"
+      ]
+    },
+    {
+      "zh": "失败",
+      "en": [
+        "fail",
+        "failure",
+        "error"
+      ]
+    },
+    {
+      "zh": "十六进制",
+      "en": [
+        "hex",
+        "hexadecimal",
+        "base16"
+      ]
+    },
+    {
+      "zh": "时间戳",
+      "en": [
+        "timestamp",
+        "time",
+        "epoch"
+      ]
+    },
+    {
+      "zh": "时间范围",
+      "en": [
+        "timeRange",
+        "range",
+        "window"
+      ]
+    },
+    {
+      "zh": "时间偏移",
+      "en": [
+        "offset",
+        "shift",
+        "skew"
+      ]
+    },
+    {
+      "zh": "时区",
+      "en": [
+        "timezone",
+        "zone",
+        "offset"
+      ]
+    },
+    {
+      "zh": "事务",
+      "en": [
+        "transaction",
+        "tx",
+        "commit"
+      ]
+    },
+    {
+      "zh": "释放",
+      "en": [
+        "release",
+        "free",
+        "dispose"
+      ]
+    },
+    {
+      "zh": "输出流",
+      "en": [
+        "outputStream",
+        "out",
+        "writer"
+      ]
+    },
+    {
+      "zh": "输入流",
+      "en": [
+        "inputStream",
+        "in",
+        "reader"
+      ]
+    },
+    {
+      "zh": "属性",
+      "en": [
+        "property",
+        "prop",
+        "attribute"
+      ]
+    },
+    {
+      "zh": "数据库",
+      "en": [
+        "database",
+        "db",
+        "datasource"
+      ]
+    },
+    {
+      "zh": "数量限制",
+      "en": [
+        "countLimit",
+        "quantityLimit",
+        "maxQuantity"
+      ]
+    },
+    {
+      "zh": "数组",
+      "en": [
+        "array",
+        "list",
+        "vector"
+      ]
+    },
+    {
+      "zh": "刷新缓冲",
+      "en": [
+        "flush",
+        "flushBuffer",
+        "sync"
+      ]
+    },
+    {
+      "zh": "死锁",
+      "en": [
+        "deadlock",
+        "deadLock",
+        "lockDead"
+      ]
+    },
+    {
+      "zh": "特性开关",
+      "en": [
+        "featureFlag",
+        "featureToggle",
+        "flag"
+      ]
+    },
+    {
+      "zh": "提交方式",
+      "en": [
+        "method",
+        "httpMethod",
+        "submitType"
+      ]
+    },
+    {
+      "zh": "填充补齐",
+      "en": [
+        "pad",
+        "fill",
+        "padding"
+      ]
+    },
+    {
+      "zh": "同步",
+      "en": [
+        "sync",
+        "synchronize",
+        "synchronous"
+      ]
+    },
+    {
+      "zh": "统计",
+      "en": [
+        "stat",
+        "statistics",
+        "count"
+      ]
+    },
+    {
+      "zh": "头部",
+      "en": [
+        "header",
+        "head",
+        "meta"
+      ]
+    },
+    {
+      "zh": "头部解析",
+      "en": [
+        "parseHeader",
+        "header",
+        "parse"
+      ]
+    },
+    {
+      "zh": "外键",
+      "en": [
+        "foreignKey",
+        "fk",
+        "refKey"
+      ]
+    },
+    {
+      "zh": "网络请求",
+      "en": [
+        "request",
+        "httpRequest",
+        "call"
+      ]
+    },
+    {
+      "zh": "网络响应",
+      "en": [
+        "response",
+        "reply",
+        "result"
+      ]
+    },
+    {
+      "zh": "唯一",
+      "en": [
+        "unique",
+        "distinct",
+        "exclusive"
+      ]
+    },
+    {
+      "zh": "唯一标识",
+      "en": [
+        "uniqueId",
+        "uid",
+        "identifier",
+        "id"
+      ]
+    },
+    {
+      "zh": "唯一性校验",
+      "en": [
+        "unique",
+        "duplicate",
+        "distinct"
+      ]
+    },
+    {
+      "zh": "文本编码",
+      "en": [
+        "textEncoding",
+        "charset",
+        "encoding"
+      ]
+    },
+    {
+      "zh": "文件",
+      "en": [
+        "file",
+        "document",
+        "doc"
+      ]
+    },
+    {
+      "zh": "文件编码",
+      "en": [
+        "encoding",
+        "charset",
+        "utf8"
+      ]
+    },
+    {
+      "zh": "文件大小",
+      "en": [
+        "fileSize",
+        "size",
+        "length"
+      ]
+    },
+    {
+      "zh": "文件读写",
+      "en": [
+        "read",
+        "write",
+        "io"
+      ]
+    },
+    {
+      "zh": "文件复制",
+      "en": [
+        "copy",
+        "duplicate",
+        "clone"
+      ]
+    },
+    {
+      "zh": "文件关闭",
+      "en": [
+        "close",
+        "flush",
+        "finalize"
+      ]
+    },
+    {
+      "zh": "文件扩展名",
+      "en": [
+        "extension",
+        "suffix",
+        "ext"
+      ]
+    },
+    {
+      "zh": "文件类型",
+      "en": [
+        "fileType",
+        "contentType",
+        "mimeType"
+      ]
+    },
+    {
+      "zh": "文件流",
+      "en": [
+        "stream",
+        "inputStream",
+        "outputStream"
+      ]
+    },
+    {
+      "zh": "文件路径",
+      "en": [
+        "filePath",
+        "path",
+        "filepath"
+      ]
+    },
+    {
+      "zh": "文件名",
+      "en": [
+        "fileName",
+        "filename",
+        "name"
+      ]
+    },
+    {
+      "zh": "文件名称",
+      "en": [
+        "fileName",
+        "filename",
+        "name"
+      ]
+    },
+    {
+      "zh": "文件内容",
+      "en": [
+        "content",
+        "data",
+        "body"
+      ]
+    },
+    {
+      "zh": "文件权限",
+      "en": [
+        "permission",
+        "mode",
+        "acl"
+      ]
+    },
+    {
+      "zh": "文件删除",
+      "en": [
+        "delete",
+        "remove",
+        "unlink"
+      ]
+    },
+    {
+      "zh": "文件上传",
+      "en": [
+        "upload",
+        "fileUpload",
+        "uploadFile"
+      ]
+    },
+    {
+      "zh": "文件下载",
+      "en": [
+        "download",
+        "downloadable",
+        "get"
+      ]
+    },
+    {
+      "zh": "文件校验",
+      "en": [
+        "checksum",
+        "hash",
+        "digest"
+      ]
+    },
+    {
+      "zh": "文件移动",
+      "en": [
+        "move",
+        "rename",
+        "relocate"
+      ]
+    },
+    {
+      "zh": "文件字段",
+      "en": [
+        "fileField",
+        "filePart",
+        "fieldName"
+      ]
+    },
+    {
+      "zh": "无效",
+      "en": [
+        "invalid",
+        "bad",
+        "error"
+      ]
+    },
+    {
+      "zh": "下限阈值",
+      "en": [
+        "lowerLimit",
+        "minThreshold",
+        "thresholdMin",
+        "floor"
+      ]
+    },
+    {
+      "zh": "下载",
+      "en": [
+        "download",
+        "fetch",
+        "get"
+      ]
+    },
+    {
+      "zh": "线程",
+      "en": [
+        "thread",
+        "worker",
+        "task"
+      ]
+    },
+    {
+      "zh": "线程安全",
+      "en": [
+        "threadSafe",
+        "threadSafety",
+        "safeThread"
+      ]
+    },
+    {
+      "zh": "线程池",
+      "en": [
+        "threadPool",
+        "executor",
+        "pool"
+      ]
+    },
+    {
+      "zh": "限制",
+      "en": [
+        "limit",
+        "restrict",
+        "bound"
+      ]
+    },
+    {
+      "zh": "响应",
+      "en": [
+        "response",
+        "resp",
+        "reply"
+      ]
+    },
+    {
+      "zh": "响应时间",
+      "en": [
+        "latency",
+        "responseTime",
+        "elapsed"
+      ]
+    },
+    {
+      "zh": "响应头",
+      "en": [
+        "responseHeader",
+        "header",
+        "headers"
+      ]
+    },
+    {
+      "zh": "销毁",
+      "en": [
+        "destroy",
+        "dispose",
+        "finalize",
+        "teardown"
+      ]
+    },
+    {
+      "zh": "小端序",
+      "en": [
+        "littleEndian",
+        "le",
+        "hostOrder"
+      ]
+    },
+    {
+      "zh": "校验",
+      "en": [
+        "validate",
+        "verify",
+        "check"
+      ]
+    },
+    {
+      "zh": "校验码",
+      "en": [
+        "checksum",
+        "checkCode",
+        "verifyCode"
+      ]
+    },
+    {
+      "zh": "校验失败",
+      "en": [
+        "invalid",
+        "fail",
+        "reject",
+        "violation"
+      ]
+    },
+    {
+      "zh": "协议版本",
+      "en": [
+        "version",
+        "httpVersion",
+        "protocol"
+      ]
+    },
+    {
+      "zh": "协议头",
+      "en": [
+        "header",
+        "headers",
+        "httpHeader"
+      ]
+    },
+    {
+      "zh": "写入",
+      "en": [
+        "write",
+        "save",
+        "store"
+      ]
+    },
+    {
+      "zh": "写入数据",
+      "en": [
+        "write",
+        "writeData",
+        "save"
+      ]
+    },
+    {
+      "zh": "信号量",
+      "en": [
+        "semaphore",
+        "sem",
+        "signal"
+      ]
+    },
+    {
+      "zh": "性能统计",
+      "en": [
+        "metrics",
+        "statistics",
+        "stats"
+      ]
+    },
+    {
+      "zh": "序列号",
+      "en": [
+        "serialNumber",
+        "serialNo",
+        "sequenceNo"
+      ]
+    },
+    {
+      "zh": "序列化",
+      "en": [
+        "serialize",
+        "serialization",
+        "marshal"
+      ]
+    },
+    {
+      "zh": "选项",
+      "en": [
+        "option",
+        "opt",
+        "choice"
+      ]
+    },
+    {
+      "zh": "压缩编码",
+      "en": [
+        "compress",
+        "gzip",
+        "deflate"
+      ]
+    },
+    {
+      "zh": "压缩文件",
+      "en": [
+        "zip",
+        "archive",
+        "compress"
+      ]
+    },
+    {
+      "zh": "延迟",
+      "en": [
+        "delay",
+        "latency",
+        "wait"
+      ]
+    },
+    {
+      "zh": "验证",
+      "en": [
+        "verify",
+        "validate",
+        "confirm"
+      ]
+    },
+    {
+      "zh": "依赖",
+      "en": [
+        "dependency",
+        "depend",
+        "dep"
+      ]
+    },
+    {
+      "zh": "依赖注入",
+      "en": [
+        "dependencyInjection",
+        "inject",
+        "di"
+      ]
+    },
+    {
+      "zh": "异步",
+      "en": [
+        "async",
+        "asynchronous",
+        "asyncTask"
+      ]
+    },
+    {
+      "zh": "异常",
+      "en": [
+        "exception",
+        "error",
+        "fault"
+      ]
+    },
+    {
+      "zh": "异常捕获",
+      "en": [
+        "catch",
+        "capture",
+        "handle",
+        "trap"
+      ]
+    },
+    {
+      "zh": "异常处理",
+      "en": [
+        "handle",
+        "handleException",
+        "process"
+      ]
+    },
+    {
+      "zh": "异常堆栈",
+      "en": [
+        "stackTrace",
+        "trace",
+        "stack"
+      ]
+    },
+    {
+      "zh": "异常类型",
+      "en": [
+        "type",
+        "errorType",
+        "category"
+      ]
+    },
+    {
+      "zh": "异常链",
+      "en": [
+        "cause",
+        "chain",
+        "nested"
+      ]
+    },
+    {
+      "zh": "异常抛出",
+      "en": [
+        "throw",
+        "raise",
+        "emit"
+      ]
+    },
+    {
+      "zh": "异常信息",
+      "en": [
+        "message",
+        "errorMessage",
+        "detail"
+      ]
+    },
+    {
+      "zh": "映射",
+      "en": [
+        "map",
+        "mapping",
+        "dict"
+      ]
+    },
+    {
+      "zh": "映射存值",
+      "en": [
+        "put",
+        "set",
+        "store",
+        "insert"
+      ]
+    },
+    {
+      "zh": "映射键集",
+      "en": [
+        "keySet",
+        "keys",
+        "key"
+      ]
+    },
+    {
+      "zh": "映射取值",
+      "en": [
+        "get",
+        "fetch",
+        "lookup",
+        "value"
+      ]
+    },
+    {
+      "zh": "映射条目",
+      "en": [
+        "entry",
+        "entrySet",
+        "pair"
+      ]
+    },
+    {
+      "zh": "映射值集",
+      "en": [
+        "values",
+        "valueList"
+      ]
+    },
+    {
+      "zh": "用例",
+      "en": [
+        "case",
+        "testcase",
+        "scenario"
+      ]
+    },
+    {
+      "zh": "阈值",
+      "en": [
+        "threshold",
+        "limit",
+        "bound"
+      ]
+    },
+    {
+      "zh": "原型",
+      "en": [
+        "prototype",
+        "proto",
+        "prototypeBean"
+      ]
+    },
+    {
+      "zh": "原子操作",
+      "en": [
+        "atomic",
+        "atomicOp",
+        "atomically"
+      ]
+    },
+    {
+      "zh": "增量",
+      "en": [
+        "increment",
+        "delta",
+        "incremental"
+      ]
+    },
+    {
+      "zh": "长度",
+      "en": [
+        "length",
+        "size",
+        "count"
+      ]
+    },
+    {
+      "zh": "长度校验",
+      "en": [
+        "length",
+        "size",
+        "maxLength",
+        "minLength"
+      ]
+    },
+    {
+      "zh": "诊断信息",
+      "en": [
+        "diagnostic",
+        "diagnostics",
+        "info"
+      ]
+    },
+    {
+      "zh": "指纹",
+      "en": [
+        "fingerprint",
+        "fingerPrint",
+        "hashKey"
+      ]
+    },
+    {
+      "zh": "中断",
+      "en": [
+        "interrupt",
+        "interruption",
+        "break"
+      ]
+    },
+    {
+      "zh": "重定向",
+      "en": [
+        "redirect",
+        "location",
+        "forward"
+      ]
+    },
+    {
+      "zh": "重试",
+      "en": [
+        "retry",
+        "retries",
+        "attempt"
+      ]
+    },
+    {
+      "zh": "重试次数",
+      "en": [
+        "retryCount",
+        "maxRetries",
+        "retryLimit"
+      ]
+    },
+    {
+      "zh": "周期执行",
+      "en": [
+        "periodic",
+        "recurring",
+        "repeat"
+      ]
+    },
+    {
+      "zh": "主键",
+      "en": [
+        "primaryKey",
+        "pk",
+        "mainKey"
+      ]
+    },
+    {
+      "zh": "注册",
+      "en": [
+        "register",
+        "enroll",
+        "signup"
+      ]
+    },
+    {
+      "zh": "注入",
+      "en": [
+        "inject",
+        "injection",
+        "autowire"
+      ]
+    },
+    {
+      "zh": "转换",
+      "en": [
+        "convert",
+        "transform",
+        "cast"
+      ]
+    },
+    {
+      "zh": "转义字符",
+      "en": [
+        "escape",
+        "escaped",
+        "quote"
+      ]
+    },
+    {
+      "zh": "状态码",
+      "en": [
+        "statusCode",
+        "status",
+        "code"
+      ]
+    },
+    {
+      "zh": "资源",
+      "en": [
+        "resource",
+        "res",
+        "asset"
+      ]
+    },
+    {
+      "zh": "资源关闭",
+      "en": [
+        "close",
+        "shutdown",
+        "terminate",
+        "destroy"
+      ]
+    },
+    {
+      "zh": "资源清理",
+      "en": [
+        "cleanup",
+        "clear",
+        "purge",
+        "reset"
+      ]
+    },
+    {
+      "zh": "资源释放",
+      "en": [
+        "release",
+        "free",
+        "dispose",
+        "close"
+      ]
+    },
+    {
+      "zh": "字符",
+      "en": [
+        "char",
+        "character",
+        "letter"
+      ]
+    },
+    {
+      "zh": "字符编码",
+      "en": [
+        "charEncoding",
+        "charset",
+        "encoding"
+      ]
+    },
+    {
+      "zh": "字符串包含",
+      "en": [
+        "contains",
+        "includes",
+        "has"
+      ]
+    },
+    {
+      "zh": "字符串比较",
+      "en": [
+        "compare",
+        "equals",
+        "diff"
+      ]
+    },
+    {
+      "zh": "字符串查找",
+      "en": [
+        "indexOf",
+        "search",
+        "find",
+        "locate"
+      ]
+    },
+    {
+      "zh": "字符串反转",
+      "en": [
+        "reverse",
+        "invert"
+      ]
+    },
+    {
+      "zh": "字符串分割",
+      "en": [
+        "split",
+        "tokenize",
+        "partition"
+      ]
+    },
+    {
+      "zh": "字符串后缀",
+      "en": [
+        "suffix",
+        "endsWith",
+        "tail"
+      ]
+    },
+    {
+      "zh": "字符串截取",
+      "en": [
+        "substring",
+        "slice",
+        "truncate",
+        "cut"
+      ]
+    },
+    {
+      "zh": "字符串匹配",
+      "en": [
+        "match",
+        "regex",
+        "pattern"
+      ]
+    },
+    {
+      "zh": "字符串拼接",
+      "en": [
+        "concat",
+        "append",
+        "join",
+        "merge"
+      ]
+    },
+    {
+      "zh": "字符串前缀",
+      "en": [
+        "prefix",
+        "startsWith",
+        "head"
+      ]
+    },
+    {
+      "zh": "字符串替换",
+      "en": [
+        "replace",
+        "substitute",
+        "swap"
+      ]
+    },
+    {
+      "zh": "字符串长度",
+      "en": [
+        "length",
+        "size",
+        "count"
+      ]
+    },
+    {
+      "zh": "字符集",
+      "en": [
+        "charset",
+        "characterSet",
+        "encoding"
+      ]
+    },
+    {
+      "zh": "字符集参数",
+      "en": [
+        "charset",
+        "charsetParam",
+        "encoding"
+      ]
+    },
+    {
+      "zh": "字符流",
+      "en": [
+        "charStream",
+        "reader",
+        "writer"
+      ]
+    },
+    {
+      "zh": "字符数组",
+      "en": [
+        "charArray",
+        "chars",
+        "buffer"
+      ]
+    },
+    {
+      "zh": "字节流",
+      "en": [
+        "byteStream",
+        "bytes",
+        "stream"
+      ]
+    },
+    {
+      "zh": "字节数组",
+      "en": [
+        "byteArray",
+        "bytes",
+        "data"
+      ]
+    },
+    {
+      "zh": "字节序",
+      "en": [
+        "endian",
+        "byteOrder",
+        "order"
+      ]
+    },
+    {
+      "zh": "阻塞",
+      "en": [
+        "block",
+        "blocking",
+        "blocked"
+      ]
+    },
+    {
+      "zh": "最大数量",
+      "en": [
+        "maxCount",
+        "maxNum",
+        "countLimit",
+        "maxItems"
+      ]
+    },
+    {
+      "zh": "最大长度",
+      "en": [
+        "maxLength",
+        "maxLen",
+        "lengthLimit",
+        "maxSize"
+      ]
+    },
+    {
+      "zh": "最小数量",
+      "en": [
+        "minCount",
+        "minNum",
+        "minItems"
+      ]
+    },
+    {
+      "zh": "最小长度",
+      "en": [
+        "minLength",
+        "minLen",
+        "lengthMin"
+      ]
+    },
+    {
+      "zh": "作用域",
+      "en": [
+        "scope",
+        "lifetime",
+        "scopeType"
+      ]
+    }
+  ],
+  "lexiconSha256": "2badb6e2f0713489dcb27eca18a67fb31d1f910e231967c8feeb0e61647877f2"
+}

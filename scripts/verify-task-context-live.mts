@@ -90,6 +90,14 @@ async function sourceEvidenceMatches(item: TaskContextEvidence): Promise<void> {
   }
   assert.equal(item.fileHash, file.sha256, `${item.relativePath}: indexed file hash differs from the checkout.`);
   assert.equal(item.contentHash, createHash('sha256').update(item.content).digest('hex'), `${item.relativePath}: excerpt hash mismatch.`);
+  if (item.renderLevel && item.renderLevel !== 'full') {
+    // A downgraded excerpt is derived, not verbatim: it must say so, and its first
+    // declaration line must still be traceable to the indexed file.
+    assert.equal(item.truncated, true, `${item.relativePath}: downgraded evidence must be flagged truncated.`);
+    const firstLine = item.content.split('\n').find((line) => line.trim().length > 0)?.trim();
+    assert(firstLine && file.text.includes(firstLine.replace(/….*$/, '').trim()), `${item.relativePath}: downgraded excerpt is not traceable to the checkout.`);
+    return;
+  }
   const starts = [0];
   for (let offset = 0; offset < file.text.length; offset++) if (file.text[offset] === '\n') starts.push(offset + 1);
   const position = (line: number, column: number) => {

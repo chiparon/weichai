@@ -7,9 +7,15 @@ const evidence = (name: string, content: string, role: TaskContextEvidence['role
   repositoryId: 'r', analysisRevision: 'v', evidenceId: name, name, relativePath: `${name}.ts`, content, contentHash: sourceContentHash(content),
   fileHash: 'file', sourceRange: { startLine: 1, startColumn: 1, endLine: 2, endColumn: 1 }, role, reason: 'Task evidence', provider: 'tree-sitter', evidenceLevel: 'syntactic', truncated: false,
 });
+/**
+ * Regression coverage for the legacy first-fit packer. The adaptive compiler
+ * (see context-compiler.test.ts) intentionally behaves differently: it downgrades
+ * instead of dropping and never removes ranked results, so these expectations are
+ * pinned to legacy mode on purpose (docs/context-compiler-acceptance.zh-CN.md §4).
+ */
 function compile(items: TaskContextEvidence[], overrides: Partial<TaskRetrievalRequest> = {}) {
   return compileTaskContext({ ...request, ...overrides }, { status: 'complete', snapshots: [], results: [], relations: [], gaps: [], evidence: items,
-    routing: { requestedGranularity: 'auto', resolvedGranularities: ['function'], source: 'automatic', reason: 'test' } }, 0);
+    routing: { requestedGranularity: 'auto', resolvedGranularities: ['function'], source: 'automatic', reason: 'test' } }, 0, { mode: 'legacy' });
 }
 describe('implementation-first context construction', () => {
   it('retains core implementations before supporting code under an explicit file limit', () => {

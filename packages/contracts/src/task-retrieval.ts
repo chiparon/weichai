@@ -43,6 +43,8 @@ export interface TaskContextEvidence extends RepositoryRevisionScope {
   provider: EvidenceProvider;
   evidenceLevel: EvidenceLevel;
   truncated: boolean;
+  /** How much of the declaration body this excerpt carries. Absent means full. */
+  renderLevel?: 'full' | 'skeleton' | 'signature';
   symbolKey?: string;
 }
 export interface TaskRetrievalGap { code: string; message: string; repositoryId?: string; relativePath?: string }
@@ -76,30 +78,44 @@ export interface ContextPacket {
       /** Disjoint wall-clock stages; recall includes query encoding inside the storage adapter. */
       stages?: { snapshotMs: number; recallMs: number; candidateResolutionMs: number; expansionMs: number; compilationMs: number };
       /** Local offline query expansion applied to the recall query; never involves a model call. */
-      expansion?: { enabled: boolean; version: string; lexiconSha256: string; matched: string[]; terms: string[]; expansionMs: number } };
+      expansion?: { enabled: boolean; version: string; lexiconSha256: string; matched: string[]; terms: string[]; expansionMs: number };
+      /** Context compiler accounting: how the budget was spent and what was downgraded. */
+      compiler?: { mode: 'adaptive' | 'legacy'; framingTokens: number; codeTokens: number; codeShare: number;
+        downgraded: number; omitted: number; levels: { full: number; skeleton: number; signature: number } } };
   };
+}
+
+/** Markdown rendering caps: machine-readable fields stay complete; the exported text stays compact. */
+export const CONTEXT_MARKDOWN_LIMITS = { relations: 16, gaps: 8, gapMessage: 140, resultReason: 200 } as const;
+
+function clamp(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
 }
 
 /** Shared serialization for the service and user-selected evidence exports. */
 export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' | 'snapshots' | 'routing' | 'results' | 'evidence' | 'declarations' | 'relations' | 'gaps'>): string {
   const sections = ['# Code Context', packet.requirement, '## Snapshots', ...packet.snapshots.map((snapshot) =>
     `- ${snapshot.repositoryName}: ${snapshot.repositoryId}@${snapshot.analysisRevision}${snapshot.projectId ? ` project=${snapshot.projectId}` : ''} analysis=${snapshot.analysisHash}`),
-  `## Retrieval\n${packet.routing.requestedGranularity} -> ${packet.routing.resolvedGranularities.join(', ') || 'unavailable'} (${packet.routing.source})\n${packet.routing.reason}`];
+  `## Retrieval\n${packet.routing.requestedGranularity} -> ${packet.routing.resolvedGranularities.join(', ') || 'unavailable'} (${packet.routing.source})\n${clamp(packet.routing.reason, 400)}`];
   if (packet.results.length) sections.push('## Relevant Implementations', ...packet.results.map((result) =>
-    `- ${result.name} [${result.granularity}] ${result.repositoryId}@${result.analysisRevision}${result.relativePath ? `:${result.relativePath}` : ''}\n  ${result.reason}`));
-  if (packet.relations.length) sections.push('## Relations', ...packet.relations.map((edge) =>
-    `- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`));
+    `- ${result.name} [${result.granularity}] ${result.repositoryId}@${result.analysisRevision}${result.relativePath ? `:${result.relativePath}` : ''}\n  ${clamp(result.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}`));
+  if (packet.relations.length) sections.push('## Relations', ...packet.relations.slice(0, CONTEXT_MARKDOWN_LIMITS.relations).map((edge) =>
+    `- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`),
+  ...(packet.relations.length > CONTEXT_MARKDOWN_LIMITS.relations ? [`- … 另有 ${packet.relations.length - CONTEXT_MARKDOWN_LIMITS.relations} 条关系未在此列出（结构化字段 relations 中完整保留）`] : []));
   const titles = { implementation: 'Core Implementations', interface: 'Type Definitions', dependency: 'Supporting Implementations', configuration: 'Build Configuration' };
   for (const role of ['implementation', 'interface', 'dependency', 'configuration'] as const) {
     const items = packet.evidence.filter(item => item.role === role);
     if (items.length) sections.push(`## ${titles[role]}`);
     for (const item of items) {
-      sections.push(`### ${item.name} [${item.role}]\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}:${item.sourceRange.startColumn}-${item.sourceRange.endLine}:${item.sourceRange.endColumn}\nEvidence: ${item.evidenceId}; SHA256: ${item.contentHash}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}\n${item.reason}\n\n${fenced(item.content)}`);
+      const level = item.renderLevel && item.renderLevel !== 'full' ? `; render=${item.renderLevel}` : '';
+      sections.push(`### ${item.name} [${item.role}]\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}:${item.sourceRange.startColumn}-${item.sourceRange.endLine}:${item.sourceRange.endColumn}\nEvidence: ${item.evidenceId}; SHA256: ${item.contentHash}; ${item.evidenceLevel}${item.truncated ? '; truncated' : ''}${level}\n${clamp(item.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}\n\n${fenced(item.content)}`);
     }
   }
   if (packet.declarations?.length) sections.push('## Supporting Declarations', ...packet.declarations.map(item =>
-    `### ${item.name}\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}\nIndexed declaration signatures; implementation bodies are not included.\n${item.reason}\n\n${fenced(item.signature)}`));
-  if (packet.gaps.length) sections.push('## Gaps', ...packet.gaps.map((gap) => `- ${gap.code}: ${gap.message}`));
+    `### ${item.name}\n${item.repositoryId}@${item.analysisRevision}:${item.relativePath}:${item.sourceRange.startLine}\nIndexed declaration signatures; implementation bodies are not included.\n${clamp(item.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}\n\n${fenced(item.signature)}`));
+  if (packet.gaps.length) sections.push('## Gaps', ...packet.gaps.slice(0, CONTEXT_MARKDOWN_LIMITS.gaps).map((gap) => `- ${gap.code}: ${clamp(gap.message, CONTEXT_MARKDOWN_LIMITS.gapMessage)}`),
+    ...(packet.gaps.length > CONTEXT_MARKDOWN_LIMITS.gaps ? [`- … 另有 ${packet.gaps.length - CONTEXT_MARKDOWN_LIMITS.gaps} 条缺口记录未在此列出（结构化字段 gaps 中完整保留）`] : []));
   return sections.join('\n\n');
 }
 

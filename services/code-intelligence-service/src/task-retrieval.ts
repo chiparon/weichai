@@ -305,10 +305,12 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     signal.throwIfAborted();
     const sourceBytesRead = evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);
     const sourceBytesDelivered = packet.evidence.reduce((sum, item) => sum + Buffer.byteLength(item.content, 'utf8'), 0);
+    const compiler = packet.usage.retrieval?.compiler;
     packet.usage.retrieval = { sourceBytesRead, sourceBytesDelivered, sourceReadAmplification: sourceBytesDelivered ? sourceBytesRead / sourceBytesDelivered : null,
       stages: { snapshotMs, recallMs, candidateResolutionMs, expansionMs: compileStarted - expansionStarted, compilationMs: performance.now() - compileStarted },
       ...(expansion ? { expansion: { enabled: expansion.enabled, version: expansion.version, lexiconSha256: expansion.lexiconSha256,
         matched: [...expansion.matched], terms: [...expansion.terms], expansionMs: Math.round(queryExpansionMs * 1000) / 1000 } } : {}),
+      ...(compiler ? { compiler } : {}),
       sourceExcerptsRead: evidence.length, recallAndExpansionMs: Math.round(compileStarted - started), compilationMs: Math.round(performance.now() - compileStarted) };
     packet.usage.latencyMs = Math.round(performance.now() - started);
     if (packet.usage.latencyMs > (request.budget.maxLatencyMs ?? 10000)) throw new Error('Task retrieval deadline exceeded during context compilation.');

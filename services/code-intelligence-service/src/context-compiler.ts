@@ -13,6 +13,13 @@ const renderLevels: readonly RenderLevel[] = ['full', 'region', 'skeleton', 'sig
 /** Cap on the share of the budget that indexed declaration signatures may take. */
 const DECLARATION_BUDGET_SHARE = 0.2;
 const DECLARATION_MEMBER_LIMIT = 12;
+/**
+ * Cap on the share of the budget one evidence item may take. A single large
+ * declaration must not consume the whole budget: the excerpt that carries a
+ * pattern only it has (for example the per-file limit exception, which in this
+ * corpus exists only in the TypeScript mirror) still has to fit beside it.
+ */
+const PER_ITEM_BUDGET_SHARE = 0.35;
 /** Rough characters per token, used only to size a region window before exact accounting. */
 const CHARS_PER_TOKEN = 3.6;
 /** Structural keywords that survive skeletonisation; everything else in a long run is elided. */
@@ -244,6 +251,9 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
 
   const levels: Record<RenderLevel, number> = { full: 0, region: 0, skeleton: 0, signature: 0 };
   const terms = options.queryTerms ?? [];
+  // The cap only makes sense where there is real competition for the budget; at
+  // very small budgets delivering something beats reserving for others.
+  const perItemCap = Number.isFinite(maxTokens) && maxTokens >= 1024 ? maxTokens * PER_ITEM_BUDGET_SHARE : Number.POSITIVE_INFINITY;
   let extraTokens = 0;
   const budgetUsed = (): number => framingTokens + extraTokens + evidenceCost();
   for (const item of candidates) {
@@ -254,12 +264,16 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
       let sourceRange: TaskContextEvidence['sourceRange'] | undefined;
       if (level === 'region') {
         const remaining = Number.isFinite(maxTokens) ? Math.max(0, maxTokens - budgetUsed()) : Number.POSITIVE_INFINITY;
-        const window = regionOf(item, terms, Math.round(remaining * CHARS_PER_TOKEN), 3);
+        const allowance = Math.min(remaining, perItemCap);
+        const window = regionOf(item, terms, Math.round(allowance * CHARS_PER_TOKEN), 3);
         if (!window) continue;
         content = window.content;
         sourceRange = window.sourceRange;
       } else content = rendering(item, level);
       if (content === null) continue;
+      // Keep room for the rest of the delivery: an item larger than the per-item
+      // cap is compacted (region/skeleton/signature) instead of taken whole.
+      if (level === 'full' && Number.isFinite(maxTokens) && contextTokenCount(content) > perItemCap) continue;
       const rendered = withLevel(item, level, content, sourceRange);
       const trial = [...packet.evidence.filter(selected => priority[item.role] > priority[selected.role] || !contained(selected, rendered)), rendered];
       const trialFiles = new Set(trial.map(entry => `${entry.repositoryId}\0${entry.analysisRevision}\0${entry.relativePath}`));

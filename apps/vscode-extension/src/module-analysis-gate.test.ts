@@ -9,7 +9,7 @@ import { CodeIntelligenceHost } from './code-intelligence-host';
 const refusal = '模块解析需要先在设置中配置 DeepSeek 的 API Key。';
 
 /** A target workspace with two projects, so no project is modelled without an explicit choice. */
-async function setup(modelKeyRefusal: string | undefined) {
+async function setup(modelKeyRefusal: string | undefined, analysisState: 'missing' | 'ready' = 'missing') {
   const root = await mkdtemp(path.join(tmpdir(), 'forexplore-model-gate-'));
   const runtime = await createCodeIntelligenceRuntime({ store: new InMemoryIndexStore() });
   const ensure = vi.fn(async () => {});
@@ -20,7 +20,8 @@ async function setup(modelKeyRefusal: string | undefined) {
     modelKeyRefusal: async () => modelKeyRefusal,
     onModelRefusal: (reason) => { refusals.push(reason); },
     projectAnalysisPort: { ensure, idle: async () => {}, read: async (scope) => ({ ...scope,
-      state: 'missing', projection: 'pending', analysisProfile: 'code-understanding/v1', updatedAt: '' }) },
+      state: analysisState, projection: analysisState === 'ready' ? 'ready' : 'pending',
+      analysisProfile: 'code-understanding/v1', updatedAt: '' }) },
   });
   for (const name of ['first-project', 'second-project']) {
     const directory = path.join(root, name);
@@ -50,6 +51,18 @@ it('refuses module analysis without a model key while indexing stays usable', as
     // The revision, its projects and symbol search are untouched by the refusal.
     expect(projects).toHaveLength(2);
     expect((await host.explorerData())[0]?.projectId).toBe(selected.projectId);
+  } finally { await dispose(); }
+});
+
+it('does not refuse an already-modelled project when no key is configured', async () => {
+  // A corpus that is already modelled must not report a missing credential: the
+  // refusal is about a model call, and no model call is needed here.
+  const { host, ensure, refusals, selected, dispose } = await setup(refusal, 'ready');
+  try {
+    await host.selectProjectForDisplay(selected);
+    await host.waitForProjects();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(refusals).toEqual([]);
   } finally { await dispose(); }
 });
 

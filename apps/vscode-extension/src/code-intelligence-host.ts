@@ -281,6 +281,9 @@ export interface JavaCsharpCompilerProbeBindingResult {
 }
 
 const identityKeyPrefix = 'forexplore.code-intelligence.repository-id';
+const selectedProjectKeyPrefix = 'forexplore.code-intelligence.selected-project';
+/** The indexer's grouping for files no manifest claims (`project-discovery.ts`). */
+const unattributedProjectKind = 'directory';
 
 function defaultRuntimeFactory(
   options: CreateCodeIntelligenceRuntimeOptions,
@@ -294,6 +297,10 @@ function stableIdentityKey(localPath: string): string {
     : path.resolve(localPath);
   const digest = createHash('sha256').update(normalized).digest('hex');
   return `${identityKeyPrefix}:${digest}`;
+}
+
+function selectedProjectKey(repositoryId: RepositoryId): string {
+  return `${selectedProjectKeyPrefix}:${repositoryId}`;
 }
 
 function contentHash(value: unknown): string {
@@ -427,6 +434,11 @@ export class CodeIntelligenceHost {
   #visibleRepositoryIds = new Set<RepositoryId>();
   /** Per-panel-host display choice only; never persisted as repository state. */
   #selectedRevisions = new Map<RepositoryId, string>();
+  /**
+   * A multi-project repository stays hidden until one project is chosen
+   * explicitly, so the choice is window UI state that outlives a restart
+   * instead of an in-memory fact that would re-hide the repository.
+   */
   #selectedProjects = new Map<RepositoryId, ProjectId>();
   #semanticQueryServer: Server | undefined;
   #semanticQueryEndpoint: string | undefined;
@@ -549,10 +561,11 @@ export class CodeIntelligenceHost {
 
   async selectedProjectForPath(localPath: string): Promise<ProjectId | null> {
     const scope = await this.activeScopeForPath(localPath);
-    const selected = this.#selectedProjects.get(scope.repositoryId);
-    if (!selected) return null;
-    const projects = await (await this.runtime()).queryPort.listProjects(scope);
-    return projects.projects.some((project) => project.value.projectId === selected) ? selected : null;
+    const runtime = await this.runtime();
+    const repository = await runtime.registry.get(scope.repositoryId);
+    if (!repository) return null;
+    const projects = await runtime.queryPort.listProjects(scope);
+    return this.resolveProjectChoice(repository, projects.projects.map((project) => project.value)).projectId ?? null;
   }
 
   /** Runs module-first retrieval only across this window's current historical repositories. */
@@ -705,7 +718,7 @@ export class CodeIntelligenceHost {
     const repository = await runtime.registry.get(request.repositoryId);
     if (sequence !== this.#selectionSequence) return this.presentationFor(runtime);
     this.#selectedRevisions.set(request.repositoryId, request.analysisRevision);
-    this.#selectedProjects.set(request.repositoryId, request.projectId);
+    await this.rememberSelectedProject(request.repositoryId, request.projectId);
     if (repository?.role === 'target') this.#selectedTarget = request.repositoryId;
     if (repository?.activeRevision === request.analysisRevision) this.scheduleProject(request);
     return this.presentationFor(runtime);
@@ -885,9 +898,9 @@ export class CodeIntelligenceHost {
           const current = await runtime.registry.get(repository.repositoryId);
           if (current?.activeRevision) {
             const index = await runtime.store.getStructuralIndex({ repositoryId: current.repositoryId, analysisRevision: current.activeRevision });
+            const chosen = this.resolveProjectChoice(repository, index?.projects ?? []).projectId;
             for (const project of index?.projects ?? []) {
-              if (repository.role === 'history' || index?.projects.length === 1 ||
-                project.projectId === this.#selectedProjects.get(repository.repositoryId)) this.scheduleProject(project);
+              if (repository.role === 'history' || project.projectId === chosen) this.scheduleProject(project);
             }
           }
         } catch (error) {
@@ -962,12 +975,23 @@ export class CodeIntelligenceHost {
   }
 
   private async ensureProjectAnalysis(scope: ProjectAnalysisScope, force: boolean): Promise<void> {
+    const analysis = await this.projectAnalysis();
+    // Only a run that would actually call the model needs the credential. Asking
+    // first made every synchronization report a refusal for already-modelled
+    // projects, which reads as a corpus-wide failure that never happened.
+    if (!force) {
+      try {
+        const record = await analysis.read(scope);
+        if (record.state === 'ready' && record.projection === 'ready') return;
+      } catch (error) {
+        this.logFailure('read project analysis', error);
+      }
+    }
     const refusal = await this.moduleAnalysisRefusal();
     if (refusal) {
       this.#onModelRefusal?.(refusal);
       throw new Error(refusal);
     }
-    const analysis = await this.projectAnalysis();
     await analysis.ensure(scope, force);
   }
 
@@ -1006,12 +1030,15 @@ export class CodeIntelligenceHost {
       if (!analysisRevision) return null;
       const scope = { repositoryId: repository.repositoryId, analysisRevision };
       const projects = await runtime.store.listProjects?.(scope);
-      if (projects && projects.length > 1 && repository.role !== 'history' &&
-        !projects.some((project) => project.projectId === this.#selectedProjects.get(repository.repositoryId))) return null;
       const index = await runtime.store.getStructuralIndex(scope);
       if (!index) return null;
-      const projectId = index.projects.find((p) => p.projectId === this.#selectedProjects.get(repository.repositoryId))?.projectId
-        ?? (repository.role === 'history' || index.projects.length === 1 ? index.projects[0]?.projectId : undefined);
+      const resolved = this.resolveProjectChoice(repository, projects ?? index.projects);
+      // A choice that resolves in no revision of this repository is stale; the
+      // one made while browsing an older revision is kept for the active one.
+      if (resolved.stale && analysisRevision === repository.activeRevision) {
+        this.forgetSelectedProject(repository.repositoryId);
+      }
+      const projectId = resolved.projectId;
       if (!projectId) return null;
       return {
         repository, index, projectId, selectedTarget: repository.repositoryId === target?.repositoryId,
@@ -1049,6 +1076,58 @@ export class CodeIntelligenceHost {
   private async existingRepositoryIdFor(localPath: string): Promise<RepositoryId | null> {
     const key = stableIdentityKey(await realpath(path.resolve(localPath)).catch(() => path.resolve(localPath)));
     return this.#identityStore?.get<RepositoryId>(key) ?? this.#ephemeralRepositoryIds.get(key) ?? null;
+  }
+
+  /**
+   * Reads the display choice for one repository, restoring it from window UI
+   * state after a restart.  The stored value is only ever a candidate: every
+   * caller still checks it against the revision it is about to show.
+   */
+  private selectedProjectFor(repositoryId: RepositoryId): ProjectId | undefined {
+    const remembered = this.#selectedProjects.get(repositoryId);
+    if (remembered !== undefined) return remembered;
+    const stored = this.#identityStore?.get<ProjectId>(selectedProjectKey(repositoryId));
+    if (typeof stored !== 'string' || stored.length === 0) return undefined;
+    this.#selectedProjects.set(repositoryId, stored);
+    return stored;
+  }
+
+  private async rememberSelectedProject(repositoryId: RepositoryId, projectId: ProjectId): Promise<void> {
+    this.#selectedProjects.set(repositoryId, projectId);
+    await this.#identityStore?.update(selectedProjectKey(repositoryId), projectId);
+  }
+
+  /**
+   * Resolves the project a repository is displayed, analysed and translated
+   * with.  An explicit choice always wins; a stale choice is reported so the
+   * caller can drop it.  Only a target repository is allowed a default, and
+   * only when one real project sits next to pure file groups (the indexer's
+   * "unattributed" bucket, e.g. the host-owned `tools/*.mjs` harness): that is
+   * not an ambiguous choice, while two real projects still require one.
+   */
+  private resolveProjectChoice(
+    repository: Pick<RepositoryRecord, 'repositoryId' | 'role'>,
+    projects: ReadonlyArray<{ projectId: ProjectId; kind?: string }>,
+  ): { projectId?: ProjectId; stale: boolean } {
+    const requested = this.selectedProjectFor(repository.repositoryId);
+    if (requested && projects.some((project) => project.projectId === requested)) {
+      return { projectId: requested, stale: false };
+    }
+    const stale = requested !== undefined;
+    if (repository.role === 'history') return { projectId: projects[0]?.projectId, stale };
+    if (projects.length === 1) return { projectId: projects[0]?.projectId, stale };
+    if (repository.role !== 'target') return { projectId: undefined, stale };
+    const real = projects.filter((project) => project.kind !== unattributedProjectKind);
+    return { projectId: real.length === 1 && real.length < projects.length ? real[0]!.projectId : undefined, stale };
+  }
+
+  /**
+   * Drops a choice that no longer resolves in the revision it was made for.
+   * The empty write is the removal: the store contract only accepts strings.
+   */
+  private forgetSelectedProject(repositoryId: RepositoryId): void {
+    this.#selectedProjects.delete(repositoryId);
+    void Promise.resolve(this.#identityStore?.update(selectedProjectKey(repositoryId), '')).catch(() => undefined);
   }
 
   private async presentationFor(runtime: CodeIntelligenceRuntime): Promise<CodeIntelligencePresentation> {
@@ -1102,11 +1181,11 @@ export class CodeIntelligenceHost {
         languageIds: [...project.value.languageIds],
         analysis: projectAnalysisPresentation(await (await this.projectAnalysis()).read(project.value)),
       })));
-      const requestedProjectId = this.#selectedProjects.get(repository.repositoryId);
-      const selectedProjectId = requestedProjectId && projects.some((project) => project.projectId === requestedProjectId)
-        ? requestedProjectId
-        : repository.role === 'history' || projects.length === 1 ? projects[0]?.projectId ?? null : null;
-      if (requestedProjectId && requestedProjectId !== selectedProjectId) this.#selectedProjects.delete(repository.repositoryId);
+      const resolved = this.resolveProjectChoice(repository, projects);
+      const selectedProjectId = resolved.projectId ?? null;
+      if (resolved.stale && selectedRevision.analysisRevision === activeRevision) {
+        this.forgetSelectedProject(repository.repositoryId);
+      }
       const projectAnalysis = projects.find((project) => project.projectId === selectedProjectId)?.analysis;
       return {
         repositoryId: repository.repositoryId,

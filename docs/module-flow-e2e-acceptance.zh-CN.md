@@ -105,3 +105,28 @@ stub 卡住**：`disk/DiskFileItem.java:458` 抛 `UnsupportedOperationException:
 | `scripts/model-corpus.mts` | 语料建模补齐工具（含失败即断、重试、进度输出） |
 | `scripts/verify-module-flow-e2e.mts` | 本次全流程验收脚本 |
 | `tmp/java-fileupload-flow/target-repo/` | 目标工作区当前状态 = 两波翻译后的已验证结果 |
+
+## 7. 目标工程为什么要"选一次"
+
+目标仓 `tmp/java-fileupload-flow/target-repo` 在本机索引里天然含**两个工程**：
+
+| 工程 | 内容 | 计划 |
+| --- | --- | --- |
+| `pom`（kind=maven） | `pom.xml` + `src/`，61 个 Java 文件 | 5 个模块（核心上传解析与契约 / 磁盘文件项存储 / Servlet 与 Portlet 容器适配 等） |
+| 「未归属工程文件」（kind=directory） | 仓根 `tools/*.mjs`（`compile.mjs`/`verify.mjs`/`jdk.mjs`） | 3 个模块（JDK 定位与类路径契约 / Java 源码编译入口 / Java 测试执行入口） |
+
+`tools/*.mjs` 是宿主自有的验收工具（在 `run-adaptation-full.ps1` 里登记为 `protectedFiles`），
+必须留在仓根、不能被搬走，所以这个"多工程"是结构性的，不是脏数据。
+
+规则（`code-intelligence-host.ts` 的 `resolveProjectChoice`）：
+
+1. 非历史仓若存在**多个工程**且没有选择，宿主不会替用户猜是哪一个真工程，该仓不出现在工程树里。
+   这是为了避免模型费用花在错误的工程上。
+2. **目标仓的唯一例外**：多个工程里只有一个"真工程"（`kind !== 'directory'`），其余都是索引器的
+   「未归属工程文件」分组时，自动选中那个真工程——上表的 `target-repo` 正是这种情况，
+   所以它启动即显示，不需要任何手动选择。
+3. 两个真工程（例如两个 maven 模块）仍然要求显式选择一次；选择写入窗口 UI 状态
+   （`context.globalState`），**重启后自动恢复**，不需要每次重选。
+4. 恢复的选择仍要按当前 revision 校验：工程已不存在则丢弃并回到"待选择"，
+   不会让一个失效的 ID 把整仓永久藏起来。历史仓选择旧 revision 时不会误删选择。
+

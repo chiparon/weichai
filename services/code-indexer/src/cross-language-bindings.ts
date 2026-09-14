@@ -40,6 +40,71 @@ function jniParameters(signature: string): string | undefined {
   return descriptors.join('');
 }
 
+/**
+ * The identity a declaration site and a definition site of one native function
+ * share, with the declaration/definition difference erased.
+ *
+ * `7601e64` made the indexer extract body-less declarations, which is right: a
+ * header is where a C/C++ interface lives. The consequence is that the JNI pair
+ * in fixtures/code-corpus/harmony-upload-native reports each export twice — once
+ * from `upload_bridge.h` (node type `declaration`, no body) and once from
+ * `upload_bridge.cpp` (node type `function_definition`, with a body). Two
+ * records for one export name made every JNI binding `ambiguous`, where it used
+ * to resolve to the .cpp definition.
+ *
+ * The records are deliberately *not* merged at extraction time. Extraction is
+ * per file and pure, so a header declaration and a .cpp definition are never in
+ * the same parse; and both are wanted as separate records — a header-only symbol
+ * is real structure that the retrieval kinds and the header's own declaration
+ * count depend on. Identity is therefore unified here, where the whole
+ * revision's symbol set is available.
+ *
+ * `signatureFor` stops a signature at the body, so a definition's signature ends
+ * with the declarator's `)` while a body-less declaration's ends with the `;`
+ * that terminates the declaration. That trailing `;` is the only
+ * definition/declaration marker a `SymbolRecord` carries, and it is exactly the
+ * difference this key removes.
+ *
+ * `languageId` is deliberately absent. A `.h` is registered as `c` and parsed
+ * with the C++ grammar, while its `.cpp` is `cpp`, so languageId is one of the
+ * things that differs across the header/implementation boundary — including it
+ * would keep the pair apart. C and C++ are one native family here anyway
+ * (`native()` above), and two *definitions* still stay two candidates. Overloads
+ * stay apart too: the qualified name, the name and the signature are all keyed.
+ */
+const nativeSymbolIdentity = (symbol: SymbolRecord): string => JSON.stringify([symbol.qualifiedName,
+  symbol.name, symbol.kind, (symbol.signature ?? '').replace(/;\s*$/, '')]);
+
+/**
+ * Collapses the declaration sites of one logical native symbol, preferring the
+ * record that carries a body: a definition is the implementation a binding
+ * points at, a declaration is only where its name is written down.
+ *
+ * Applied to both native candidate sets: the `JNIEXPORT` exports a Java `native`
+ * method binds to, and the N-API callbacks a descriptor list registers. The
+ * N-API candidate set is already restricted to the file being read, so there it
+ * collapses a forward declaration onto the definition in the same translation
+ * unit rather than across a header/implementation pair.
+ *
+ * Only a declaration/definition pair is collapsed. Two *definitions* of one
+ * signature stay two candidates, so a duplicated export is still reported
+ * `ambiguous` rather than silently resolved to whichever file sorted first.
+ * Kotlin expect/actual does not come through here at all: an `expect` and its
+ * `actual` are two distinct platform symbols by design, which is why that path
+ * keeps its own ambiguity rules.
+ */
+function collapseDeclarationSites(candidates: readonly SymbolRecord[]): SymbolRecord[] {
+  const groups = new Map<string, SymbolRecord[]>();
+  for (const candidate of candidates) {
+    const identity = nativeSymbolIdentity(candidate);
+    groups.set(identity, [...(groups.get(identity) ?? []), candidate]);
+  }
+  return [...groups.values()].flatMap((group) => {
+    const definitions = group.filter((candidate) => !(candidate.signature ?? '').endsWith(';'));
+    return definitions.length ? definitions : group;
+  });
+}
+
 /** Conservative syntactic bindings. No SDK, macro evaluation or dynamic registration is inferred. */
 export function resolveCrossLanguageBindings(input: Input): DependencyEdgeRecord[] {
   const edges: DependencyEdgeRecord[] = [];
@@ -60,10 +125,10 @@ export function resolveCrossLanguageBindings(input: Input): DependencyEdgeRecord
       const reference = `Java_${jniName(source.qualifiedName)}`;
       // Short JNI exports are insufficient to disambiguate overloaded native methods.
       const overloads = input.symbols.filter(value => value.languageId === 'java' && value.qualifiedName === source.qualifiedName && /\bnative\b/.test(value.signature ?? ''));
-      const targets = input.symbols.filter(value => native(value) && value.name === reference && /^JNIEXPORT\b/.test(value.signature ?? ''));
+      const targets = collapseDeclarationSites(input.symbols.filter(value => native(value) && value.name === reference && /^JNIEXPORT\b/.test(value.signature ?? '')));
       const parameters = jniParameters(source.signature ?? '');
       const longReference = parameters === undefined ? undefined : `${reference}__${jniName(parameters)}`;
-      const longTargets = longReference === undefined ? [] : input.symbols.filter(value => native(value) && value.name === longReference && /^JNIEXPORT\b/.test(value.signature ?? ''));
+      const longTargets = longReference === undefined ? [] : collapseDeclarationSites(input.symbols.filter(value => native(value) && value.name === longReference && /^JNIEXPORT\b/.test(value.signature ?? '')));
       // The VM searches the short name first. An overloaded short export cannot
       // be made safe merely by finding a compatible long export alongside it.
       add(source, 'jni-binding', targets.length ? reference : longReference ?? reference,
@@ -157,7 +222,7 @@ export function resolveCrossLanguageBindings(input: Input): DependencyEdgeRecord
           if (entry.type !== 'initializer_list') continue;
           const items = entry.namedChildren, exported = literal(items[0]), callback = items[2];
           if (!exported || callback?.type !== 'identifier') continue;
-          for (const target of symbols.filter(value => value.name === callback.text && value.kind === 'function')) {
+          for (const target of collapseDeclarationSites(symbols.filter(value => value.name === callback.text && value.kind === 'function'))) {
             for (const module of moduleNames) registrations.push({ module, exported, target });
           }
         }

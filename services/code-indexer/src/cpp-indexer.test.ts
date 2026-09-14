@@ -32,16 +32,20 @@ import { indexTreeSitterFile } from './tree-sitter-indexer.js';
  * Measured after the fix: the header reports 15 declarations, `upload_manifest.c`
  * reports 10, and the .cpp reports 13.
  *
+ * Because the header now declares the same three JNI exports the .cpp defines,
+ * cross-language resolution sees two native symbols per export name. Those two
+ * records are one logical symbol: `cross-language-bindings.ts` prefers the record
+ * with a body, so a Java `native` method resolves to the .cpp definition instead
+ * of the binding being reported `ambiguous`. Both records still reach the index —
+ * unifying them is a resolution decision, not an extraction one — and the
+ * resolved outcome is pinned against this same fixture pair in
+ * cross-language-bindings.test.ts.
+ *
  * Remaining gaps, measured here and deliberately not asserted as correct:
  *   - both other files still report three syntax errors each. `JNIEXPORT jint
  *     JNICALL` is a macro pair the grammar cannot read, so an ERROR node sits
  *     between the type and the declarator of every JNI export; the declarations
  *     are extracted anyway because the declarator itself parses;
- *   - the header now declares the same three JNI exports the .cpp defines, so
- *     `resolveCrossLanguageBindings` sees two native symbols per export name and
- *     reports the binding `ambiguous` where it used to resolve to the .cpp
- *     definition. Deduplicating declaration sites is a resolution-policy decision
- *     in cross-language-bindings.ts, not an extraction decision;
  *   - a function-pointer member is named `(*on_chunk)` rather than `on_chunk`:
  *     `nameNodeFor` stops at the `parenthesized_declarator` because that node does
  *     not expose its child through a `declarator` field. Pre-existing and

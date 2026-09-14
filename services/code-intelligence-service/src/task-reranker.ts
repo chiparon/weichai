@@ -81,34 +81,34 @@ export function buildTaskRerankPrompt(requirement: string, candidates: readonly 
     `候选 (${candidates.length}条):`,
     blocks.join('\n'),
     '',
-    '按"哪一条最可能就是该需求所指的实现"排序，越可能得分越高（0~1）。',
-    '必须且只能为每个候选 ID 输出一项。id 必须逐字复制"候选 ID"字段，禁止改写或使用序号。只输出JSON:',
-    '[{"id":"候选 ID 原文","score":0.95}]',
+    '按"哪一条最可能就是该需求所指的实现"从最可能到最不可能排列。',
+    '只输出一个 JSON 字符串数组，id 必须逐字复制"候选 ID"字段，禁止改写或使用序号：',
+    '["候选 ID","候选 ID", ...]',
   ].join('\n') };
 }
 
 /**
- * Parse and validate the model's answer. Every candidate must appear exactly once
- * and every id must be one we sent, so a paraphrase or an invented id is rejected
- * rather than silently reordering the delivery.
+ * Parse and validate the model's answer as a complete ranking. The ids must be
+ * exactly the ones sent, each once, so a paraphrase, an invented id, a dropped
+ * candidate or a duplicate is rejected rather than silently reordering the
+ * delivery. Ordering only — the previous score-object format made the model
+ * restate all ids and their scores, and those output tokens dominated latency.
  */
-export function parseTaskRerankResponse(text: string, ids: ReadonlySet<string>): Map<string, number> | null {
+export function parseTaskRerankResponse(text: string, ids: ReadonlySet<string>): string[] | null {
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
   if (start < 0 || end <= start) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(text.slice(start, end + 1)); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
-  const scores = new Map<string, number>();
+  const order: string[] = [];
+  const seen = new Set<string>();
   for (const item of parsed) {
-    if (typeof item !== 'object' || item === null) return null;
-    const { id, score } = item as { id?: unknown; score?: unknown };
-    if (typeof id !== 'string' || !ids.has(id) || scores.has(id)) return null;
-    const value = typeof score === 'number' ? score : Number(score);
-    if (!Number.isFinite(value)) return null;
-    scores.set(id, value);
+    if (typeof item !== 'string' || !ids.has(item) || seen.has(item)) return null;
+    seen.add(item);
+    order.push(item);
   }
-  return scores.size === ids.size ? scores : null;
+  return order.length === ids.size ? order : null;
 }
 
 async function request(config: TaskRerankConfig, prompt: { system: string; user: string }, signal: AbortSignal | undefined): Promise<string> {
@@ -135,19 +135,20 @@ export async function rerankTaskCandidates(config: TaskRerankConfig, requirement
   if (candidates.length < 2) return null;
   const ids = new Set(candidates.map((candidate) => candidate.id));
   const prompt = buildTaskRerankPrompt(requirement, candidates);
-  let scores: Map<string, number> | null = null;
-  for (let attempt = 0; attempt < 2 && !scores; attempt += 1) {
+  let order: string[] | null = null;
+  for (let attempt = 0; attempt < 2 && !order; attempt += 1) {
     try {
       const content = await request(config, attempt === 0 ? prompt : { ...prompt,
-        user: `${prompt.user}\n\n上一次输出未通过校验（必须且只能包含上方每个候选 ID 各一项，禁止改写 id），请重新输出完整 JSON 数组。` }, signal);
-      scores = parseTaskRerankResponse(content, ids);
+        user: `${prompt.user}\n\n上一次输出未通过校验（必须且只能包含上方每个候选 ID 各一次，禁止改写 id、禁止遗漏或重复），请重新输出完整 JSON 数组。` }, signal);
+      order = parseTaskRerankResponse(content, ids);
     } catch (error) {
       if (signal?.aborted) throw error;
       if (attempt === 1) return null;
     }
   }
-  if (!scores) return null;
-  return [...candidates].sort((left, right) => (scores.get(right.id) ?? 0) - (scores.get(left.id) ?? 0) || left.id.localeCompare(right.id));
+  if (!order) return null;
+  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  return order.flatMap((id) => byId.get(id) ?? []);
 }
 
 /**

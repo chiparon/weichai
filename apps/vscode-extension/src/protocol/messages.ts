@@ -47,12 +47,24 @@ export interface TaskSearchIntent {
 
 export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: string };
 
+/** How a user asked for a target project directory. */
+export type TargetWorkspaceAddMode = 'browse' | 'input' | 'workspace';
+
+/**
+ * Every phase of one explicit target selection. A native dialog returns
+ * nothing until it closes and a first-time index can run for minutes, so each
+ * phase is reported instead of only the final outcome.
+ */
+export type TargetWorkspacePhase = 'selecting' | 'resolving' | 'attaching' | 'indexing';
+
+export type TargetWorkspaceOutcome = 'cancelled' | 'added' | 'completed' | 'failed';
+
 /** Messages the extension host posts into the Webview. */
 export type HostToWebviewMessage =
   | { type: 'REQUEST_SETTINGS_SAVE' }
   | { type: 'REFERENCE_FOLDERS_SELECTED'; requestId: string; paths: string[]; error?: string }
   | { type: 'MODEL_KEY_STATUS'; configured: boolean; message?: string }
-  | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean } }
+  | { type: 'WORKSPACE_TRANSLATION_RESULT'; requestId: string; run?: WorkspaceTranslationRun; profile?: { profileId: string; workspaceRoot: string; sourceLanguage: string; targetLanguage: string; workspaceFiles: string[]; writeFiles: string[]; behavioralVerification: boolean; moduleScopeId?: string; label?: string; warnings?: string[] } }
   | { type: 'WORKSPACE_TRANSLATION_ERROR'; requestId: string; message: string }
   | { type: 'INIT'; payload: PanelInitPayload }
   | { type: 'SEARCH_RESULT'; candidates: SearchCandidate[] }
@@ -68,6 +80,8 @@ export type HostToWebviewMessage =
   | { type: 'MODULE_CHILDREN_ERROR'; requestId: string; message: string }
   | { type: 'TARGET_SELECTED'; target: ModuleTarget }
   | { type: 'TARGET_CLEARED' }
+  | { type: 'TARGET_WORKSPACE_PROGRESS'; phase: TargetWorkspacePhase; message: string }
+  | { type: 'TARGET_WORKSPACE_RESULT'; outcome: TargetWorkspaceOutcome; mode: TargetWorkspaceAddMode; message?: string }
   | { type: 'SETTINGS_UPDATED'; settings: PanelSettingsPresentation }
   | { type: 'ERROR'; message: string };
 
@@ -80,7 +94,7 @@ export type WebviewToHostMessage =
   | { type: 'BROWSE_REFERENCE_FOLDERS'; requestId: string }
   | { type: 'CONFIGURE_MODEL_KEY' }
   | { type: 'CLEAR_MODEL_KEY' }
-  | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string }
+  | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string; moduleScopeId?: string }
   | { type: 'READY' }
   | { type: 'START_TASK_SEARCH'; requestId: string; targetScope: TaskSearchTargetScope; request: TaskSearchIntent }
   | { type: 'CANCEL_TASK_SEARCH'; requestId: string }
@@ -130,9 +144,23 @@ const hostMessageTypes = new Set<string>([
   'MODULE_CHILDREN_ERROR',
   'TARGET_SELECTED',
   'TARGET_CLEARED',
+  'TARGET_WORKSPACE_PROGRESS',
+  'TARGET_WORKSPACE_RESULT',
   'SETTINGS_UPDATED',
   'ERROR',
 ]);
+
+/** The Webview trusts only these phase/outcome literals from the host. */
+function isTargetWorkspaceProgress(value: { phase?: unknown; message?: unknown }): boolean {
+  return typeof value.message === 'string' && value.message.length <= 400 &&
+    ['selecting', 'resolving', 'attaching', 'indexing'].includes(String(value.phase));
+}
+
+function isTargetWorkspaceResult(value: { outcome?: unknown; mode?: unknown; message?: unknown }): boolean {
+  return ['browse', 'input', 'workspace'].includes(String(value.mode)) &&
+    ['cancelled', 'added', 'completed', 'failed'].includes(String(value.outcome)) &&
+    (value.message === undefined || (typeof value.message === 'string' && value.message.length <= 400));
+}
 
 /** Strictly validates every Webview payload before it enters the host. */
 export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
@@ -142,11 +170,20 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'SETTINGS_VISIBILITY_CHANGED':
       return hasOnlyKeys(message, ['type', 'open']) && typeof message.open === 'boolean';
     case 'WORKSPACE_TRANSLATION': {
-      if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
+      if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId', 'moduleScopeId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
       if (message.action === 'describe') return hasOnlyKeys(message, ['type', 'requestId', 'action']);
-      if (message.action === 'start') return isOpaqueIdentifier(message.profileId) && message.runId === undefined && isOpaqueIdentifier(message.packetId) && Array.isArray(message.evidenceIds) &&
-        message.evidenceIds.length > 0 && message.evidenceIds.length <= 60 && message.evidenceIds.every(isOpaqueIdentifier);
+      if (message.action === 'start') {
+        // Evidence is optional because a host-owned module scope can supply the
+        // context; when a packet is given, its selection must stay well formed.
+        const evidence = message.packetId === undefined && message.evidenceIds === undefined
+          ? true
+          : isOpaqueIdentifier(message.packetId) && Array.isArray(message.evidenceIds) &&
+            message.evidenceIds.length > 0 && message.evidenceIds.length <= 60 && message.evidenceIds.every(isOpaqueIdentifier);
+        return isOpaqueIdentifier(message.profileId) && message.runId === undefined && evidence &&
+          (message.moduleScopeId === undefined || typeof message.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(message.moduleScopeId));
+      }
       return ['read', 'cancel', 'resume', 'rollback'].includes(String(message.action)) && message.profileId === undefined && message.packetId === undefined && message.evidenceIds === undefined &&
+        message.moduleScopeId === undefined &&
         typeof message.runId === 'string' && /^[a-f0-9-]{36}$/.test(message.runId);
     }
     case 'LOAD_MODULE_CHILDREN': {
@@ -289,6 +326,11 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
 
 export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMessage {
   if (typeof value !== 'object' || value === null) return false;
-  const message = value as { type?: unknown };
-  return typeof message.type === 'string' && hostMessageTypes.has(message.type);
+  const message = value as { type?: unknown; phase?: unknown; outcome?: unknown; mode?: unknown; message?: unknown };
+  if (typeof message.type !== 'string' || !hostMessageTypes.has(message.type)) return false;
+  // The phase and outcome literals select the progress UI, so they are
+  // verified instead of being trusted by the message name alone.
+  if (message.type === 'TARGET_WORKSPACE_PROGRESS') return isTargetWorkspaceProgress(message);
+  if (message.type === 'TARGET_WORKSPACE_RESULT') return isTargetWorkspaceResult(message);
+  return true;
 }

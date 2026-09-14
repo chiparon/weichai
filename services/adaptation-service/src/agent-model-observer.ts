@@ -1,5 +1,5 @@
 export interface AgentModelCallMetadata {
-  strategy: 'semantic' | 'hierarchy';
+  strategy: 'semantic' | 'hierarchy' | 'module-generation';
   model: string;
   inputChars: number;
 }

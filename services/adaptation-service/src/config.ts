@@ -33,6 +33,14 @@ export interface AdaptationServiceConfig {
     endpoint: string;
     bearerToken?: string;
   };
+  /**
+   * Optional tool-calling model turns for module generation driven by the
+   * trusted VS Code host. The host owns the repository, the worktrees and the
+   * compiler; this process only performs the model call with its credential.
+   */
+  moduleGeneration?: {
+    bearerToken: string;
+  };
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
@@ -63,6 +71,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
     : undefined;
   const workspaceTranslation = env.ADAPTATION_WORKSPACE_TRANSLATION_ENABLED?.trim().toLowerCase() === "true"
     ? loadWorkspaceTranslationConfig(env) : undefined;
+  const moduleGeneration = env.ADAPTATION_MODULE_GENERATION_ENABLED?.trim().toLowerCase() === "true"
+    ? loadModuleGenerationConfig(env) : undefined;
   return {
     host: env.ADAPTATION_HOST?.trim() || "127.0.0.1",
     port: positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
@@ -76,7 +86,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
     ),
     ...(semanticQueryPort ? { semanticQueryPort } : {}),
     ...(workspaceTranslation ? { workspaceTranslation } : {}),
+    ...(moduleGeneration ? { moduleGeneration } : {}),
   };
+}
+
+function loadModuleGenerationConfig(env: NodeJS.ProcessEnv): NonNullable<AdaptationServiceConfig["moduleGeneration"]> {
+  const bearerToken = env.ADAPTATION_MODULE_GENERATION_TOKEN?.trim() ?? "";
+  if (bearerToken.length < 32) throw new Error("ADAPTATION_MODULE_GENERATION_TOKEN must contain at least 32 characters.");
+  return { bearerToken };
 }
 
 function loadWorkspaceTranslationConfig(env: NodeJS.ProcessEnv): NonNullable<AdaptationServiceConfig["workspaceTranslation"]> {

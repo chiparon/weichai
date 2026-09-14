@@ -23,6 +23,7 @@ import { PatchStage } from './components/PatchStage';
 import { RequirementStage } from './components/RequirementStage';
 import { StepRail } from './components/StepRail';
 import { ModuleWorkspace } from './components/ModuleWorkspace';
+import { idleTargetAdd, type TargetAddUiState } from './components/ProjectPicker';
 import { SettingsPanel } from './components/SettingsPanel';
 import { errorEvent } from './errors';
 import { createMessageBus, type MessageBus } from './vscode-api';
@@ -54,6 +55,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [refreshingExplorer, setRefreshingExplorer] = useState(false);
+  const [targetAdd, setTargetAdd] = useState<TargetAddUiState>(idleTargetAdd);
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -67,6 +69,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const pendingRef = useRef<WorkflowState['pending']>(null);
   const targetIdRef = useRef<string | null>(null);
   const settingsRef = useRef<PanelSettingsPresentation>({ repositoryPaths: [], topK: 4 });
+  // The host reports phases, not the entry point that was used, so the mode is
+  // remembered here to make the retry button replay the same action.
+  const targetAddModeRef = useRef<TargetAddUiState['mode']>(undefined);
   pendingRef.current = state.pending;
   targetIdRef.current = state.target?.id ?? null;
 
@@ -118,6 +123,25 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
               : message.explorer.history[0]?.id ?? null,
           );
           setRefreshingExplorer(false);
+          break;
+        case 'TARGET_WORKSPACE_PROGRESS':
+          // Phases arrive before, during and after the host mutations, so the
+          // pending state is never inferred from a single message.
+          setTargetAdd({ status: 'pending', phase: message.phase, message: message.message,
+            ...(targetAddModeRef.current ? { mode: targetAddModeRef.current } : {}) });
+          break;
+        case 'TARGET_WORKSPACE_RESULT':
+          if (message.outcome === 'failed') {
+            setTargetAdd({ status: 'failed', mode: message.mode,
+              message: message.message ?? '添加目标工程失败，请重试。' });
+          } else if (message.outcome === 'cancelled') {
+            setTargetAdd({ status: 'notice', mode: message.mode, message: '已取消选择目标工程。' });
+          } else if (message.outcome === 'added') {
+            setTargetAdd({ status: 'pending', mode: message.mode, phase: 'indexing',
+              message: message.message ?? '正在解析目录并建立结构索引…' });
+          } else {
+            setTargetAdd({ status: 'notice', mode: message.mode, message: '目标工程已添加。' });
+          }
           break;
         case 'TARGET_SELECTED':
           setPayload((current) => current ? { ...current, target: message.target } : current);
@@ -240,6 +264,15 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
     bus.post({ type: 'SELECT_CODE_INTELLIGENCE_PROJECT', repositoryId, analysisRevision, projectId });
   }
 
+  function handleAddTarget(mode: 'browse' | 'input' | 'workspace'): void {
+    setError(null);
+    targetAddModeRef.current = mode;
+    // A click must produce feedback immediately; the host's first phase only
+    // arrives after the native dialog is already being opened.
+    setTargetAdd({ status: 'pending', mode, phase: 'selecting' });
+    bus.post({ type: 'ADD_TARGET_WORKSPACE', mode });
+  }
+
   function handleSelectWorkspaceTarget(targetId: string): void {
     if (targetId === state.target?.id) return;
     setError(null);
@@ -303,6 +336,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         repositories={codeIntelligence?.repositories ?? []}
         onSelectProject={(repositoryId, revision, projectId) => {
           setSelectedNodeId(null);
+          setTargetAdd(idleTargetAdd);
           if (explorerMode === 'history') setHistoryId(repositoryId);
           handleSelectCodeIntelligenceProject(repositoryId, revision, projectId);
         }}
@@ -311,7 +345,8 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           setRefreshingExplorer(true);
           bus.post({ type: 'REFRESH_REPOSITORY', repositoryId });
         }}
-        onAddTarget={(mode) => { setError(null); bus.post({ type: 'ADD_TARGET_WORKSPACE', mode }); }}
+        onAddTarget={handleAddTarget}
+        targetAdd={targetAdd}
         explorer={moduleExplorer}
         onLoadChildren={loadModuleChildren}
         mode={explorerMode}
@@ -331,6 +366,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         <div hidden={settingsOpen || taskMode !== 'search'}>
           <TaskSearch key={`${moduleExplorer.target.repositoryId}:${moduleExplorer.target.projectId}:${moduleExplorer.target.revision}`}
             project={moduleExplorer.target.name} search={connectedTaskSearch} translation={translation}
+            moduleTarget={state.target?.kind === 'module'
+              ? { name: state.target.name, files: state.target.module?.sourceFiles.length ?? 0 }
+              : null}
             availableGranularities={{
               target: ['auto', ...(moduleExplorer.target.stats.methods > 0 ? ['function' as const] : []),
                 ...(moduleExplorer.target.stats.types > 0 ? ['class' as const] : []),

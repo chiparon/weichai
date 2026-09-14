@@ -1,4 +1,4 @@
-import { createModelCredentialProvider, modelCredentialId, validateModelKey, saveWithModelCredential } from './model-credential';
+import { createModelCredentialProvider, modelCredentialId, modelKeyRefusalReason, validateModelKey, saveWithModelCredential } from './model-credential';
 import { setModelCredentialProvider } from './local-fetch';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 import { createHash } from 'node:crypto';
@@ -31,17 +31,25 @@ import {
 } from './module-migration-host';
 import type { ModuleWaveExecutionPort } from './module-wave-execution-host';
 import type { ModuleMigrationWaveRecoveryPort } from './module-migration-recovery';
-import { TranslationPanel } from './panel';
+import { TranslationPanel, workbenchViewType, type PanelHandlers } from './panel';
 import { buildProjectExplorer, readExplorerChildren, type ExplorerChildrenIndex } from './project-explorer';
 import type {
   HostToWebviewMessage,
+  PanelInitPayload,
+  TargetWorkspaceAddMode,
   WebviewToHostMessage,
 } from './protocol/messages';
 import { RepositoryHealthCheck } from './repository-health';
 import { decorateRepositoryStatuses } from './repository-status';
 import { ServiceManager } from './service-manager';
-import { loadSettings, savePanelSettings } from './settings';
-import { addTargetWorkspace, selectedTargetWorkspaceFolders } from './target-workspace';
+import { loadSettings, savePanelSettings, type ExtensionSettings } from './settings';
+import {
+  addTargetWorkspace,
+  pendingTargetImportKey,
+  readPendingTargetImport,
+  selectedTargetWorkspaceFolders,
+  type PendingTargetImport,
+} from './target-workspace';
 import type { CodeIntelligencePresentation, RepositoryStatus } from './ui-types';
 
 // Keep the transaction implementation bundled by esbuild without making the
@@ -90,6 +98,8 @@ let moduleExplorerTargets = new Map<string, ModuleTarget>();
 let moduleExplorerChildren: ExplorerChildrenIndex = new Map();
 let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
+/** One-shot startup chain, created by the first explicit use of the workbench. */
+let codeIntelligenceStartup: Promise<void> | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm));
@@ -122,6 +132,8 @@ export function activate(context: vscode.ExtensionContext): void {
       hierarchyPlanner: new HttpModuleHierarchyPlanner(() =>
         process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() || loadSettings().adaptationApiUrl),
       onChange: () => { void publishProjectView(codeIntelligence).catch((error) => output.appendLine(String(error))); },
+      modelKeyRefusal: () => modelKeyRefusalReason(context.secrets, loadSettings().adaptationApiUrl, loadSettings().llm),
+      onModelRefusal: (reason) => reportModelRefusal(context, reason),
       identityStore: context.globalState,
       output,
     });
@@ -194,17 +206,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
     }),
-    vscode.window.registerTreeDataProvider<vscode.TreeItem>('forexplore.launcher', {
-      getTreeItem: (item) => item,
-      getChildren: () => [],
-    }),
+    createWorkbenchLauncher({ context, services, health, codeIntelligence }, output),
     { dispose: () => codeIntelligence.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(
       moduleMigrationPreviewScheme,
       moduleMigrationPreviews,
     ),
+    // Reviving the panel matters most for exactly the flow that used to break:
+    // selecting a target folder adds a workspace folder, VS Code restarts this
+    // host, and without a serializer the workbench simply disappears.
+    vscode.window.registerWebviewPanelSerializer(workbenchViewType, {
+      deserializeWebviewPanel: async (panel) => {
+        const revived = await TranslationPanel.restore(panel, context,
+          panelInitPayload(services, loadSettings()),
+          panelHandlers({ context, services, health, codeIntelligence }));
+        primeWorkbench({ context, services, health, codeIntelligence }, revived, output);
+      },
+    }),
     vscode.commands.registerCommand('forexplore.showPanel', () =>
-      showPanel(context, services, health, codeIntelligence),
+      showPanel(context, services, health, codeIntelligence, output),
     ),
     vscode.commands.registerCommand('forexplore.checkRepositories', async () => {
       const index = await synchronizeCodeIntelligence(codeIntelligence, { scan: false });
@@ -267,27 +287,31 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // The trusted host starts the shared local indexing chain; services used for
-  // translation remain independently health-checked and are never replaced.
-  void Promise.all([
-    services.refresh(),
-    synchronizeCodeIntelligence(codeIntelligence),
-    codeIntelligence.startSemanticQueryServer({
-      port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
-      bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
-    }),
-  ])
-    .then(() => refreshRepositoryStatus(services, health))
-    .catch((error) => {
-      output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
-    });
+  // A target import interrupted by the workspace change is finished here, on
+  // the host that survived it.
+  void resumeInterruptedTargetImport(
+    { context, services, health, codeIntelligence }, output,
+  ).catch((error) => output.appendLine(`[forexplore] resume failed: ${String(error)}`));
 }
 
 async function publishModelKeyStatus(context: vscode.ExtensionContext, message?: string): Promise<void> {
   let configured = false;
   try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl, loadSettings().llm))); }
   catch { message ??= '当前后端地址不支持插件 API Key；仅支持本机地址。'; }
+  // A new key (or a cleared one) makes the previous refusal stale.
+  reportedModelRefusals.clear();
   publish({ type: 'MODEL_KEY_STATUS', configured, ...(message ? { message } : {}) });
+}
+
+/** Module analysis is refused without a key; say so once per configuration. */
+const reportedModelRefusals = new Set<string>();
+
+function reportModelRefusal(context: vscode.ExtensionContext, reason: string): void {
+  if (reportedModelRefusals.has(reason)) return;
+  reportedModelRefusals.add(reason);
+  void vscode.window.showWarningMessage(reason, '配置 API Key').then((choice) => {
+    if (choice === '配置 API Key') void configureModelKey(context, false);
+  });
 }
 
 async function configureModelKey(context: vscode.ExtensionContext, clear: boolean): Promise<void> {
@@ -322,18 +346,74 @@ export function deactivate(): void {
   activeCodeIntelligenceHost = null;
 }
 
-async function showPanel(
-  context: vscode.ExtensionContext,
-  services: ServiceManager,
-  health: RepositoryHealthCheck,
-  codeIntelligence: CodeIntelligenceHost,
+/**
+ * The workbench is a Webview panel, so this Activity Bar container exists only
+ * as its launcher and its view never has items of its own. A click brings the
+ * workbench forward and then dismisses the sidebar the click opened, so the
+ * workbench is the only thing that appears.
+ *
+ * The sidebar is kept when the workbench is already the active editor: there
+ * the toggle was deliberate (Ctrl+B with RECAST selected) and the view shows
+ * its welcome commands instead of an empty panel.
+ */
+function createWorkbenchLauncher(
+  host: ExtensionHost,
+  output: vscode.OutputChannel,
+): vscode.Disposable {
+  const launcher = vscode.window.createTreeView('forexplore.launcher', {
+    treeDataProvider: {
+      getTreeItem: (item) => item,
+      getChildren: () => [],
+    },
+  });
+  launcher.onDidChangeVisibility(({ visible }) => {
+    if (!visible) return;
+    const workbenchInFront = TranslationPanel.current?.panel.active === true;
+    void showPanel(host.context, host.services, host.health, host.codeIntelligence, output)
+      .then(() => workbenchInFront
+        ? undefined
+        : vscode.commands.executeCommand('workbench.action.closeSidebar'))
+      .catch((error) => output.appendLine(`[forexplore] launcher failed: ${String(error)}`));
+  });
+  return launcher;
+}
+
+/**
+ * The trusted host starts the shared local indexing chain; services used for
+ * translation remain independently health-checked and are never replaced.
+ *
+ * This runs on the first explicit use rather than at activation: opening the
+ * workbench is what needs the index, and doing it earlier would scan
+ * repositories or bind the semantic query port in windows that never asked for
+ * it. A failure stays retryable on the next use.
+ */
+function ensureCodeIntelligenceStarted(
+  host: ExtensionHost,
+  output: vscode.OutputChannel,
 ): Promise<void> {
-  if (TranslationPanel.current) {
-    TranslationPanel.current.panel.reveal(vscode.ViewColumn.Beside);
-    return;
-  }
-  const settings = loadSettings();
-  const panel = await TranslationPanel.createOrShow(context, {
+  codeIntelligenceStartup ??= Promise.all([
+    host.services.refresh(),
+    synchronizeCodeIntelligence(host.codeIntelligence),
+    host.codeIntelligence.startSemanticQueryServer({
+      port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
+      bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
+    }),
+  ])
+    .then(() => refreshRepositoryStatus(host.services, host.health))
+    .then(() => undefined)
+    .catch((error) => {
+      output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
+      codeIntelligenceStartup = undefined;
+    });
+  return codeIntelligenceStartup;
+}
+
+/**
+ * The workbench's opening state. The Webview is stateless, so the same payload
+ * serves a first mount and a revived panel.
+ */
+function panelInitPayload(services: ServiceManager, settings: ExtensionSettings): PanelInitPayload {
+  return {
     target: null, workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '',
     settings, repositoryStatuses: [],
     codeIntelligence: { status: 'initializing', storage: 'seekdb', repositories: [] },
@@ -346,15 +426,36 @@ async function showPanel(
         summary: { exists: false, path: '.forexplore/module-summary.json' },
       },
     }, searchProvider: 'SeekDB', adaptationProvider: settings.llm.provider,
-  }, { onMessage: (message) => { void handlePanelMessage({ context, services, health, codeIntelligence }, message); } });
+  };
+}
+
+function panelHandlers(host: ExtensionHost): PanelHandlers {
+  return {
+    onMessage: (message) => {
+      // A refused or failed action must reach the user: without this catch the
+      // rejection would only surface as an unhandled promise.
+      void handlePanelMessage(host, message)
+        .catch((error) => publishError(errorMessage(error, '面板操作失败')));
+    },
+  };
+}
+
+/** Runs after a panel exists: starts the indexing chain and fills the panel. */
+function primeWorkbench(
+  host: ExtensionHost,
+  panel: TranslationPanel,
+  output: vscode.OutputChannel,
+): void {
+  // Opening the workbench is the explicit use that starts the indexing chain.
+  void ensureCodeIntelligenceStarted(host, output);
   void (async () => {
     try {
       // Published indexing results are readable while another repository scans.
       // Opening a panel must not enqueue a status read behind that scan.
-      await publishProjectView(codeIntelligence);
+      await publishProjectView(host.codeIntelligence);
       const [status, statuses] = await Promise.all([
-        services.refresh(),
-        refreshRepositoryStatus(services, health),
+        host.services.refresh(),
+        refreshRepositoryStatus(host.services, host.health),
       ]);
       if (TranslationPanel.current !== panel) return;
       panel.post({ type: 'SERVICE_STATUS', status });
@@ -363,6 +464,27 @@ async function showPanel(
       if (TranslationPanel.current === panel) panel.post({ type: 'ERROR', message: errorMessage(error, '面板数据加载失败') });
     }
   })();
+}
+
+async function showPanel(
+  context: vscode.ExtensionContext,
+  services: ServiceManager,
+  health: RepositoryHealthCheck,
+  codeIntelligence: CodeIntelligenceHost,
+  output: vscode.OutputChannel,
+): Promise<void> {
+  const host: ExtensionHost = { context, services, health, codeIntelligence };
+  // Opening the workbench is the explicit use that starts the indexing chain.
+  // Memoized, so reopening an existing panel costs nothing while a failed
+  // startup is still retried on the next click.
+  void ensureCodeIntelligenceStarted(host, output);
+  if (TranslationPanel.current) {
+    TranslationPanel.current.panel.reveal(vscode.ViewColumn.Beside);
+    return;
+  }
+  const panel = await TranslationPanel.createOrShow(context,
+    panelInitPayload(services, loadSettings()), panelHandlers(host));
+  primeWorkbench(host, panel, output);
 }
 
 async function handlePanelMessage(
@@ -387,11 +509,7 @@ async function handlePanelMessage(
       }
       return;
     case 'ADD_TARGET_WORKSPACE':
-      try {
-        if (await addTargetWorkspace(message.mode)) await refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true });
-      } catch (error) {
-        publishError(errorMessage(error, '添加目标工程失败'));
-      }
+      await addTargetWorkspaceFromWebview(host, message.mode);
       return;
     case 'SETTINGS_VISIBILITY_CHANGED':
       await vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', message.open);
@@ -565,8 +683,8 @@ async function updatePanelSettings(
 
 async function refreshModuleExplorer(
   codeIntelligence: CodeIntelligenceHost,
-  options: { scanNewOnly?: boolean } = {},
-): Promise<void> {
+  options: { scanNewOnly?: boolean; throwErrors?: boolean } = {},
+): Promise<boolean> {
   try {
     const presentation = await synchronizeCodeIntelligence(codeIntelligence, options);
     const result = await buildProjectExplorer(codeIntelligence, activeRun?.target);
@@ -574,9 +692,118 @@ async function refreshModuleExplorer(
     moduleExplorerChildren = result.childrenByNodeId;
     publish({ type: 'MODULE_EXPLORER', explorer: result.presentation });
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
+    return true;
   } catch (error) {
+    // A caller that owns a visible progress surface reports the failure itself
+    // so the user sees one message beside the control that failed.
+    if (options.throwErrors) throw error;
     publishError(errorMessage(error, '刷新模块视图失败'));
+    return false;
   }
+}
+
+/**
+ * One explicit target choice is a user-visible transaction: a native dialog, a
+ * workspace mutation that can restart this extension host, then a first-time
+ * index. Every phase reaches the notification *and* the Webview, because a
+ * silent multi-minute wait is indistinguishable from a dead button.
+ */
+async function addTargetWorkspaceFromWebview(
+  host: ExtensionHost,
+  mode: TargetWorkspaceAddMode,
+): Promise<void> {
+  publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'selecting',
+    message: mode === 'workspace' ? '请在弹出的列表中选择目标工程目录…' : '请在弹出的对话框中选择目标工程目录…' });
+  // Adding the first workspace folder restarts this extension host, so the
+  // intent is persisted before that mutation and cleared once this host
+  // finishes the job. Otherwise a restart leaves the panel stuck on
+  // "正在建立索引" with nobody left to complete or clear it.
+  await host.context.globalState.update(pendingTargetImportKey,
+    { requestedAt: new Date().toISOString(), mode } satisfies PendingTargetImport);
+  const clearIntent = () => host.context.globalState.update(pendingTargetImportKey, undefined);
+  let selection: Awaited<ReturnType<typeof addTargetWorkspace>>;
+  try {
+    selection = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在添加目标工程', cancellable: false },
+      (progress) => addTargetWorkspace(mode, {
+        onProgress: (update) => {
+          progress.report({ message: update.message });
+          publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: update.phase, message: update.message });
+        },
+      }),
+    );
+  } catch (error) {
+    await clearIntent();
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode,
+      message: errorMessage(error, '添加目标工程失败') });
+    return;
+  }
+  if (selection.status === 'cancelled') {
+    await clearIntent();
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'cancelled', mode });
+    return;
+  }
+  publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'added', mode,
+    message: selection.status === 'attached'
+      ? '目标目录已加入工作区，正在建立索引…'
+      : '目标目录已登记，正在建立索引…' });
+  try {
+    // `throwErrors` keeps the failure message with the retry affordance in the
+    // selector instead of duplicating it into the global error banner.
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在建立目标工程索引', cancellable: false },
+      (progress) => {
+        progress.report({ message: '正在解析目录并建立结构索引…' });
+        return refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, throwErrors: true });
+      },
+    );
+  } catch (error) {
+    await clearIntent();
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode,
+      message: errorMessage(error, '目标目录已登记，但索引失败') });
+    return;
+  }
+  await clearIntent();
+  // VS Code may restart this extension host to apply the workspace change. The
+  // Webview then rebuilds from INIT instead of receiving this message.
+  publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'completed', mode });
+}
+
+/**
+ * Finishes a target import that a workspace change cut in half. Reaching this
+ * means the previous host died between adding the folder and indexing it, so
+ * the work only has to run again — and say so, instead of leaving the panel on
+ * a progress state that will never advance.
+ */
+async function resumeInterruptedTargetImport(
+  host: ExtensionHost,
+  output: vscode.OutputChannel,
+): Promise<void> {
+  const pending = readPendingTargetImport(host.context.globalState.get(pendingTargetImportKey));
+  if (!pending) return;
+  await host.context.globalState.update(pendingTargetImportKey, undefined);
+  output.appendLine('[forexplore] resuming the target import interrupted by the workspace change.');
+  let failure: string | undefined;
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在恢复目标工程导入', cancellable: false },
+    async (progress) => {
+      progress.report({ message: '正在建立结构索引…' });
+      publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在恢复目标工程导入并建立索引…' });
+      try {
+        await ensureCodeIntelligenceStarted(host, output);
+        await refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, throwErrors: true });
+      } catch (error) {
+        failure = errorMessage(error, '恢复目标工程导入失败');
+      }
+    },
+  );
+  if (failure) {
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: pending.mode, message: failure });
+    void vscode.window.showWarningMessage(`RECAST: ${failure}`);
+    return;
+  }
+  publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'completed', mode: pending.mode });
+  void vscode.window.showInformationMessage('RECAST: 目标工程已导入并完成索引。');
 }
 
 async function selectWorkspaceTarget(targetId: string): Promise<void> {

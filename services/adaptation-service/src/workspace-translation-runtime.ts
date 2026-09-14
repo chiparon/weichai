@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceTranslationRun,
+  WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceEvidenceQuery, WorkspaceTranslationRequest, WorkspaceTranslationRun,
 } from "@forexplore/contracts";
 import type { DeepSeekToolMessage } from "./deepseek-client";
 import { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";
 import { TranslationWorkspaceFiles, maxWorkspaceFileChars } from "./workspace-translation-files";
+import type { WorkspaceEvidencePort } from "./workspace-evidence-port";
 import {
   object, parseWorkspaceTranslationPlan, validateWorkspaceTranslationRequest,
   workspaceAnalyzerPrompt, workspaceAnalyzerTools, workspaceTranslatorPrompt, workspaceTranslatorTools,
@@ -17,10 +18,23 @@ export interface WorkspaceTranslationRuntimeOptions {
   /** Host-owned immutable test harness and all its criteria/configuration files. */
   verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
   client: WorkspaceTranslationModelClient;
+  /**
+   * Optional read-only history index. When present and the run carries
+   * evidenceScopes, the agents may query it themselves with a bounded budget.
+   */
+  evidence?: {
+    port: WorkspaceEvidencePort;
+    maxQueries?: number;
+    maxExcerptsPerQuery?: number;
+    maxTotalChars?: number;
+  };
   /** Budget per start/resume, including Analyzer and repair turns. */
   maxModelTurns?: number;
   timeoutMs?: number;
 }
+
+const evidenceDefaults = { maxQueries: 6, maxExcerptsPerQuery: 6, maxTotalChars: 60_000 } as const;
+const maxEvidenceRequirementChars = 600;
 
 export class WorkspaceTranslationError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -36,6 +50,9 @@ export class WorkspaceTranslationRuntime {
   private readonly command: WorkspaceCompileCommand;
   private readonly maxTurns: number;
   private readonly timeoutMs: number;
+  private evidenceBudget?: { maxQueries: number; maxExcerptsPerQuery: number; maxTotalChars: number };
+  /** Excerpts already delivered to a run, so a repeated query cannot re-feed them. */
+  readonly #deliveredEvidence = new Map<string, Set<string>>();
   private closing = false;
   private active?: { run: WorkspaceTranslationRun; controller: AbortController; done: Promise<void> };
 
@@ -49,6 +66,14 @@ export class WorkspaceTranslationRuntime {
       throw new Error("Invalid workspace translation execution budget.");
     }
     this.files = new TranslationWorkspaceFiles(options.workspaceRoot);
+    if (options.evidence) {
+      const { maxQueries, maxExcerptsPerQuery, maxTotalChars } = { ...evidenceDefaults, ...options.evidence };
+      if (![maxQueries, maxExcerptsPerQuery, maxTotalChars].every((value) => Number.isInteger(value) && value > 0) ||
+        maxQueries > 32 || maxExcerptsPerQuery > 20 || maxTotalChars > 512_000) {
+        throw new Error("Invalid on-demand evidence budget.");
+      }
+      this.evidenceBudget = { maxQueries, maxExcerptsPerQuery, maxTotalChars };
+    }
     if (options.verification) {
       validateWorkspaceCompileCommand(options.verification.command);
       if (!options.verification.protectedFiles.length || options.verification.protectedFiles.length > 100) throw new Error("Verification requires 1..100 protected criteria files.");
@@ -74,7 +99,7 @@ export class WorkspaceTranslationRuntime {
     const now = new Date().toISOString();
     const run: WorkspaceTranslationRun = {
       id: randomUUID(), workspaceRoot: this.files.root, request, status: "analyzing",
-      createdAt: now, updatedAt: now, completedSteps: [], changes: [], compilations: [],
+      createdAt: now, updatedAt: now, completedSteps: [], changes: [], compilations: [], evidenceQueries: [],
       modelTurns: 0, acceptance: "compilation-only",
       ...(verification ? { verification: { command: structuredClone(verification.command),
         criteria: verification.protectedFiles.map(path => {
@@ -161,6 +186,83 @@ export class WorkspaceTranslationRuntime {
     await active.done;
   }
 
+  /**
+   * Bounded on-demand evidence. The agent chooses what to look up; the host
+   * index decides what exists, and this method enforces the per-run budget,
+   * deduplicates repeated excerpts and keeps an auditable record.
+   */
+  async #queryEvidence(
+    run: WorkspaceTranslationRun,
+    args: Record<string, unknown>,
+    scopes: readonly NonNullable<WorkspaceTranslationRequest["evidenceScopes"]>[number][],
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const evidence = this.options.evidence;
+    const budget = this.evidenceBudget;
+    if (!evidence || !budget) throw new Error("On-demand history evidence is not configured.");
+    const requirement = typeof args.requirement === "string" ? args.requirement.trim() : "";
+    if (!requirement || requirement.length > maxEvidenceRequirementChars) {
+      throw new Error(`query_evidence needs a requirement of 1..${maxEvidenceRequirementChars} characters.`);
+    }
+    const limit = args.limit === undefined ? budget.maxExcerptsPerQuery : args.limit;
+    if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > budget.maxExcerptsPerQuery) {
+      throw new Error(`query_evidence limit must be an integer in 1..${budget.maxExcerptsPerQuery}.`);
+    }
+    const records = run.evidenceQueries ?? (run.evidenceQueries = []);
+    if (records.length >= budget.maxQueries) {
+      throw new Error(`Evidence budget exhausted: at most ${budget.maxQueries} queries per run.`);
+    }
+    const remaining = budget.maxTotalChars - records.reduce((sum, item) => sum + item.characters, 0);
+    if (remaining <= 0) throw new Error("Evidence budget exhausted: no excerpt characters remain.");
+    const record: WorkspaceEvidenceQuery = {
+      at: new Date().toISOString(), requirement,
+      repositoryIds: [...new Set(scopes.map((scope) => scope.repositoryId))], excerptCount: 0, characters: 0,
+    };
+    try {
+      const result = await evidence.port.query({ requirement, limit: limit as number, scopes }, signal);
+      const seen = this.#deliveredEvidence.get(run.id) ?? new Set<string>();
+      this.#deliveredEvidence.delete(run.id);
+      this.#deliveredEvidence.set(run.id, seen);
+      while (this.#deliveredEvidence.size > 8) {
+        const oldest = this.#deliveredEvidence.keys().next().value;
+        if (oldest === undefined || oldest === run.id) break;
+        this.#deliveredEvidence.delete(oldest);
+      }
+      const fresh = result.evidence.filter((item) => !seen.has(item.id)).slice(0, limit as number);
+      const excerpts: Array<Record<string, unknown>> = [];
+      let characters = 0;
+      for (const item of fresh) {
+        if (characters >= remaining) break;
+        seen.add(item.id);
+        const content = item.content.slice(0, remaining - characters);
+        characters += content.length;
+        excerpts.push({
+          id: item.id, repository: item.repositoryId, revision: item.analysisRevision, path: item.relativePath,
+          content, truncated: item.truncated || content.length < item.content.length,
+        });
+      }
+      record.excerptCount = excerpts.length;
+      record.characters = characters;
+      records.push(record);
+      this.save(run);
+      return {
+        evidence: excerpts,
+        characters,
+        remainingQueries: budget.maxQueries - records.length,
+        remainingCharacters: remaining - characters,
+        notes: [
+          ...(result.notes ?? []),
+          ...(excerpts.length < fresh.length || characters >= remaining ? ["EVIDENCE_BUDGET_TRUNCATED"] : []),
+        ],
+      };
+    } catch (error) {
+      record.error = message(error);
+      records.push(record);
+      this.save(run);
+      throw error;
+    }
+  }
+
   private requireIdle(): void {
     if (this.closing) throw new WorkspaceTranslationError(503, "Workspace translation is shutting down.");
     if (this.active) throw new WorkspaceTranslationError(409, "A translation is already running in this workspace.");
@@ -180,6 +282,10 @@ export class WorkspaceTranslationRuntime {
       !Array.isArray(run.changes) || !Array.isArray(run.compilations) || !Array.isArray(run.completedSteps) ||
       !Number.isInteger(run.modelTurns) || run.modelTurns < 0) throw new Error("Invalid translation record.");
     if (run.verification && (!Array.isArray(run.verification.criteria) || !run.verification.criteria.length || !Array.isArray(run.verification.runs))) throw new Error("Invalid verification record.");
+    if (run.evidenceQueries !== undefined && (!Array.isArray(run.evidenceQueries) || run.evidenceQueries.some((item) =>
+      !item || typeof item.at !== "string" || typeof item.requirement !== "string" || !Array.isArray(item.repositoryIds) ||
+      !Number.isInteger(item.excerptCount) || !Number.isInteger(item.characters) ||
+      (item.error !== undefined && typeof item.error !== "string")))) throw new Error("Invalid evidence query record.");
     const paths = new Set<string>();
     for (const change of run.changes) {
       if (!change || !run.request.writeFiles.includes(change.path) || paths.has(change.path) ||
@@ -264,12 +370,20 @@ export class WorkspaceTranslationRuntime {
     let verifiedSnapshot: string | undefined;
     const readHashes = new Map<string, string | null>();
     const readable = new Set([...run.request.workspaceFiles, ...run.request.writeFiles]);
+    // On-demand history evidence exists only when the host put history revisions
+    // in scope and a read-only index port is configured.
+    const evidenceScopes = run.request.evidenceScopes ?? [];
+    const evidenceAvailable = Boolean(this.options.evidence) && evidenceScopes.length > 0;
+    const toolsFor = (): typeof workspaceAnalyzerTools => (analyzer ? workspaceAnalyzerTools : workspaceTranslatorTools)
+      .filter((tool) => evidenceAvailable || tool.name !== "query_evidence");
     const makeMessages = (): DeepSeekToolMessage[] => [
       { role: "system", content: analyzer ? workspaceAnalyzerPrompt : workspaceTranslatorPrompt },
       { role: "user", content: JSON.stringify({
         request: run.request, plan: run.plan, completedSteps: run.completedSteps,
         changes: run.changes.map(({ path, applied }) => ({ path, applied })),
         latestCompilation: run.compilations.at(-1), verificationRequired: Boolean(run.verification), latestVerification: run.verification?.runs.at(-1), revisionReason,
+        evidenceQueriesUsed: run.evidenceQueries?.length ?? 0,
+        evidenceQueriesRemaining: this.evidenceBudget ? Math.max(0, this.evidenceBudget.maxQueries - (run.evidenceQueries?.length ?? 0)) : 0,
       }) },
     ];
     let messages = makeMessages();
@@ -278,8 +392,7 @@ export class WorkspaceTranslationRuntime {
       run.status = analyzer ? "analyzing" : "translating";
       run.modelTurns++;
       this.save(run);
-      const completion = await this.options.client.complete(messages,
-        analyzer ? workspaceAnalyzerTools : workspaceTranslatorTools, signal);
+      const completion = await this.options.client.complete(messages, toolsFor(), signal);
       signal.throwIfAborted();
       const calls = completion.toolCalls ?? [];
       if (calls.length > 32) throw new Error("Model returned too many tool calls in one turn.");
@@ -295,7 +408,7 @@ export class WorkspaceTranslationRuntime {
         try {
           const args = object(JSON.parse(call.arguments));
           if (transition) throw new Error("Agent phase changed; retry this tool in the next phase.");
-          const available = analyzer ? workspaceAnalyzerTools : workspaceTranslatorTools;
+          const available = toolsFor();
           const definition = available.find((tool) => tool.name === call.name);
           if (!definition) throw new Error(`Tool is unavailable in this phase: ${call.name}`);
           const properties = definition.inputSchema.properties as Record<string, unknown>;
@@ -310,6 +423,12 @@ export class WorkspaceTranslationRuntime {
               run.error = args.reason;
               this.save(run);
               return;
+            }
+            case "query_evidence": {
+              // The agent decides what to look up; the host index decides what
+              // exists and the budget below bounds how much can be pulled in.
+              result = await this.#queryEvidence(run, args, evidenceScopes, signal);
+              break;
             }
             case "read_file": {
               if (typeof args.path !== "string" || !readable.has(args.path)) throw new Error("File is outside the requested read scope.");

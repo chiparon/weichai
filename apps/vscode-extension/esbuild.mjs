@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import esbuild from 'esbuild';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,13 +54,73 @@ await esbuild.build({
 });
 
 const nativeModulesDirectory = path.join(extensionOutputDirectory, 'node_modules');
-await rm(nativeModulesDirectory, { recursive: true, force: true });
-await mkdir(nativeModulesDirectory, { recursive: true });
 const indexerRequire = createRequire(path.join(workspaceDirectory, 'services', 'code-indexer', 'package.json'));
-await Promise.all(nativeRuntimePackages.map(async (packageName) => {
-  await cp(
+
+/**
+ * A Windows extension host keeps the grammar `.node` files it loaded open, so
+ * they cannot be deleted or rewritten while a window is running.  The previous
+ * implementation deleted the whole directory first, which failed partway
+ * through and left the installed packages incomplete.  Copying only what
+ * actually changed makes a routine rebuild a no-op for those files.
+ */
+const lockedFileCodes = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+async function sizeOf(file) {
+  return stat(file).then((info) => info.size, () => -1);
+}
+
+async function digest(file) {
+  return createHash('sha256').update(await readFile(file)).digest('hex');
+}
+
+async function isIdentical(source, target) {
+  if (await sizeOf(source) !== await sizeOf(target)) return false;
+  return await digest(source) === await digest(target);
+}
+
+async function syncNativeModule(source, target, locked) {
+  await mkdir(target, { recursive: true });
+  const expected = new Set();
+  for (const entry of await readdir(source)) {
+    const from = path.join(source, entry);
+    const to = path.join(target, entry);
+    expected.add(entry);
+    // `stat` follows links so a pnpm-managed package copies as real files.
+    if ((await stat(from)).isDirectory()) {
+      await syncNativeModule(from, to, locked);
+      continue;
+    }
+    if (await isIdentical(from, to)) continue;
+    try {
+      await cp(from, to, { force: true });
+    } catch (error) {
+      if (!lockedFileCodes.has(error.code)) throw error;
+      locked.push(to);
+    }
+  }
+  for (const entry of await readdir(target)) {
+    if (expected.has(entry)) continue;
+    try {
+      await rm(path.join(target, entry), { recursive: true, force: true });
+    } catch (error) {
+      // A stale extra file never changes which binary node-gyp-build loads.
+      if (!lockedFileCodes.has(error.code)) throw error;
+    }
+  }
+}
+
+const locked = [];
+for (const packageName of nativeRuntimePackages) {
+  await syncNativeModule(
     path.dirname(indexerRequire.resolve(`${packageName}/package.json`)),
     path.join(nativeModulesDirectory, packageName),
-    { recursive: true, dereference: true },
+    locked,
   );
-}));
+}
+if (locked.length > 0) {
+  throw new Error([
+    '无法更新以下本地模块：它们正被一个已加载该扩展的 VS Code 窗口占用。',
+    '请关闭运行本扩展的窗口后重新构建（或直接重启 VS Code）：',
+    ...locked.map((file) => `  - ${file}`),
+  ].join('\n'));
+}

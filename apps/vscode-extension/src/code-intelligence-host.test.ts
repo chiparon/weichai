@@ -378,7 +378,11 @@ describe('CodeIntelligenceHost', () => {
     try {
       const view = await host.presentation();
       expect(view.repositories.find((repository) => repository.role === 'history')?.analysisStatus).toBe('ready');
-      expect(onChange).toHaveBeenCalledTimes(2);
+      // One notification per observed transition: registration, the history
+      // scan start, the history scan result, and the target scan start. That
+      // last one is what keeps a still-running target visible to the Webview
+      // instead of only its eventual result.
+      expect(onChange).toHaveBeenCalledTimes(4);
     } finally {
       release();
       await synchronization;

@@ -10,7 +10,7 @@ export interface PanelHandlers {
   onMessage(message: WebviewToHostMessage): void;
 }
 
-const VIEW_TYPE = 'forexplore.translation';
+export const workbenchViewType = 'forexplore.translation';
 const PANEL_TITLE = 'RECAST 智能开发工作台';
 
 /**
@@ -47,7 +47,7 @@ export class TranslationPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      VIEW_TYPE,
+      workbenchViewType,
       PANEL_TITLE,
       vscode.ViewColumn.Beside,
       {
@@ -56,6 +56,34 @@ export class TranslationPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
       },
     );
+    return TranslationPanel.attach(panel, context, payload, handlers);
+  }
+
+  /**
+   * Revives the panel VS Code hands back after a window reload or an extension
+   * host restart. The previous Webview is gone, so scripts and resource roots
+   * have to be granted again before the workbench can load.
+   */
+  static async restore(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    payload: PanelInitPayload,
+    handlers: PanelHandlers,
+  ): Promise<TranslationPanel> {
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
+    };
+    return TranslationPanel.attach(panel, context, payload, handlers);
+  }
+
+  /** Takes ownership of a panel this class will drive from now on. */
+  private static async attach(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    payload: PanelInitPayload,
+    handlers: PanelHandlers,
+  ): Promise<TranslationPanel> {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'recast-logo.svg');
 
     const instance = new TranslationPanel(panel, context, payload, handlers);

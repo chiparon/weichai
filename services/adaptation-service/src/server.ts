@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { ModelModuleHierarchyPlanner } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { loadConfig } from './config.js';
-import { completeWithDeepSeek } from './deepseek-client.js';
+import { completeWithDeepSeek, completeWithDeepSeekTools } from './deepseek-client.js';
 import { deepSeekModelConfig } from './model-config.js';
 import { observeAgentModelCall } from './agent-model-observer.js';
 import { createHttpServer } from './http-server.js';
@@ -9,6 +9,7 @@ import { AdaptationAdapter } from './adaptation-adapter.js';
 import { ArchitectAgent } from './architect-agent.js';
 import { FileStaticAnalysisSnapshotStore } from './analysis-snapshot-store.js';
 import { HttpSemanticQueryPort } from './http-semantic-query-port.js';
+import { HttpWorkspaceEvidencePort } from './http-workspace-evidence-port.js';
 import { WorkspaceTranslationRuntime } from './workspace-translation-runtime.js';
 import { createWorkspaceTranslationModelClient } from './workspace-translation-agent.js';
 import {
@@ -35,6 +36,12 @@ async function main(): Promise<void> {
       verification: config.workspaceTranslation.verification,
       maxModelTurns: config.workspaceTranslation.maxModelTurns,
       timeoutMs: config.workspaceTranslation.timeoutMs,
+      // The Analyzer and Translator may query the host's read-only index
+      // themselves; the host still decides which revisions exist and are visible.
+      ...(config.semanticQueryPort ? { evidence: { port: new HttpWorkspaceEvidencePort({
+        endpoint: config.semanticQueryPort.endpoint,
+        ...(config.semanticQueryPort.bearerToken ? { bearerToken: config.semanticQueryPort.bearerToken } : {}),
+      }) } } : {}),
       client: createWorkspaceTranslationModelClient({ apiKey: () => config.apiKey, temperature: 0 }),
     });
   }
@@ -68,6 +75,19 @@ async function main(): Promise<void> {
     ...(semanticArchitecturePort ? { semanticArchitecturePort } : {}),
     ...(workspaceTranslationRuntime && config.workspaceTranslation ? {
       workspaceTranslation: { runtime: workspaceTranslationRuntime, bearerToken: config.workspaceTranslation.bearerToken },
+    } : {}),
+    ...(config.moduleGeneration ? {
+      moduleGeneration: {
+        bearerToken: config.moduleGeneration.bearerToken,
+        // The trusted host owns the repository, the isolated worktrees and the
+        // compiler; this process only performs the credentialed model turn.
+        complete: (turn, signal) => observeAgentModelCall({
+          strategy: 'module-generation', model: deepSeekModelConfig.model,
+          inputChars: JSON.stringify(turn.messages).length + JSON.stringify(turn.tools).length,
+        }, () => completeWithDeepSeekTools(turn.messages, turn.tools, {
+          apiKey: () => config.apiKey, temperature: 0,
+        }, signal), (result) => JSON.stringify(result).length, signal),
+      },
     } : {}),
     corsOrigin: config.corsOrigin,
   });

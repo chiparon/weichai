@@ -139,7 +139,7 @@ export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
 
 ### 本机 Agent 查询
 
-扩展启动后提供本机查询服务，默认 `http://127.0.0.1:8790`，可通过 `FOREXPLORE_SEMANTIC_QUERY_PORT` 调整。MCP 进程使用同一个服务：
+首次打开工作台（或首次语义规划请求）后提供本机查询服务，默认 `http://127.0.0.1:8790`，可通过 `FOREXPLORE_SEMANTIC_QUERY_PORT` 调整。MCP 进程使用同一个服务：
 
 ```bash
 SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexplore/semantic-index-mcp-server
@@ -152,9 +152,9 @@ SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexpl
 ## 运行方式
 
 1. 在仓库根目录运行 `npm run dev:extension`。脚本会启动 SeekDB、两个本地服务，并打开 Extension Development Host。
-2. 在面板左侧“目标工程”的选择器中选择目标目录；已打开的 VS Code 工作区仅作为候选，不会自动作为目标工程。
-3. 运行 **ForeXplore: 打开翻译面板**，从目标工程的模块树中选择待实现的类或方法。
-4. 输入需求并检索全部语料候选。任意已支持语言的候选均可继续生成目标语言补丁。
+2. 点击活动栏的 **RECAST** 图标打开工作台（等价于命令面板中的 **RECAST: 打开智能开发工作台**）。该活动栏容器只作为启动入口：点击后工作台在编辑器区域打开，并自动收起随之弹出的侧边栏；只有在工作台已经是当前编辑器时（例如用 Ctrl+B 主动展开侧边栏），侧边栏才保留并显示「打开工作台 / 重新索引参考工程」两个入口。
+3. 在面板左侧“目标工程”的选择器中选择目标目录；已打开的 VS Code 工作区仅作为候选，不会自动作为目标工程。
+4. 从目标工程的模块树中选择待实现的类或方法，输入需求并检索全部语料候选。任意已支持语言的候选均可继续生成目标语言补丁。
 
 插件只调用真实的 SeekDB 检索服务和语言无关的适配服务。任一服务不可用时，插件会报错，不会回退到本地样例。
 
@@ -223,7 +223,7 @@ npm run test:integration --workspace forexplore-vscode
 
 Webview → 宿主：`READY`、`START_TASK_SEARCH`、`CANCEL_TASK_SEARCH`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_CODE_INTELLIGENCE_REVISION`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。任务检索携带请求 ID、需求、粒度、预算及 Host 已发布的工程/版本/项目 ID；模块树目标切换和 revision 查看只提交受限 ID，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
 
-宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`SETTINGS_UPDATED`、`TASK_SEARCH_RESULT`、`TASK_SEARCH_ERROR`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`CODE_INTELLIGENCE_STATUS`、`SERVICE_STATUS`、`ERROR`。任务响应按请求 ID 配对。
+宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`TARGET_WORKSPACE_PROGRESS`、`TARGET_WORKSPACE_RESULT`、`SETTINGS_UPDATED`、`TASK_SEARCH_RESULT`、`TASK_SEARCH_ERROR`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`CODE_INTELLIGENCE_STATUS`、`SERVICE_STATUS`、`ERROR`。任务响应按请求 ID 配对。
 
 共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。
 
@@ -232,6 +232,8 @@ Webview → 宿主：`READY`、`START_TASK_SEARCH`、`CANCEL_TASK_SEARCH`、`STA
 运行 **ForeXplore: 打开翻译面板** 即可配置仓库，无需先选择方法。添加多个参考工程路径并保存后，各项目自动进入模块解析；左侧“目标工程 / 参考工程”各自的项目选择器切换当前项目，右侧展示模块树对应的 Summary、覆盖范围、依赖和诊断。选择方法后才进入后续代码翻译流程。
 
 目标选择器菜单提供已打开工作区、浏览目录和输入路径三个入口。选择保存在 `forexplore.targetRepositoryPaths`；只有明确选择且位于当前 VS Code 工作区的目录会作为目标工程。一个目录包含多个子项目时，结构索引完成后等待用户选择具体项目，再启动该项目的 Agent 解析。面板会逐仓库显示已完成结果。
+
+选定目录后的每一步都会反馈：`TARGET_WORKSPACE_PROGRESS` 按 `selecting → resolving → attaching → indexing` 报告阶段，同时以 VS Code 通知显示进度；`TARGET_WORKSPACE_RESULT` 区分取消、已加入、完成和失败，失败时在选择器与空态中就地显示原因并提供重试。索引中的仓库由 `analysisStatus` 呈现（面板重建后仍可恢复该状态），索引失败的首次扫描会标记为 `failed` 而不是停留在“正在建立索引”。同一目录的路径比较同时按解析路径与真实路径（real path）匹配，因此通过符号链接/联接（junction）打开的目录仍会被识别为目标工程。
 
 保存设置时只扫描新添加的仓库，已有仓库通过“刷新此仓库”检查变化。普通刷新在内容未变化时复用原 revision 和 Summary。“重新解析模块”按当前策略重新建模；小项目可使用已配置 Agent，大项目使用离线结构分组。“重试解析 / 同步”在仅投影失败时不重复建模。历史版本展示保持只读。本地 .forexplore/module-summary.json 不参与当前模块树构建。
 
@@ -247,7 +249,7 @@ $env:CODE_INTELLIGENCE_SEEKDB_DATABASE = 'forexplore_code_intelligence'
 # 如需密码，在宿主环境中配置 CODE_INTELLIGENCE_SEEKDB_PASSWORD。
 ~~~
 
-适配服务需要 DEEPSEEK_API_KEY，以及 ADAPTATION_SEMANTIC_INDEX_ENABLED=true、SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790。兼容服务可通过 DEEPSEEK_API_BASE 和 DEEPSEEK_MODEL 指定。查询服务随扩展宿主启动，不依赖 Agent 模块解析；端口可通过 FOREXPLORE_SEMANTIC_QUERY_PORT 调整，并同步修改适配服务地址。可选 SEMANTIC_QUERY_PORT_TOKEN 在两个进程中应一致。凭据仅保留在本地服务或宿主环境。
+适配服务需要 DEEPSEEK_API_KEY，以及 ADAPTATION_SEMANTIC_INDEX_ENABLED=true、SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790。兼容服务可通过 DEEPSEEK_API_BASE 和 DEEPSEEK_MODEL 指定。查询服务在首次打开工作台时随索引链启动，不依赖 Agent 模块解析；端口可通过 FOREXPLORE_SEMANTIC_QUERY_PORT 调整，并同步修改适配服务地址。可选 SEMANTIC_QUERY_PORT_TOKEN 在两个进程中应一致。凭据仅保留在本地服务或宿主环境。
 
 模块任务使用 module_artifacts 中独立的 job 记录持久化，Summary 使用按项目和解析配置稳定定位的另一条记录。任务失败不删除上一份有效结果；扩展重启后中断任务可重试。Summary 的自动发布只代表代码理解完成，不批准代码迁移或写回。
 
@@ -273,6 +275,6 @@ npm run test:project-analysis:live
 
 参考工程路径可通过“浏览文件夹（可多选）”调用系统文件夹选择器，仍可手动输入。选择仅更新当前草稿，保存后才登记与索引；取消选择保留草稿。支持最多 20 个工程，并对 Windows 路径的大小写和斜杠差异去重。
 
-Logo 源文件为 `media/recast-logo.svg`，扩展列表使用 `media/recast-logo.png`，活动栏使用同一图形的单色版本。
+Logo 源文件为 `media/recast-logo.svg`，扩展列表使用 `media/recast-logo.png`，活动栏使用同一图形的单色版本 `media/forexplore.svg`。
 
 设置页的保存操作固定在右下角，可随时点击或按 Ctrl+S（macOS：⌘S）。快捷键仅在 RECAST 设置打开时接管保存，并使用与按钮相同的表单校验流程；保存中和目录选择中不会重复提交。

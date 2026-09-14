@@ -1,4 +1,4 @@
-import { DEFAULT_LLM_SETTINGS, parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
+import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
 
 export interface ModelRequestContext { apiKey?: string; settings: LlmSettings }
 export interface CredentialStorage {
@@ -30,7 +30,7 @@ export function createModelCredentialProvider(storage: CredentialStorage, endpoi
     const prefix = base.pathname.replace(/\/+$/, '');
     if (url.origin !== base.origin || url.username || url.password || !url.pathname.startsWith(`${prefix}/`)) return undefined;
     const route = url.pathname.slice(prefix.length);
-    if (!/^\/(?:module-hierarchy\/decision|v1\/(?:adapt|module-plan|semantic-module-plan|workspace-translations(?:\/[a-f0-9-]{36}(?:\/(?:resume|cancel|rollback))?)?))$/.test(route)) return undefined;
+    if (!/^\/(?:module-hierarchy\/decision|v1\/(?:adapt|module-plan|semantic-module-plan|module-generation\/turn|workspace-translations(?:\/[a-f0-9-]{36}(?:\/(?:resume|cancel|rollback))?)?))$/.test(route)) return undefined;
     const apiKey = await storage.get(id);
     return model ? { settings: model, ...(apiKey ? { apiKey } : {}) } : apiKey;
   };
@@ -38,6 +38,32 @@ export function createModelCredentialProvider(storage: CredentialStorage, endpoi
 
 export function validateModelKey(value: string): string | undefined {
   return /^[\x21-\x7e]{1,512}$/.test(value.trim()) ? undefined : '请输入有效 API Key（不能含空格或换行）。';
+}
+
+/**
+ * Module analysis is the only code-intelligence step that calls a model, so it is
+ * refused outright while the selected provider has no stored API key. Indexing,
+ * symbols and source search never need this credential and stay available.
+ *
+ * Returns the refusal reason, or `undefined` when the model is configured.
+ */
+export async function modelKeyRefusalReason(
+  storage: CredentialStorage, endpoint: string, settings: LlmSettings,
+): Promise<string | undefined> {
+  let id: string;
+  try {
+    id = modelCredentialId(endpoint, settings);
+  } catch {
+    return '模块解析需要先在设置中把 AI 后端地址配置为本机地址（forexplore.adaptationApiUrl）。';
+  }
+  let stored: string | undefined;
+  try {
+    stored = await storage.get(id);
+  } catch {
+    return '无法读取本机凭据存储中的 API Key，已停止模块解析；请在设置中重新配置 API Key。';
+  }
+  if (stored?.trim()) return undefined;
+  return `模块解析需要先在设置中配置 ${LLM_PRESETS[settings.provider].label} 的 API Key。`;
 }
 
 /** Store the draft credential before activating its provider; never return secret storage errors. */

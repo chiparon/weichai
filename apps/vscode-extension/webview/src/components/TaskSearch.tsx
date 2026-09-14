@@ -12,8 +12,10 @@ export type { TaskSearchProvider } from '../task-search-provider';
 const labels = { implementation: '实现', interface: '接口', dependency: '调用依赖', configuration: '配置' };
 const granularities = { auto: '自动', function: '函数 / 方法', class: '类 / 接口', module: '功能模块', subsystem: '子系统' };
 
-export function TaskSearch({ project, search, availableGranularities, onMigrate, translation }: {
+export function TaskSearch({ project, search, availableGranularities, onMigrate, translation, moduleTarget }: {
   translation?: TranslationProvider;
+  /** Selected target module: it enables module-scope generation without a task packet. */
+  moduleTarget?: { name: string; files: number } | null;
   project: string;
   search?: TaskSearchProvider;
   availableGranularities?: Record<TaskSearchIntent['scope'], readonly TaskSearchIntent['granularity'][]>;
@@ -152,11 +154,19 @@ export function TaskSearch({ project, search, availableGranularities, onMigrate,
           </button>
         </div>
       </footer>
-      {showTranslation && translation && packet ? <WorkspaceTranslation provider={translation} packetId={packet.packetId} evidenceIds={selected} /> : null}
+      {showTranslation && translation && (packet || moduleTarget) ? <WorkspaceTranslation provider={translation}
+        {...(packet ? { packetId: packet.packetId, evidenceIds: selected } : {})} /> : null}
       {packet?.gaps.length ? <details className="context-gaps" open={packet.status === 'unavailable'}>
         <summary>证据缺口与检索诊断 · {packet.gaps.length}</summary>
         <ul>{packet.gaps.map((gap, index) => <li key={`${gap.code}:${index}`}>{gap.message}{gap.relativePath ? <code>{gap.relativePath}</code> : null}</li>)}</ul>
       </details> : null}
     </>}
+    {!packet && moduleTarget && translation ? <footer className="context-export">
+      <div><strong>模块级生成与验收</strong> · {moduleTarget.name}（{moduleTarget.files} 个文件）</div>
+      <div className="context-export-actions">
+        <button type="button" className="primary-action" onClick={() => setShowTranslation(true)}>生成与验收</button>
+      </div>
+    </footer> : null}
+    {showTranslation && !packet && moduleTarget && translation ? <WorkspaceTranslation provider={translation} /> : null}
   </section>;
 }

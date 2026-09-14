@@ -19,7 +19,7 @@ import {
   Target,
   RotateCcw,
 } from 'lucide-react';
-import { ProjectPicker, type ProjectPickerProps } from './ProjectPicker';
+import { ProjectPicker, TargetAddStatus, targetAddMessage, targetAddRetryMode, type ProjectPickerProps, type TargetAddUiState } from './ProjectPicker';
 import type { ModuleChildrenProvider } from '../module-children-provider';
 import type {
   ModuleExplorerMode,
@@ -37,6 +37,7 @@ interface ModuleWorkspaceProps {
   onSelectProject?: ProjectPickerProps['onSelect'];
   onRefreshRepository?: ProjectPickerProps['onRefresh'];
   onAddTarget?: ProjectPickerProps['onAdd'];
+  targetAdd?: TargetAddUiState;
   onRetry?(scope: ProjectAnalysisScope, force: boolean): void;
   onLoadChildren?: ModuleChildrenProvider;
   explorer: ModuleExplorerPresentation;
@@ -61,6 +62,7 @@ export function ModuleWorkspace({
   onSelectProject,
   onRefreshRepository,
   onAddTarget,
+  targetAdd,
   onRetry,
   onLoadChildren,
   explorer,
@@ -89,6 +91,12 @@ export function ModuleWorkspace({
   const rootData = rootPage.key === rootPageKey ? rootPage : { nodes: workspace.tree, loading: false, error: '' };
   const rootTotal = workspace.rootTotal ?? rootData.nodes.length;
   const noTarget = mode === 'target' && !workspace.projectId && workspace.id === 'target:unselected';
+  // A freshly chosen target is only visible through the host presentation while
+  // it is being indexed, and that state must survive a Webview rebuild.
+  const targetRepositories = repositories.filter((repository) => repository.role === 'target');
+  const indexingTarget = targetRepositories.find((repository) => repository.analysisStatus === 'indexing');
+  const selectableTarget = targetRepositories.find((repository) => repository.projects.length > 0);
+  const addPending = targetAdd?.status === 'pending' ? targetAdd : undefined;
   const filteredTree = useMemo(
     () => filterTree(rootData.nodes, query.trim().toLocaleLowerCase(), status),
     [rootData.nodes, query, status],
@@ -171,7 +179,7 @@ export function ModuleWorkspace({
         </div>
 
         {onSelectProject ? <ProjectPicker mode={mode} workspace={workspace} repositories={repositories}
-          open={pickerOpen} onOpenChange={setPickerOpen} refreshing={refreshing}
+          open={pickerOpen} onOpenChange={setPickerOpen} refreshing={refreshing} targetAdd={targetAdd}
           onSelect={(...args) => { setQuery(''); setStatus('all'); onSelectProject(...args); }}
           onRefresh={(id) => onRefreshRepository?.(id)} onAdd={(value) => onAddTarget?.(value)} onOpenSettings={onOpenSettings} /> : null}
 
@@ -272,9 +280,24 @@ export function ModuleWorkspace({
       <section className="module-main">
         <div className="module-main-scroll">
           {!settingsOpen && !primaryContent && noTarget ? <section className="target-empty-state" aria-label="选择目标工程">
-            <FolderOpen size={32} strokeWidth={1.25} />
-            <h1>选择目标工程</h1>
-            <button type="button" className="primary-action" onClick={() => setPickerOpen(true)}><FolderOpen size={15} />选择项目<ChevronDown size={13} /></button>
+            {addPending || indexingTarget
+              ? <RefreshCw size={32} strokeWidth={1.25} className="is-spinning" />
+              : <FolderOpen size={32} strokeWidth={1.25} />}
+            <h1>{addPending ? '正在添加目标工程' : indexingTarget ? '正在建立项目索引' : '选择目标工程'}</h1>
+            {addPending ? <p className="target-empty-detail" role="status">{targetAddMessage(addPending)}</p> : null}
+            {!addPending && indexingTarget ? (
+              <p className="target-empty-detail" role="status">
+                正在解析 {indexingTarget.displayName} 的目录结构、依赖与模块，完成后即可选择项目。
+              </p>
+            ) : null}
+            {!addPending && !indexingTarget && selectableTarget ? (
+              <p className="target-empty-detail">已检测到目标工程，请在左侧列表中选择具体项目。</p>
+            ) : null}
+            {targetAdd && targetAdd.status !== 'pending' && targetAdd.status !== 'idle' ? (
+              <TargetAddStatus state={targetAdd} onRetry={() => onAddTarget?.(targetAddRetryMode(targetAdd))} />
+            ) : null}
+            <button type="button" className="primary-action" disabled={Boolean(addPending)}
+              onClick={() => setPickerOpen(true)}><FolderOpen size={15} />选择项目<ChevronDown size={13} /></button>
           </section> : null}
           {!settingsOpen && !primaryContent && !noTarget && explorer.history.length === 0 ? (
             <section className="history-configuration-prompt" role="status">

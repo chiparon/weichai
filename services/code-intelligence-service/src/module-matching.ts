@@ -4,12 +4,19 @@ import type { ModuleTarget, ProjectAnalysisRecord, ProjectModule, RepositoryRevi
 import type { IndexStore } from './index-store.js';
 import { projectPlanHash } from './project-analysis.js';
 import type { ModuleReranker } from './module-reranker.js';
+import { RecallKernel } from './recall-kernel.js';
 
 export interface ModuleMatchRequest {
   target: ModuleTarget;
   requirement: string;
   topK: number;
   repositoryIds: readonly string[];
+}
+
+/** The retrieval signals the shared kernel preserves for a recalled document. */
+interface ScoredDocument {
+  searchDocumentId: string;
+  retrievalScore?: { semantic?: number; lexical?: number };
 }
 
 interface ModuleHit extends RepositoryRevisionScope {
@@ -38,17 +45,17 @@ async function mapBounded<T, R>(items: readonly T[], concurrency: number, work: 
 }
 
 /** Module metadata is fetched only for recalled IDs; no full structural index is hydrated. */
-export async function searchModules(store: IndexStore, request: ModuleMatchRequest, parentSignal?: AbortSignal, reranker?: ModuleReranker): Promise<SearchCandidate[]> {
+export async function searchModules(store: IndexStore, request: ModuleMatchRequest, parentSignal?: AbortSignal, reranker?: ModuleReranker, recall = new RecallKernel(store)): Promise<SearchCandidate[]> {
   const controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000), ...(parentSignal ? [parentSignal] : [])]);
   try {
-    return await searchModuleSnapshot(store, request, signal, reranker);
+    return await searchModuleSnapshot(store, request, signal, reranker, recall);
   } finally {
     controller.abort(new Error('Module search finished'));
   }
 }
 
-async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchRequest, signal: AbortSignal, reranker?: ModuleReranker): Promise<SearchCandidate[]> {
+async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchRequest, signal: AbortSignal, reranker: ModuleReranker | undefined, recall: RecallKernel): Promise<SearchCandidate[]> {
   if (!Number.isInteger(request.topK) || request.topK < 1 || request.topK > 10) throw new Error('Module search topK must be between 1 and 10.');
   const repositoryIds = [...new Set(request.repositoryIds)];
   if (repositoryIds.length === 0 || repositoryIds.length > 32) throw new Error('Module search requires between 1 and 32 historical repositories.');
@@ -63,8 +70,22 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
     const scope = { repositoryId, analysisRevision: repository.activeRevision };
     const revision = await store.getRevision(scope, signal);
     if (revision?.status !== 'ready') return [];
-    const documents = await store.searchSearchDocuments!(scope, query, Math.min(120, Math.max(24, request.topK * 12)), 'summary', signal);
-    const artifacts = await store.getModuleArtifacts!(scope, [...new Set(documents.flatMap((doc) => doc.moduleArtifactId ? [doc.moduleArtifactId] : []))], signal);
+    // Shared kernel: the code identity is one plan, recall runs over every view.
+    // A module can now be reached through a matching implementation fragment, not
+    // only through a matching summary.
+    const outcome = await recall.recall({
+      scope,
+      plans: [{ label: 'code-identity', query, weight: 1 }],
+      limitPerView: Math.min(120, Math.max(24, request.topK * 12)),
+      signal,
+    });
+    const documents = outcome.documents;
+    // Summary documents carry their own module artifact. Implementation and
+    // declaration hits do not, so their ownership is resolved against the module
+    // artifacts recalled for this query - never by hydrating the whole revision.
+    const recalledIds = [...new Set(documents.flatMap((doc) => doc.moduleArtifactId ? [doc.moduleArtifactId] : []))];
+    const needsOwnership = documents.some((doc) => !doc.moduleArtifactId || !doc.moduleArtifactId.trim());
+    const artifacts = await store.getModuleArtifacts!(scope, recalledIds, signal);
     const records = new Map(artifacts.flatMap((artifact) => {
       const record = artifact.payload as ProjectAnalysisRecord | undefined;
       if (artifact.kind !== 'module-summary' || artifact.status !== 'current' || artifact.analysisHash !== revision.analysisHash ||
@@ -77,17 +98,25 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
     const projects = new Map((await mapBounded([...new Set([...records.values()].map((r) => r.projectId))], 4,
       (id) => store.getProject!(scope, id, signal))).flatMap((project) => project ? [[project.projectId, project] as const] : []));
     const trees = new Map([...records].map(([id, record]) => [id, indexModuleHierarchy(record.proposal!.modules)]));
+    // File ownership declared by the reviewed module artifacts; this is what
+    // attributes a declaration or implementation hit to its module.
+    const ownersByPath = new Map<string, Array<{ artifactId: string; moduleId: string }>>();
+    if (needsOwnership) {
+      for (const [artifactId, record] of records) {
+        const tree = trees.get(artifactId)!;
+        for (const node of record.proposal!.modules) {
+          for (const file of tree.sourceFiles(node.id).files) {
+            const list = ownersByPath.get(file);
+            const entry = { artifactId, moduleId: node.id };
+            if (list) list.push(entry); else ownersByPath.set(file, [entry]);
+          }
+        }
+      }
+    }
     const byModule = new Map<string, ModuleHit>();
-    documents.forEach((document, rank) => {
-      if (document.repositoryId !== repositoryId || document.analysisRevision !== scope.analysisRevision || !document.moduleArtifactId) return;
-      const record = records.get(document.moduleArtifactId);
-      if (!record) return;
-      let identity: { projectId?: string; moduleId?: string; planHash?: string };
-      try { identity = JSON.parse(document.text); } catch { return; }
-      if (!identity || identity.projectId !== record.projectId) return;
-      if (identity.planHash !== undefined && identity.planHash !== record.planHash || record.proposal!.hierarchy && identity.planHash !== record.planHash) return;
-      const tree = trees.get(document.moduleArtifactId)!;
-      const node = tree.byId.get(identity.moduleId ?? '');
+    const scoreModule = (document: ScoredDocument, artifactId: string, moduleId: string, record: ProjectAnalysisRecord): void => {
+      const tree = trees.get(artifactId)!;
+      const node = tree.byId.get(moduleId);
       const project = projects.get(record.projectId);
       if (!node || !project) return;
       const module = { ...node, sourceFiles: tree.sourceFiles(node.id).files };
@@ -96,14 +125,43 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
       const apiScore = requiredApis.length ? requiredApis.filter((api) => available.has(normalizedApi(api))).length / requiredApis.length : 0;
       const semantic = document.retrievalScore?.semantic;
       const lexical = document.retrievalScore?.lexical ?? 0;
+      // The rank fallback now uses the shared fusion instead of a raw channel rank.
+      const fused = RecallKernel.normalise(outcome, document.searchDocumentId);
       const relevance = semantic !== undefined && Number.isFinite(semantic) ? Math.max(0, Math.min(1, semantic))
-        : lexical > 0 ? lexical / (lexical + 10) : 61 / (61 + rank);
+        : lexical > 0 ? lexical / (lexical + 10) : fused;
       const score = 0.8 * relevance + 0.2 * apiScore;
       const key = JSON.stringify([record.projectId, module.id]);
       if ((byModule.get(key)?.score ?? -1) < score) byModule.set(key, {
         ...scope, repositoryName: repository.displayName, projectId: project.projectId,
         projectPath: project.relativePath, module, score, semanticScore: relevance,
       });
+    };
+    const seenDeclarations = new Set<string>();
+    documents.forEach((document) => {
+      if (document.repositoryId !== repositoryId || document.analysisRevision !== scope.analysisRevision) return;
+      if (document.moduleArtifactId) {
+        const record = records.get(document.moduleArtifactId);
+        if (!record) return;
+        let identity: { projectId?: string; moduleId?: string; planHash?: string };
+        try { identity = JSON.parse(document.text); } catch { return; }
+        if (!identity || identity.projectId !== record.projectId) return;
+        if (identity.planHash !== undefined && identity.planHash !== record.planHash || record.proposal!.hierarchy && identity.planHash !== record.planHash) return;
+        if (!identity.moduleId) return;
+        scoreModule(document, document.moduleArtifactId, identity.moduleId, record);
+        return;
+      }
+      // A declaration or implementation fragment identifies its module through
+      // declared file ownership; unresolved hits are dropped rather than guessed.
+      const owners = document.relativePath ? ownersByPath.get(document.relativePath) ?? [] : [];
+      if (owners.length === 0) return;
+      const marker = `${document.searchDocumentId}\u0000${owners[0]!.moduleId}`;
+      if (seenDeclarations.has(marker)) return;
+      seenDeclarations.add(marker);
+      for (const owner of owners) {
+        const record = records.get(owner.artifactId);
+        if (!record) continue;
+        scoreModule(document, owner.artifactId, owner.moduleId, record);
+      }
     });
     return [...byModule.values()];
   })).flat().sort((a, b) => b.score - a.score || JSON.stringify([a.repositoryId, a.projectId, a.module.id]).localeCompare(JSON.stringify([b.repositoryId, b.projectId, b.module.id]))).slice(0, reranker ? Math.min(20, Math.max(8, request.topK * 2)) : request.topK);

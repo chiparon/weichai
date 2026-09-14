@@ -47,6 +47,18 @@ export type {
   PrepareModuleWavePatchesRequest,
 } from "./module-wave-preparation-runner";
 
+export { WorkspaceModulePatchPreparer, moduleGenerationDefaults } from "./module-patch-preparer";
+export type { ModuleGenerationEvent, ModuleWaveGenerationOptions } from "./module-patch-preparer";
+
+export { HttpWorkspaceEvidencePort } from "./http-workspace-evidence-port";
+export type { HttpWorkspaceEvidencePortOptions } from "./http-workspace-evidence-port";
+export type {
+  WorkspaceEvidenceExcerpt,
+  WorkspaceEvidencePort,
+  WorkspaceEvidenceQueryRequest,
+  WorkspaceEvidenceResult,
+} from "./workspace-evidence-port";
+
 export {
   projectTargetContext,
   repairTranslation,

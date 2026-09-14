@@ -8,6 +8,16 @@ export interface WorkspaceTranslationContext {
   revision?: string;
 }
 
+/**
+ * A read-only history revision this run may query on demand. The trusted host
+ * derives these from the selected module scope; a page never supplies them.
+ */
+export interface WorkspaceEvidenceScope {
+  repositoryId: string;
+  analysisRevision: string;
+  projectId?: string;
+}
+
 export interface WorkspaceTranslationRequest {
   spec: string;
   sourceLanguage: string;
@@ -17,6 +27,22 @@ export interface WorkspaceTranslationRequest {
   workspaceFiles: string[];
   /** Exact workspace-relative files that this task may create or update. */
   writeFiles: string[];
+  /**
+   * Bounded history revisions the agent may query itself through the read-only
+   * semantic index. Absent or empty means the on-demand evidence tool is not
+   * offered at all.
+   */
+  evidenceScopes?: WorkspaceEvidenceScope[];
+}
+
+/** One on-demand evidence query, recorded so the run stays auditable. */
+export interface WorkspaceEvidenceQuery {
+  at: string;
+  requirement: string;
+  repositoryIds: string[];
+  excerptCount: number;
+  characters: number;
+  error?: string;
 }
 
 export interface WorkspaceTranslationPlan {
@@ -70,6 +96,8 @@ export interface WorkspaceTranslationRun {
   completedSteps: string[];
   changes: WorkspaceTranslationChange[];
   compilations: WorkspaceCompilation[];
+  /** Every on-demand history query this run performed, in order. */
+  evidenceQueries?: WorkspaceEvidenceQuery[];
   modelTurns: number;
   error?: string;
   /** A passing fixed test suite is evidence, not a proof of all behaviors. */

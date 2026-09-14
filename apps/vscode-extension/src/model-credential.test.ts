@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { DEFAULT_LLM_SETTINGS, LLM_PRESETS, type LlmSettings } from '@forexplore/contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createModelCredentialProvider, modelCredentialId, validateModelKey } from './model-credential';
+import { createModelCredentialProvider, modelCredentialId, modelKeyRefusalReason, validateModelKey } from './model-credential';
 import { localFetch, setModelCredentialProvider } from './local-fetch';
 
 afterEach(() => setModelCredentialProvider(undefined));
@@ -46,6 +46,25 @@ describe('model credential boundary', () => {
     expect(validateModelKey(' key-without-spaces ')).toBeUndefined();
     expect(validateModelKey('key\r\ninjected')).toBeTruthy();
     expect(validateModelKey('')).toBeTruthy();
+  });
+
+  it('refuses module analysis until the selected provider has a stored key', async () => {
+    const endpoint = 'http://127.0.0.1:8788';
+    const settings = { ...DEFAULT_LLM_SETTINGS };
+    const secrets = new Map<string, string>();
+    const storage = { get: vi.fn(async (id: string) => secrets.get(id)), store: vi.fn(), delete: vi.fn() };
+    expect(await modelKeyRefusalReason(storage, endpoint, settings)).toBe('模块解析需要先在设置中配置 DeepSeek 的 API Key。');
+    secrets.set(modelCredentialId(endpoint, settings), '  ');
+    expect(await modelKeyRefusalReason(storage, endpoint, settings)).toContain('DeepSeek');
+    secrets.set(modelCredentialId(endpoint, settings), 'deepseek-key');
+    expect(await modelKeyRefusalReason(storage, endpoint, settings)).toBeUndefined();
+    // Another provider's key never unlocks this provider's module analysis.
+    const openai = { ...settings, provider: 'openai' as const, apiBase: LLM_PRESETS.openai.apiBase, model: LLM_PRESETS.openai.model };
+    expect(await modelKeyRefusalReason(storage, endpoint, openai)).toContain('OpenAI');
+    // A non-loopback backend and an unreadable store both fail closed.
+    expect(await modelKeyRefusalReason(storage, 'https://remote.example:8788', settings)).toContain('本机地址');
+    expect(await modelKeyRefusalReason({ get: async () => { throw new Error('secret storage unavailable'); }, store: async () => {}, delete: async () => {} },
+      endpoint, settings)).toContain('无法读取');
   });
 
   it('loads changed/deleted secrets per request and never follows a credential-bearing redirect', async () => {

@@ -3060,10 +3060,23 @@ button:disabled {
 .workspace-picker-option[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .workspace-picker-commands { padding: 4px; border-top: 1px solid var(--border); }
 .workspace-picker-empty { padding: 12px 7px; color: var(--muted); font-size: 11px; }
+.workspace-picker-menu button:disabled { color: var(--muted); cursor: default; opacity: 0.75; }
+/* The request stays visible after the menu closes: the dialog, the workspace
+   mutation and the first index all happen while no menu is on screen. */
+.target-add-status { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; padding: 6px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); color: var(--muted); font-size: 11px; }
+.target-add-status > svg { flex: none; }
+.target-add-status > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.target-add-status.is-error { border-color: color-mix(in srgb, #d9534f 45%, var(--border)); color: var(--fg); }
+.target-add-status.is-error > svg { color: #d9534f; }
+.target-add-status button { flex: none; padding: 2px 7px; border: 1px solid var(--border); border-radius: 3px; background: var(--input-bg); color: var(--fg); font-size: 11px; cursor: pointer; }
+.target-add-status button:hover { border-color: var(--focus); }
 .target-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; min-height: 320px; padding: 48px 24px; text-align: center; }
 .target-empty-state > svg { color: var(--muted); }
 .target-empty-state h1 { margin: 0; font-size: 20px; font-weight: 500; }
 .target-empty-state button { max-width: 100%; }
+.target-empty-state .primary-action:disabled { cursor: default; opacity: 0.6; }
+.target-empty-detail { max-width: 460px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.target-empty-state .target-add-status { max-width: 460px; margin: 0; text-align: left; }
 .project-understanding {
   display: flex;
   flex-direction: column;

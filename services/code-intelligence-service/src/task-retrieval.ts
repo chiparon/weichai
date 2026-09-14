@@ -8,6 +8,7 @@ import type {
 import type { TaskRetrievalPort } from '@forexplore/workflow-core';
 import type { IndexStore } from './index-store.js';
 import { compileTaskContext, sourceContentHash } from './context-compiler.js';
+import { RecallKernel } from './recall-kernel.js';
 import { projectAnalysisProfile, projectPlanHash } from './project-analysis.js';
 import { queryExpansionFromEnvironment, type QueryExpansionPort, type QueryExpansionResult } from './query-expansion.js';
 import { RERANK_CANDIDATE_LIMIT, RERANK_PREVIEW_CHARS, rerankCandidateId, rerankTaskCandidates, taskRerankConfigFromEnvironment, type TaskRerankCandidate, type TaskRerankConfig } from './task-reranker.js';
@@ -103,11 +104,14 @@ export class TaskRetrievalService implements TaskRetrievalPort {
   readonly #expansion: QueryExpansionPort | null;
   readonly #baselineRecallWeight: number;
   readonly #rerank: TaskRerankConfig | null;
+  /** Shared multi-view recall; this projection keeps resolution, expansion and compilation. */
+  readonly #recall: RecallKernel;
   /** `expansion: undefined` follows RECAST_QUERY_EXPANSION; `null` disables it explicitly. */
   constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number; rerank?: TaskRerankConfig | null } = {}) {
     this.#expansion = options.expansion === undefined ? queryExpansionFromEnvironment() : options.expansion;
     this.#baselineRecallWeight = options.baselineRecallWeight ?? baselineRecallWeightFromEnvironment();
     this.#rerank = options.rerank === undefined ? taskRerankConfigFromEnvironment() : options.rerank;
+    this.#recall = new RecallKernel(store);
   }
 
   async search(request: TaskRetrievalRequest, parentSignal?: AbortSignal): Promise<ContextPacket> {
@@ -159,18 +163,15 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       // additionally keeps the raw requirement's candidates in the fusion, which
       // prevents evidence displacement (acceptance §4.6) at the cost of ranking.
       const plans = expansion?.enabled && this.#baselineRecallWeight > 0
-        ? [{ query: request.requirement, weight: this.#baselineRecallWeight }, { query: expansion.expanded, weight: 1 }]
-        : [{ query: expansion?.enabled ? expansion.expanded : request.requirement, weight: 1 }];
-      const channelKinds = ['symbol', 'source-fragment', 'summary'] as const;
-      const channelSets = await Promise.all(plans.flatMap((plan) =>
-        channelKinds.map((kind) => this.store.searchSearchDocuments!(scope, plan.query, candidateLimit, kind, signal))));
+        ? [{ label: 'requirement', query: request.requirement, weight: this.#baselineRecallWeight }, { label: 'expanded', query: expansion.expanded, weight: 1 }]
+        : [{ label: expansion?.enabled ? 'expanded' : 'requirement', query: expansion?.enabled ? expansion.expanded : request.requirement, weight: 1 }];
+      // Shared kernel: the same multi-view recall and fusion the code-to-code
+      // projection uses. Plan-major channel order and the reciprocal-rank
+      // fusion are unchanged, so this projection's ranking is unaffected.
+      const outcome = await this.#recall.recall({ scope, plans, limitPerView: candidateLimit, signal });
       recallMs += performance.now() - recallStarted;
-      channelSets.forEach((channel, index) => {
-        const weight = plans[Math.floor(index / channelKinds.length)]!.weight;
-        channel.forEach((document, rank) => documentRanks.set(document.searchDocumentId, (documentRanks.get(document.searchDocumentId) ?? 0) + weight / (61 + rank)));
-        documents.push(...channel);
-      });
-      for (const document of documents) if (document.repositoryId !== scope.repositoryId || document.analysisRevision !== scope.analysisRevision) throw new Error('Search returned a document from another revision.');
+      documents.push(...outcome.documents);
+      for (const [documentId, fused] of outcome.fusedRanks) documentRanks.set(documentId, fused);
       const symbolKeys = [...new Set(documents.flatMap((item) => item.symbolKey ? [item.symbolKey] : []))];
       const paths = [...new Set(documents.filter((item) => !item.symbolKey).flatMap((item) => item.relativePath ? [item.relativePath] : []))];
       const kinds = requestedGranularity === 'function' ? functionKinds : requestedGranularity === 'class' ? classKinds : [...functionKinds, ...classKinds];

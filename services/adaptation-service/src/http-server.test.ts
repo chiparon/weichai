@@ -19,6 +19,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createHttpServer,
+  type HttpServerOptions,
   type StaticAnalysisSnapshotStore,
 } from './http-server';
 import type {
@@ -46,6 +47,7 @@ async function listen(
     staticAnalysisSnapshots?: StaticAnalysisSnapshotStore;
     semanticArchitecturePort?: RevisionScopedArchitecturePort;
     moduleHierarchyPlanner?: ModuleHierarchyPlanner;
+    moduleGeneration?: HttpServerOptions['moduleGeneration'];
   } = {},
 ): Promise<string> {
   const server = createHttpServer({
@@ -261,7 +263,7 @@ describe('adaptation HTTP API', () => {
     const response = await fetch(`${url}/health`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'ok', provider: 'deepseek',
-      capabilities: { semanticModulePlanning: false, moduleHierarchyPlanning: false } });
+      capabilities: { semanticModulePlanning: false, moduleHierarchyPlanning: false, moduleGeneration: false } });
   });
 
   it.each([[true, false], [false, true], [true, true]])('reports configured planning capabilities without invoking them: semantic=%s hierarchy=%s', async (semantic, hierarchy) => {
@@ -274,7 +276,7 @@ describe('adaptation HTTP API', () => {
     const response = await fetch(`${url}/health`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'ok', provider: 'deepseek',
-      capabilities: { semanticModulePlanning: semantic, moduleHierarchyPlanning: hierarchy } });
+      capabilities: { semanticModulePlanning: semantic, moduleHierarchyPlanning: hierarchy, moduleGeneration: false } });
     expect(proposeModulePlanWithEvidence).not.toHaveBeenCalled();
     expect(decide).not.toHaveBeenCalled();
   });
@@ -539,5 +541,79 @@ describe('adaptation HTTP API', () => {
     });
     expect(response.status).toBe(502);
     expect((await response.json() as { error: string }).error).toBe('DeepSeek API timeout');
+  });
+});
+
+describe('module generation model turns', () => {
+  const token = 'module-generation-token-with-32-characters';
+  const turn = { messages: [{ role: 'system', content: 'plan' }, { role: 'user', content: '{"module":"limit"}' }], tools: [{ name: 'write_file', description: 'Write a file', inputSchema: { type: 'object' } }] };
+  const generation = () => ({
+    bearerToken: token,
+    complete: vi.fn(async () => ({ content: '', toolCalls: [{ id: 'call-1', name: 'write_file', arguments: '{"path":"src/Limit.cs"}' }] })),
+  });
+
+  it('performs an authenticated bounded model turn', async () => {
+    const adapter: CodeAdaptationPort = { adapt: vi.fn() };
+    const moduleGeneration = generation();
+    const url = await listen(adapter, { moduleGeneration });
+    const response = await fetch(`${url}/v1/module-generation/turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(turn),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ toolCalls: [{ name: 'write_file' }] });
+    expect(moduleGeneration.complete).toHaveBeenCalledWith(turn, expect.any(AbortSignal));
+    const health = await (await fetch(`${url}/health`)).json() as { capabilities: Record<string, boolean> };
+    expect(health.capabilities.moduleGeneration).toBe(true);
+  });
+
+  it('requires the bearer token and refuses browser origins', async () => {
+    const adapter: CodeAdaptationPort = { adapt: vi.fn() };
+    const moduleGeneration = generation();
+    const url = await listen(adapter, { moduleGeneration });
+    const anonymous = await fetch(`${url}/v1/module-generation/turn`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(turn),
+    });
+    expect(anonymous.status).toBe(401);
+    const browser = await fetch(`${url}/v1/module-generation/turn`, {
+      method: 'POST',
+      // A browser sets Origin; the local IDE does not.
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, origin: 'http://localhost:4173' },
+      body: JSON.stringify(turn),
+    });
+    expect(browser.status).toBe(403);
+    expect(moduleGeneration.complete).not.toHaveBeenCalled();
+  });
+
+  it('accepts only bounded conversation turns and never path or command authority', async () => {
+    const adapter: CodeAdaptationPort = { adapt: vi.fn() };
+    const moduleGeneration = generation();
+    const url = await listen(adapter, { moduleGeneration });
+    const post = (body: unknown) => fetch(`${url}/v1/module-generation/turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    expect((await post({ ...turn, repositoryRoot: 'C:/repository' })).status).toBe(400);
+    expect((await post({ ...turn, workspaceFiles: ['src/Limit.cs'] })).status).toBe(400);
+    expect((await post({ messages: turn.messages, tools: [], compileCommand: { executable: 'rm' } })).status).toBe(400);
+    expect((await post({ messages: [], tools: [] })).status).toBe(400);
+    expect((await post({ messages: [{ role: 'system', content: 'x', command: 'echo' }], tools: [] })).status).toBe(400);
+    expect((await post({ messages: [{ role: 'root', content: 'x' }], tools: [] })).status).toBe(400);
+    expect((await post({ messages: [{ role: 'system', content: 'x'.repeat(600_000) }], tools: [] })).status).toBe(400);
+    expect((await post({ messages: turn.messages, tools: [{ name: 'bad name!', description: '', inputSchema: {} }] })).status).toBe(400);
+    expect(moduleGeneration.complete).not.toHaveBeenCalled();
+  });
+
+  it('is unavailable unless the host configures it', async () => {
+    const adapter: CodeAdaptationPort = { adapt: vi.fn() };
+    const url = await listen(adapter);
+    const response = await fetch(`${url}/v1/module-generation/turn`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(turn),
+    });
+    expect(response.status).toBe(404);
   });
 });

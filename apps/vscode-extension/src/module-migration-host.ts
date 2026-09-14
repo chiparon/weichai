@@ -33,6 +33,8 @@ import {
   type SemanticModulePlanResult,
 } from './module-plan-client';
 import { nextWaveForReadOnlyReview } from './module-wave-review';
+import type { ModulePatchPreparer } from '@forexplore/adaptation-service/module-wave-execution';
+import { prepareGeneratedModuleWave } from './module-wave-execution-host';
 import {
   approvePreparedLocalModuleWave,
   commitPreparedLocalModuleWave,
@@ -158,6 +160,12 @@ export interface ModuleMigrationHostOptions {
   waveExecution?: ModuleWaveExecutionPort;
   /** Uses explicit trusted local commands when no test host overrides it. */
   waveValidator?: ModuleWaveValidator;
+  /**
+   * Trusted generator for module patches. It runs in the extension host, so it
+   * receives the disposable module worktree and returns patch evidence only.
+   * Absent means this build cannot prepare waves by generation.
+   */
+  moduleGeneration?: () => ModulePatchPreparer | undefined;
   /** Test/automation seam; the default opens a local JSON file picker. */
   pickWaveBundle?: (workspaceFolder: vscode.WorkspaceFolder) => Promise<ModuleWavePatchBundle | undefined>;
   /** Reads only a managed run artifact after Git proves publication. */
@@ -416,6 +424,65 @@ export class ModuleMigrationHost {
       );
     } catch (error) {
       this.reportError(error, '准备模块迁移波次失败');
+    }
+  }
+
+  /**
+   * Prepare the next wave by generation instead of importing a local patch
+   * bundle. Every module is generated inside its own disposable worktree, the
+   * host reruns joint validation over the combined bundle, and only the exact
+   * prepared hash can be approved afterwards. The user checkout is never edited.
+   */
+  async generateNextWave(): Promise<void> {
+    try {
+      const workspaceFolder = await selectWorkspaceFolder();
+      if (!workspaceFolder) return;
+      const session = await this.loadSession(workspaceFolder);
+      await this.assertSnapshotCurrent(session);
+      await this.recoverStoredPreparedWave(session);
+      const plan = requirePlan(session);
+      if (session.prepared || session.storedPrepared) {
+        throw new Error('已有已准备的波次补丁；请先审阅并提交，或运行恢复命令放弃该补丁。');
+      }
+      if (!arePlanApprovalsCurrent(plan, session.analysis.snapshotId)) {
+        throw new Error('必须先审批当前静态快照绑定的完整模块计划。');
+      }
+      const preparer = this.options.moduleGeneration?.();
+      if (!preparer) {
+        throw new Error('当前扩展宿主未配置模块生成：请设置 forexplore.moduleGenerationGate，并在宿主进程配置 ADAPTATION_MODULE_GENERATION_TOKEN。');
+      }
+      const wave = nextWaveForReadOnlyReview(plan);
+      if (!wave) throw new Error('没有依赖已提交且可准备的后续波次。');
+
+      this.setState({ stage: 'preparing', session, waveId: wave.id });
+      const prepared = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `RECAST: 正在按模块隔离生成波次 ${wave.id}`,
+          cancellable: false,
+        },
+        () => prepareGeneratedModuleWave({
+          repositoryRoot: workspaceFolder.uri.fsPath,
+          analysis: session.analysis,
+          plan,
+          ...(session.manifest === undefined ? {} : { manifest: session.manifest }),
+          preparer,
+          validator: this.waveValidator(),
+          coordinator: this.waveExecution(),
+        }),
+      );
+      session.plan = prepared.prepared.plan;
+      session.manifest = prepared.prepared.manifest;
+      session.prepared = prepared.prepared;
+      session.storedPrepared = prepared.storedPrepared;
+      await this.persistSession(session);
+      this.setState({ stage: 'prepared', session, waveId: wave.id });
+      await this.options.previews.show('Prepared module migration wave review', preparedWavePreview(session, prepared.prepared));
+      void vscode.window.showInformationMessage(
+        `波次 ${wave.id} 已按模块隔离生成并在合并 staging worktree 中完成联合验证。请审阅 preparedHash、补丁与验证证据后，再运行“审批并提交已准备迁移波次”。`,
+      );
+    } catch (error) {
+      this.reportError(error, '生成并准备模块迁移波次失败');
     }
   }
 

@@ -6,7 +6,7 @@ const statuses: Record<WorkspaceTranslationRun['status'], string> = { analyzing:
   completed: '执行完成，待审阅', failed: '执行失败', cancelled: '已取消', interrupted: '执行已中断', 'rolling-back': '正在回滚', 'rolled-back': '已回滚' };
 const running = new Set(['analyzing', 'translating', 'compiling', 'testing', 'rolling-back']);
 
-export function WorkspaceTranslation({ provider, packetId, evidenceIds }: { provider: TranslationProvider; packetId: string; evidenceIds: string[] }) {
+export function WorkspaceTranslation({ provider, packetId, evidenceIds }: { provider: TranslationProvider; packetId?: string; evidenceIds?: readonly string[] }) {
   const [profile, setProfile] = useState<TranslationResult['profile']>();
   const [run, setRun] = useState<WorkspaceTranslationRun>();
   const [resumeId, setResumeId] = useState('');
@@ -21,7 +21,11 @@ export function WorkspaceTranslation({ provider, packetId, evidenceIds }: { prov
     const attempt = ++generation.current;
     setBusy(true); setError(''); setReviewed(false);
     try {
-      const result = await provider(name === 'start' ? { action: name, profileId: profile?.profileId, packetId, evidenceIds } : { action: name, runId: run?.id ?? resumeId.trim() });
+      // A host-owned module scope supplies the context, so the page may start
+      // without task evidence; otherwise the selected evidence is mandatory.
+      const start = { action: name, profileId: profile?.profileId,
+        ...(packetId === undefined ? {} : { packetId, evidenceIds: [...(evidenceIds ?? [])] }) };
+      const result = await provider(name === 'start' ? start : { action: name, runId: run?.id ?? resumeId.trim() });
       if (generation.current === attempt) { setRun(result.run); if (result.run) setResumeId(result.run.id); }
     } catch (cause) { if (generation.current === attempt) setError(cause instanceof Error ? cause.message : '翻译操作失败'); }
     finally { if (generation.current === attempt) setBusy(false); }
@@ -32,11 +36,15 @@ export function WorkspaceTranslation({ provider, packetId, evidenceIds }: { prov
     return () => clearTimeout(timer);
   }, [run, busy, error]);
 
+  const moduleScoped = Boolean(profile?.moduleScopeId);
+  const canStart = Boolean(profile) && !busy && (moduleScoped || (evidenceIds?.length ?? 0) > 0);
+
   return <section className="workspace-translation" aria-label="多文件生成与验收">
     <h2>多文件生成与验收</h2>
-    {profile ? <><p>{profile.sourceLanguage} → {profile.targetLanguage} · {profile.behavioralVerification ? '已配置行为测试' : '仅编译检查'}</p>
-      <p>写入工作区：<code>{profile.workspaceRoot}</code></p><p>允许修改：{profile.writeFiles.join('、')}</p></> : null}
-    {!run ? <button type="button" className="primary-action" disabled={!profile || busy || !evidenceIds.length} onClick={() => void action('start')}>使用所选证据生成代码</button> : null}
+    {profile ? <><p>{profile.sourceLanguage} → {profile.targetLanguage} · {profile.behavioralVerification ? '已配置行为测试' : '仅编译检查'}{profile.label ? ` · ${profile.label}` : ''}</p>
+      <p>写入工作区：<code>{profile.workspaceRoot}</code></p><p>允许修改：{profile.writeFiles.join('、')}</p>
+      {profile.warnings?.length ? <ul className="context-gaps">{profile.warnings.map((warning, index) => <li key={`${warning}:${index}`}>{warning}</li>)}</ul> : null}</> : null}
+    {!run ? <button type="button" className="primary-action" disabled={!canStart} onClick={() => void action('start')}>{moduleScoped ? '使用所选模块与候选生成代码' : '使用所选证据生成代码'}</button> : null}
     <div className="translation-actions"><label>运行编号<input aria-label="运行编号" value={resumeId} onChange={event => { setResumeId(event.target.value); setRun(undefined); }} disabled={busy || Boolean(run && running.has(run.status))} /></label>
       <button type="button" className="secondary-action" disabled={busy || !resumeId.trim()} onClick={() => void action('read')}>读取运行</button></div>
     {error ? <p role="alert">{error}</p> : null}

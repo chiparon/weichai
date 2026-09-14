@@ -1,0 +1,140 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { RepositoryRevisionScope, SearchDocumentKind, SearchDocumentRecord } from '@forexplore/contracts';
+import { RecallKernel, reciprocalRankOffset, recallViews } from './recall-kernel.js';
+import type { IndexStore } from './index-store.js';
+
+const scope: RepositoryRevisionScope = { repositoryId: 'repo', analysisRevision: 'rev' };
+
+function document(id: string, kind: SearchDocumentKind, overrides: Partial<SearchDocumentRecord> = {}): SearchDocumentRecord {
+  return { ...scope, searchDocumentId: id, kind, relativePath: `${id}.ts`, contentHash: `hash-${id}`, title: id, text: `${id} body`, ...overrides };
+}
+
+/** Corpus keyed by `query|view`; the fake honours the requested limit like the real store. */
+function fakeStore(corpus: Record<string, SearchDocumentRecord[]>) {
+  const calls: Array<{ query: string; limit: number; kind: SearchDocumentKind }> = [];
+  const search = vi.fn(async (_scope: RepositoryRevisionScope, query: string, limit: number, kind: SearchDocumentKind = 'summary') => {
+    calls.push({ query, limit, kind });
+    return corpus[`${query}|${kind}`]?.slice(0, limit) ?? [];
+  });
+  return { store: { searchSearchDocuments: search } as Pick<IndexStore, 'searchSearchDocuments'>, calls, search };
+}
+
+describe('shared recall kernel', () => {
+  it('fuses one plan across every view in plan-major channel order', async () => {
+    const { store, calls } = fakeStore({
+      'query|symbol': [document('a', 'symbol'), document('b', 'symbol')],
+      'query|source-fragment': [document('c', 'source-fragment'), document('a', 'source-fragment')],
+    });
+    const outcome = await new RecallKernel(store).recall({ scope, plans: [{ label: 'code-identity', query: 'query', weight: 1 }], limitPerView: 10 });
+    expect(calls.map((call) => call.kind)).toEqual([...recallViews]);
+    expect(outcome.channels).toEqual([
+      { planLabel: 'code-identity', view: 'symbol', documents: 2 },
+      { planLabel: 'code-identity', view: 'source-fragment', documents: 2 },
+      { planLabel: 'code-identity', view: 'summary', documents: 0 },
+    ]);
+    // Duplicates are preserved for the caller, while the fusion accumulates.
+    expect(outcome.documents.map((item) => item.searchDocumentId)).toEqual(['a', 'b', 'c', 'a']);
+    expect(outcome.fusedRanks.get('a')).toBeCloseTo(1 / reciprocalRankOffset + 1 / (reciprocalRankOffset + 1), 12);
+    expect(outcome.fusedRanks.get('b')).toBeCloseTo(1 / (reciprocalRankOffset + 1), 12);
+    expect(outcome.fusedRanks.get('c')).toBeCloseTo(1 / reciprocalRankOffset, 12);
+    expect(outcome.provenance.get('a')).toEqual([
+      { planLabel: 'code-identity', view: 'symbol', rank: 0, weight: 1 },
+      { planLabel: 'code-identity', view: 'source-fragment', rank: 1, weight: 1 },
+    ]);
+    // A document matched by two channels still normalises to 1, so a single-view
+    // caller keeps exactly the rank fallback it had before the kernel existed.
+    expect(RecallKernel.normalise(outcome, 'a')).toBe(1);
+    const best = 1 / reciprocalRankOffset + 1 / (reciprocalRankOffset + 1);
+    expect(RecallKernel.normalise(outcome, 'c')).toBeCloseTo((1 / reciprocalRankOffset) / best, 12);
+  });
+
+  it('scales each plan by its weight and keeps plan-major ordering', async () => {
+    const { store } = fakeStore({
+      'baseline|symbol': [document('x', 'symbol')],
+      'expanded|symbol': [document('y', 'symbol')],
+    });
+    const outcome = await new RecallKernel(store).recall({
+      scope,
+      plans: [{ label: 'baseline', query: 'baseline', weight: 0.25 }, { label: 'expanded', query: 'expanded', weight: 1 }],
+      limitPerView: 5,
+    });
+    expect(outcome.documents.map((item) => item.searchDocumentId)).toEqual(['x', 'y']);
+    expect(RecallKernel.normalise(outcome, 'x')).toBeCloseTo(0.25, 12);
+    expect(RecallKernel.normalise(outcome, 'y')).toBe(1);
+    expect(outcome.provenance.get('x')).toEqual([{ planLabel: 'baseline', view: 'symbol', rank: 0, weight: 0.25 }]);
+  });
+
+  it('passes one limit to every view, or a per-view limit when given one', async () => {
+    const { store, calls } = fakeStore({
+      'query|symbol': [document('a', 'symbol'), document('b', 'symbol'), document('c', 'symbol')],
+      'query|source-fragment': [document('d', 'source-fragment')],
+    });
+    const kernel = new RecallKernel(store);
+    const uniform = await kernel.recall({ scope, plans: [{ label: 'p', query: 'query', weight: 1 }], limitPerView: 2 });
+    expect(calls.map((call) => call.limit)).toEqual([2, 2, 2]);
+    expect(uniform.documents.map((item) => item.searchDocumentId)).toEqual(['a', 'b', 'd']);
+    calls.length = 0;
+    const perView = await kernel.recall({
+      scope,
+      plans: [{ label: 'p', query: 'query', weight: 1 }],
+      limitPerView: { symbol: 1, 'source-fragment': 3 },
+    });
+    expect(calls).toEqual([
+      { query: 'query', limit: 1, kind: 'symbol' },
+      { query: 'query', limit: 3, kind: 'source-fragment' },
+      { query: 'query', limit: 32, kind: 'summary' },
+    ]);
+    expect(perView.documents.map((item) => item.searchDocumentId)).toEqual(['a', 'd']);
+  });
+
+  it('can be restricted to an explicit view list', async () => {
+    const { store, calls } = fakeStore({ 'query|summary': [document('s', 'summary')] });
+    const outcome = await new RecallKernel(store).recall({ scope, plans: [{ label: 'p', query: 'query', weight: 1 }], views: ['summary'], limitPerView: 4 });
+    expect(calls).toEqual([{ query: 'query', limit: 4, kind: 'summary' }]);
+    expect(outcome.channels).toEqual([{ planLabel: 'p', view: 'summary', documents: 1 }]);
+  });
+
+  it('refuses a document that belongs to another revision', async () => {
+    const { store } = fakeStore({ 'query|symbol': [document('a', 'symbol', { analysisRevision: 'other' })] });
+    await expect(new RecallKernel(store).recall({ scope, plans: [{ label: 'p', query: 'query', weight: 1 }] }))
+      .rejects.toThrow('Search returned a document from another revision.');
+  });
+
+  it('rejects invalid plans, weights and limits before recalling', async () => {
+    const { store, search } = fakeStore({});
+    const kernel = new RecallKernel(store);
+    await expect(kernel.recall({ scope, plans: [] })).rejects.toThrow('at least one query plan');
+    await expect(kernel.recall({ scope, plans: [{ label: '  ', query: 'q', weight: 1 }] })).rejects.toThrow('needs a label and a query');
+    await expect(kernel.recall({ scope, plans: [{ label: 'p', query: ' ', weight: 1 }] })).rejects.toThrow('needs a label and a query');
+    for (const weight of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(kernel.recall({ scope, plans: [{ label: 'p', query: 'q', weight }] })).rejects.toThrow('positive weight');
+    }
+    for (const limitPerView of [0, -3, 2.5, 201, { symbol: 0 }, { summary: 1.5 }] as const) {
+      await expect(kernel.recall({ scope, plans: [{ label: 'p', query: 'q', weight: 1 }], limitPerView })).rejects.toThrow('per-view limit');
+    }
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('requires a bounded search-document query', async () => {
+    await expect(new RecallKernel({}).recall({ scope, plans: [{ label: 'p', query: 'q', weight: 1 }] }))
+      .rejects.toThrow('Recall requires a bounded search-document query.');
+  });
+
+  it('normalises an unknown or empty outcome to zero', async () => {
+    const { store } = fakeStore({ 'query|symbol': [document('a', 'symbol')] });
+    const outcome = await new RecallKernel(store).recall({ scope, plans: [{ label: 'p', query: 'query', weight: 1 }] });
+    expect(RecallKernel.normalise(outcome, 'missing')).toBe(0);
+    expect(RecallKernel.normalise({ documents: [], fusedRanks: new Map(), provenance: new Map(), channels: [] }, 'a')).toBe(0);
+  });
+
+  it('reproduces the historical single-view rank fallback exactly', async () => {
+    const corpus = { 'query|summary': Array.from({ length: 4 }, (_, index) => document(`doc-${index}`, 'summary')) };
+    const { store, calls } = fakeStore(corpus);
+    const outcome = await new RecallKernel(store).recall({ scope, plans: [{ label: 'code-identity', query: 'query', weight: 1 }], views: ['summary'], limitPerView: 8 });
+    expect(calls).toEqual([{ query: 'query', limit: 8, kind: 'summary' }]);
+    // 61 / (61 + rank) is what both projections used before the kernel existed.
+    outcome.documents.forEach((item, rank) => {
+      expect(RecallKernel.normalise(outcome, item.searchDocumentId)).toBeCloseTo(reciprocalRankOffset / (reciprocalRankOffset + rank), 12);
+    });
+  });
+});

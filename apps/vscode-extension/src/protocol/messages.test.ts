@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { isWebviewToHostMessage } from './messages';
+import { isHostToWebviewMessage, isWebviewToHostMessage } from './messages';
+
+describe('Host message boundary', () => {
+  it('accepts only known target-selection phases and outcomes', () => {
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在建立索引…' })).toBe(true);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'queued', message: 'x' })).toBe(false);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing' })).toBe(false);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'input', message: '失败' })).toBe(true);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'input' })).toBe(true);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'unknown', mode: 'input' })).toBe(false);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'elsewhere' })).toBe(false);
+    expect(isHostToWebviewMessage({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'input', message: 'x'.repeat(401) })).toBe(false);
+  });
+});
 
 describe('Webview message boundary', () => {
   it('allows key configuration intent but never accepts a key or backend address from the Webview', () => {

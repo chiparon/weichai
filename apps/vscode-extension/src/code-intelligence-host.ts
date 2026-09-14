@@ -10,6 +10,7 @@ import type {
   RepositoryId,
   RepositoryRecord,
   RepositoryRole,
+  RepositoryAnalysisStatus,
   RepositoryRevisionScope,
   RepositoryStaticAnalysis,
   SearchCandidate,
@@ -65,6 +66,14 @@ interface HostRepositoryRegistry {
   get(repositoryId: RepositoryId): Promise<RepositoryRecord | null>;
   list?(): Promise<RepositoryRecord[]>;
   unregister?(repositoryId: RepositoryId): Promise<void>;
+  /**
+   * Optional so a minimal registry stays valid. When present, the host
+   * publishes the lifecycle transitions that make a long scan observable.
+   */
+  setAnalysisStatus?(
+    repositoryId: RepositoryId,
+    analysisStatus: RepositoryAnalysisStatus,
+  ): Promise<RepositoryRecord>;
   register(request: {
     repositoryId: RepositoryId;
     displayName?: string;
@@ -184,6 +193,14 @@ export interface CodeIntelligenceHostOptions {
   planProject?: (scope: ProjectAnalysisScope & { objective: string }) => Promise<ProjectAnalysisResult>;
   hierarchyPlanner?: ModuleHierarchyPlanner;
   onChange?: () => void;
+  /**
+   * Module analysis calls a model, so the trusted host refuses it while this
+   * returns a reason (e.g. no API Key in the settings). Indexing, symbols and
+   * source search are unaffected by a refusal.
+   */
+  modelKeyRefusal?: () => Promise<string | undefined>;
+  /** Surfaces a refusal to the user; called once per refused scheduling attempt. */
+  onModelRefusal?: (reason: string) => void;
   /**
    * The VS Code host owns this composition.  It can use SeekDB when its local
    * process environment has been configured, but it is never created by a
@@ -390,6 +407,8 @@ export class CodeIntelligenceHost {
   #planProject?: CodeIntelligenceHostOptions['planProject'];
   #hierarchyPlanner?: ModuleHierarchyPlanner;
   #onChange?: () => void;
+  #modelKeyRefusal?: CodeIntelligenceHostOptions['modelKeyRefusal'];
+  #onModelRefusal?: CodeIntelligenceHostOptions['onModelRefusal'];
   #syncQueue: Promise<unknown> = Promise.resolve();
   #selectedTarget?: RepositoryId;
   #selectionSequence = 0;
@@ -420,6 +439,8 @@ export class CodeIntelligenceHost {
     this.#planProject = options.planProject;
     this.#hierarchyPlanner = options.hierarchyPlanner;
     this.#onChange = options.onChange;
+    this.#modelKeyRefusal = options.modelKeyRefusal;
+    this.#onModelRefusal = options.onModelRefusal;
     this.#runtimeFactory = options.runtimeFactory ?? defaultRuntimeFactory;
     this.#runtimeOptions = options.runtimeOptions ?? {};
     this.#identityStore = options.identityStore;
@@ -850,6 +871,12 @@ export class CodeIntelligenceHost {
           (!requestedScanPaths || repository.activeRevision)) continue;
         try {
           this.#output?.appendLine(`[forexplore] indexing ${repository.role} repository: ${repository.displayName}.`);
+          // The coordinator flips the registry to 'indexing' inside its own
+          // run, so publish that transition from here: a long first-time scan
+          // of a freshly selected target must be visible to the Webview rather
+          // than only its final result.
+          await runtime.registry.setAnalysisStatus?.(repository.repositoryId, 'indexing');
+          this.#onChange?.();
           await runtime.coordinator.run({
             repositoryId: repository.repositoryId,
             mode: request.forceFull || !repository.activeRevision ? 'full' : 'incremental',
@@ -865,6 +892,7 @@ export class CodeIntelligenceHost {
           }
         } catch (error) {
           failedRepositoryIds.push(repository.repositoryId);
+          await this.markIndexFailure(runtime, repository.repositoryId);
           this.logFailure(`index repository ${repository.repositoryId}`, error);
         } finally {
           this.#onChange?.();
@@ -887,6 +915,25 @@ export class CodeIntelligenceHost {
     return { presentation, scannedRepositoryIds, failedRepositoryIds };
   }
 
+  /**
+   * A failed refresh of an already-indexed repository keeps its last usable
+   * revision and status. A failed *first* scan would otherwise stay 'indexing'
+   * forever, hiding the failure behind a spinner that never resolves.
+   */
+  private async markIndexFailure(
+    runtime: CodeIntelligenceRuntime,
+    repositoryId: RepositoryId,
+  ): Promise<void> {
+    try {
+      const current = await runtime.registry.get(repositoryId);
+      if (current?.analysisStatus === 'indexing' && !current.activeRevision) {
+        await runtime.registry.setAnalysisStatus?.(repositoryId, 'failed');
+      }
+    } catch (error) {
+      this.logFailure(`mark index failure ${repositoryId}`, error);
+    }
+  }
+
   private async projectAnalysis(): Promise<ProjectAnalysisPort> {
     const runtime = await this.runtime();
     if (!this.#projectAnalysis && !this.#planProject && !this.#hierarchyPlanner && runtime.projectAnalysis) this.#projectAnalysis = runtime.projectAnalysis;
@@ -899,9 +946,34 @@ export class CodeIntelligenceHost {
     return this.#projectAnalysis;
   }
 
+  /**
+   * Module analysis is the only step here that calls a model, so it is refused
+   * while the selected provider has no stored API Key. A refusal never blocks
+   * indexing: the revision, its symbols and source search stay usable.
+   */
+  private async moduleAnalysisRefusal(): Promise<string | undefined> {
+    if (!this.#modelKeyRefusal) return undefined;
+    try {
+      return await this.#modelKeyRefusal();
+    } catch (error) {
+      this.logFailure('check model credential', error);
+      return '无法确认模型凭据，已停止模块解析；请在设置中重新配置 API Key。';
+    }
+  }
+
+  private async ensureProjectAnalysis(scope: ProjectAnalysisScope, force: boolean): Promise<void> {
+    const refusal = await this.moduleAnalysisRefusal();
+    if (refusal) {
+      this.#onModelRefusal?.(refusal);
+      throw new Error(refusal);
+    }
+    const analysis = await this.projectAnalysis();
+    await analysis.ensure(scope, force);
+  }
+
   private scheduleProject(scope: ProjectAnalysisScope, force = false): void {
     if (this.#disposed) return;
-    void this.projectAnalysis().then((analysis) => analysis.ensure(scope, force))
+    void this.ensureProjectAnalysis(scope, force)
       .catch((error) => this.logFailure('project module analysis', error));
   }
 
@@ -911,6 +983,9 @@ export class CodeIntelligenceHost {
     if (repository?.activeRevision !== scope.analysisRevision) throw new Error('只能重试活动版本的项目。');
     const index = await runtime.store.getStructuralIndex(scope);
     if (!index?.projects.some((p) => p.projectId === scope.projectId)) throw new Error('项目不存在。');
+    // An explicit user action fails loudly instead of being logged and forgotten.
+    const refusal = await this.moduleAnalysisRefusal();
+    if (refusal) throw new Error(refusal);
     this.scheduleProject(scope, force);
   }
 

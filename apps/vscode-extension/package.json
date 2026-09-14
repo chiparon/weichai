@@ -22,6 +22,7 @@
   ],
   "activationEvents": [
     "onView:forexplore.launcher",
+    "onWebviewPanel:forexplore.translation",
     "onCommand:forexplore.showPanel",
     "onCommand:forexplore.checkRepositories",
     "onCommand:forexplore.reindex",
@@ -56,7 +57,7 @@
     "viewsWelcome": [
       {
         "view": "forexplore.launcher",
-        "contents": "[打开翻译面板](command:forexplore.showPanel)"
+        "contents": "RECAST 工作台在编辑器区域打开。\n[打开工作台](command:forexplore.showPanel)\n[重新索引参考工程](command:forexplore.reindex)"
       }
     ],
     "commands": [

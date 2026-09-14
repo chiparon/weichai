@@ -9,6 +9,7 @@ import {
 import { timingSafeEqual } from "node:crypto";
 import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { WorkspaceTranslationError, type WorkspaceTranslationRuntime } from "./workspace-translation-runtime";
+import type { DeepSeekToolCompletion, DeepSeekToolDefinition, DeepSeekToolMessage } from "./deepseek-client";
 import {
   moduleMigrationSchemaVersion,
   type AdaptationRequest,
@@ -43,6 +44,18 @@ export interface HttpServerOptions {
   moduleHierarchyPlanner?: ModuleHierarchyPlanner;
   /** Explicitly configured in-place translation, authenticated separately from read-only routes. */
   workspaceTranslation?: { runtime: WorkspaceTranslationRuntime; bearerToken: string };
+  /**
+   * Trusted-host model turns for module generation. The VS Code host owns the
+   * repository, the isolated worktrees and the compiler; this route carries no
+   * path, file or command authority, only bounded conversation turns.
+   */
+  moduleGeneration?: {
+    bearerToken: string;
+    complete(
+      turn: { messages: readonly DeepSeekToolMessage[]; tools: readonly DeepSeekToolDefinition[] },
+      signal: AbortSignal,
+    ): Promise<DeepSeekToolCompletion>;
+  };
   /** Browser CORS is opt-in; the VS Code extension host uses local HTTP directly. */
   corsOrigin?: string;
 }
@@ -239,6 +252,82 @@ function isSemanticModulePlanHttpRequest(value: unknown): value is SemanticModul
   );
 }
 
+const maxGenerationMessages = 200;
+const maxGenerationMessageChars = 64_000;
+const maxGenerationContextChars = 512_000;
+const maxGenerationTools = 64;
+const maxGenerationToolCalls = 32;
+
+/**
+ * Bounded conversation turns only: no workspace paths, no files, no commands.
+ * The trusted host owns everything that can change a repository.
+ */
+function parseModuleGenerationTurn(value: unknown): {
+  messages: DeepSeekToolMessage[];
+  tools: DeepSeekToolDefinition[];
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpError(400, "Module generation turn must be a JSON object.");
+  }
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some((key) => !["messages", "tools"].includes(key))) {
+    throw new HttpError(400, "Module generation turn accepts only messages and tools.");
+  }
+  if (!Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > maxGenerationMessages) {
+    throw new HttpError(400, "Module generation turn requires 1..200 messages.");
+  }
+  if (!Array.isArray(body.tools) || body.tools.length > maxGenerationTools) {
+    throw new HttpError(400, "Module generation turn accepts at most 64 tools.");
+  }
+  let characters = 0;
+  const messages = body.messages.map((raw): DeepSeekToolMessage => {
+    if (typeof raw !== "object" || raw === null) throw new HttpError(400, "Invalid module generation message.");
+    const message = raw as Record<string, unknown>;
+    if (Object.keys(message).some((key) => !["role", "content", "toolCalls", "toolCallId"].includes(key))) {
+      throw new HttpError(400, "Invalid module generation message field.");
+    }
+    if (!["system", "user", "assistant", "tool"].includes(String(message.role))) {
+      throw new HttpError(400, "Invalid module generation message role.");
+    }
+    if (typeof message.content !== "string" || message.content.length > maxGenerationMessageChars) {
+      throw new HttpError(400, "Invalid module generation message content.");
+    }
+    characters += message.content.length;
+    if (characters > maxGenerationContextChars) throw new HttpError(413, "Module generation turn exceeds 512000 characters.");
+    const calls = message.toolCalls;
+    if (calls !== undefined) {
+      if (!Array.isArray(calls) || calls.length > maxGenerationToolCalls) {
+        throw new HttpError(400, "Invalid module generation tool calls.");
+      }
+      for (const call of calls) {
+        const entry = call as Record<string, unknown> | null;
+        if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || typeof entry.name !== "string" ||
+          typeof entry.arguments !== "string" || entry.arguments.length > maxGenerationMessageChars) {
+          throw new HttpError(400, "Invalid module generation tool call.");
+        }
+      }
+    }
+    if (message.toolCallId !== undefined && typeof message.toolCallId !== "string") {
+      throw new HttpError(400, "Invalid module generation tool call id.");
+    }
+    return message as unknown as DeepSeekToolMessage;
+  });
+  const tools = body.tools.map((raw): DeepSeekToolDefinition => {
+    if (typeof raw !== "object" || raw === null) throw new HttpError(400, "Invalid module generation tool definition.");
+    const tool = raw as Record<string, unknown>;
+    if (Object.keys(tool).some((key) => !["name", "description", "inputSchema"].includes(key))) {
+      throw new HttpError(400, "Invalid module generation tool field.");
+    }
+    if (typeof tool.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(tool.name) ||
+      typeof tool.description !== "string" || tool.description.length > 4_000 ||
+      typeof tool.inputSchema !== "object" || tool.inputSchema === null || Array.isArray(tool.inputSchema)) {
+      throw new HttpError(400, "Invalid module generation tool definition.");
+    }
+    return tool as unknown as DeepSeekToolDefinition;
+  });
+  return { messages, tools };
+}
+
 function requireJson(request: IncomingMessage): void {
   const contentType = request.headers["content-type"] ?? "";
   if (!contentType.toLowerCase().startsWith("application/json")) {
@@ -299,6 +388,23 @@ export function createHttpServer(options: HttpServerOptions): Server {
         }
         throw new HttpError(405, "Method not allowed.");
       }
+      if (request.method === "POST" && request.url === "/v1/module-generation/turn") {
+        const generation = options.moduleGeneration;
+        if (!generation) throw new HttpError(404, "Module generation is not configured.");
+        const supplied = Buffer.from(request.headers.authorization ?? "");
+        const expected = Buffer.from(`Bearer ${generation.bearerToken}`);
+        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+          throw new HttpError(401, "Module generation requires a valid bearer token.");
+        }
+        if (request.headers.origin !== undefined) {
+          throw new HttpError(403, "Browser origins cannot request module generation.");
+        }
+        requireJson(request);
+        const turn = parseModuleGenerationTurn(await readBody(request));
+        json(response, 200, await generation.complete(turn, requestSignal(request)), options.corsOrigin);
+        return;
+      }
+
       if (request.method === "GET" && request.url === "/health") {
         json(
           response,
@@ -306,6 +412,7 @@ export function createHttpServer(options: HttpServerOptions): Server {
           { status: "ok", provider: "deepseek", capabilities: {
             semanticModulePlanning: Boolean(options.semanticArchitecturePort),
             moduleHierarchyPlanning: Boolean(options.moduleHierarchyPlanner),
+            moduleGeneration: Boolean(options.moduleGeneration),
           } },
           options.corsOrigin,
         );

@@ -273,6 +273,43 @@ export function enforceUploadSize(size: number) {
     expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens!);
   });
 
+  // The promotion above is driven by a nested `function`, which is itself routable, so it never
+  // reaches the search frontier. A class property extracts as `field` (code-indexer 8ed6ce2),
+  // which is in neither routable kind list: retrieval can recall it but must never deliver it,
+  // so its owning class reaches the result set only through the ownership walk. Recall below
+  // returns the property alone, so nothing else can put the class into the candidate map.
+  it('promotes a recalled non-routable member to its owning class declaration', async () => {
+    const { root, runtime, store, service, request, scope } = await setup();
+    await writeFile(path.join(root, 'payment.ts'), `export class PaymentLimits {
+  requestSizeMax = 200;
+  fileSizeMax = 50;
+  accepts(requestSize: number, fileSize: number) {
+    return requestSize <= this.requestSizeMax && fileSize <= this.fileSizeMax;
+  }
+}
+`);
+    const run = await runtime.coordinator.run({ repositoryId: scope.repositoryId });
+    const documents = await store.listSearchDocuments(run.scope);
+    const member = documents.find((item) => item.kind === 'symbol' && item.title.endsWith('fileSizeMax'))!;
+    expect(member).toBeDefined();
+    const stored = await store.querySymbols(run.scope, { relativePaths: ['payment.ts'], limit: 50 });
+    const property = stored.symbols.find((symbol) => symbol.name === 'fileSizeMax')!;
+    // A recalled field has no routable kind of its own, so the walk has to promote it.
+    expect(property.kind).toBe('field');
+    const ownerKey = property.containerSymbolKey!;
+    expect(ownerKey).toBe(stored.symbols.find((symbol) => symbol.name === 'PaymentLimits')?.symbolKey);
+    // The search projection does not carry the recalled member's container, so the owning class
+    // can enter the candidate map only through the owner fetch the frontier drives.
+    vi.spyOn(store, 'searchSearchDocuments').mockImplementation(async (_scope, _query, _limit, kind) => kind === 'symbol'
+      ? [{ ...member, retrievalScore: { semantic: 0.9, fusion: 1 / 61 } }] : []);
+    const query = vi.spyOn(store, 'querySymbols');
+    const packet = await service.search({ ...request, granularity: 'auto', requirement: '检查单个文件大小限制', scopes: [{ ...scope, ...run.scope }] });
+    expect(packet.results.map((item) => item.name)).toEqual(['PaymentLimits']);
+    expect(packet.results[0]).toMatchObject({ granularity: 'class', symbolKey: ownerKey });
+    expect(query.mock.calls.some(([, filter]) => filter.symbolKeys?.length === 1 && filter.symbolKeys[0] === ownerKey && !filter.relativePaths)).toBe(true);
+    expect(packet.evidence.some((item) => item.name === 'PaymentLimits' && item.content.includes('fileSizeMax = 50'))).toBe(true);
+  });
+
   it('returns validated current-project modules and marks incomplete module context', async () => {
     const { store, service, request, scope, index } = await setup();
     const analysis = new ProjectAnalysisCoordinator({ store, plan: async () => {

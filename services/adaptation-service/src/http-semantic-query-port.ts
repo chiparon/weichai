@@ -12,6 +12,14 @@ interface ErrorPayload {
   error?: { message?: unknown };
 }
 
+/** The semantic index rejected this request; the caller may correct its arguments. */
+export class SemanticQueryRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "SemanticQueryRequestError";
+  }
+}
+
 /**
  * Transport-only SemanticQueryPort adapter for the adaptation executable.
  * It intentionally owns no repository path, index runtime, LSP session, or
@@ -104,6 +112,11 @@ export class HttpSemanticQueryPort implements SemanticQueryPort {
       const message = typeof detail?.error?.message === "string"
         ? detail.error.message
         : `SemanticQueryPort HTTP request failed with status ${response.status}.`;
+      // A 4xx answer rejects the request itself: the caller may correct its
+      // arguments, so keep that distinguishable from an unusable index.
+      if (response.status >= 400 && response.status < 500) {
+        throw new SemanticQueryRequestError(response.status, message.slice(0, 512));
+      }
       throw new Error(message.slice(0, 512));
     }
     return await response.json() as Awaited<ReturnType<SemanticQueryPort[K]>>;

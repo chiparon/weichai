@@ -1,5 +1,6 @@
 import type { SemanticQueryPort } from "@forexplore/workflow-core";
 import { describe, expect, it, vi } from "vitest";
+import { SemanticQueryRequestError } from "./http-semantic-query-port";
 import {
   ToolCallingArchitectRuntime,
   type RevisionScopedModulePlanProposal,
@@ -144,6 +145,35 @@ describe("ToolCallingArchitectRuntime", () => {
     expect(port.searchSymbols).toHaveBeenCalledWith({ ...scope, projectIds: ['quote'], query: '', limit: 100 }, undefined);
     expect(port.readSourceExcerpt).not.toHaveBeenCalled();
     expect(client.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps planning alive when the index rejects a tool argument', async () => {
+    const port = projectPort();
+    vi.mocked(port.getFileStructure).mockRejectedValue(new SemanticQueryRequestError(400,
+      'get_file_structure requires an existing repository-relative file path; the repository root is not a file.'));
+    const client = scriptedClient([
+      { toolCalls: [{ id: 'structure', name: 'get_file_structure', arguments: { relativePath: '' } }] },
+      { content: JSON.stringify(proposal()) },
+    ]);
+    const result = await new ToolCallingArchitectRuntime({ queryPort: port, client })
+      .proposeModulePlanWithEvidence({ ...request, projectId: 'quote' });
+    // One rejected call must not discard the analysis: the model is told what to
+    // fix and the plan still completes.
+    expect(result.proposal).toEqual(proposal());
+    const followUp = JSON.stringify(vi.mocked(client.complete).mock.calls[1]![0]);
+    expect(followUp).toContain('invalid_arguments');
+    expect(followUp).toContain('repository root is not a file');
+  });
+
+  it('still aborts when the semantic index itself is unusable', async () => {
+    const port = projectPort();
+    vi.mocked(port.getFileStructure).mockRejectedValue(new Error('Semantic index query failed.'));
+    const client = scriptedClient([
+      { toolCalls: [{ id: 'structure', name: 'get_file_structure', arguments: { relativePath: 'src/QuoteService.java' } }] },
+      { content: JSON.stringify(proposal()) },
+    ]);
+    await expect(new ToolCallingArchitectRuntime({ queryPort: port, client })
+      .proposeModulePlanWithEvidence({ ...request, projectId: 'quote' })).rejects.toThrow('Semantic index query failed');
   });
 
   it('keeps optional source inspection available after preloading evidence', async () => {

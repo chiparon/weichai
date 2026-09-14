@@ -303,6 +303,18 @@ function excerpt(text: string, range: SourceRange | undefined, maxChars: number)
  * filesystem or database capability beyond the injected store and refuses to
  * synthesize a semantic definition/reference from Tree-sitter facts.
  */
+/**
+ * A caller-supplied argument is invalid. Unlike an internal failure this message
+ * is safe to relay: the transport returns it to the caller so an agent can
+ * correct its arguments instead of retrying the same call blindly.
+ */
+export class SemanticQueryArgumentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SemanticQueryArgumentError';
+  }
+}
+
 export class SemanticQueryService implements SemanticQueryPort {
   readonly #semanticProviders: readonly SemanticProvider[];
   readonly #languageCapabilities: ReadonlyMap<LanguageId, LanguageCapabilityLevel>;
@@ -409,7 +421,16 @@ export class SemanticQueryService implements SemanticQueryPort {
     signal?: AbortSignal,
   ): Promise<GetFileStructureResult> {
     const { index } = await this.#scope(request, signal);
-    const relativePath = normalizePath(request.relativePath);
+    // The repository root is not a file: a caller asking for "" or null wants the
+    // tree, which the overview and symbol tools already answer. Fail with a
+    // correctable message instead of an unhelpful internal error.
+    const requestedPath = typeof request.relativePath === 'string' ? request.relativePath.trim() : '';
+    if (requestedPath.length === 0) {
+      throw new SemanticQueryArgumentError(
+        'get_file_structure requires an existing repository-relative file path; the repository root is not a file. Use get_repository_overview, list_projects or search_symbols to list files first.',
+      );
+    }
+    const relativePath = normalizePath(requestedPath);
     const file = index.files.find((entry) => entry.relativePath === relativePath);
     if (!file) return { file: null };
     const declarations = index.symbols.filter((symbol) => symbol.relativePath === relativePath);

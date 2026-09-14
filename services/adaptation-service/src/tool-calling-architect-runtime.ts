@@ -12,6 +12,7 @@ import {
   completeWithDeepSeekTools,
   type DeepSeekClientOptions,
 } from "./deepseek-client";
+import { SemanticQueryRequestError } from "./http-semantic-query-port";
 
 const DEFAULT_MAX_TOOL_CALLS = 24;
 const DEFAULT_MAX_TOOL_RESULT_CHARS = 48_000;
@@ -358,9 +359,18 @@ export class ToolCallingArchitectRuntime {
               MAX_CONVERSATION_EVIDENCE_CHARS - evidenceChars));
             collectEvidenceFacts(visible, evidence);
           } catch (error) {
-            if (!(error instanceof InvalidSourceRangeError)) throw error;
-            visible = { error: 'invalid_arguments', message: error.message,
-              instruction: 'Use positive integer startLine, startColumn, endLine, endColumn in source order. For read_source_excerpt you may omit sourceRange.' };
+            if (error instanceof InvalidSourceRangeError) {
+              visible = { error: 'invalid_arguments', message: error.message,
+                instruction: 'Use positive integer startLine, startColumn, endLine, endColumn in source order. For read_source_excerpt you may omit sourceRange.' };
+            } else if (error instanceof InvalidToolArgumentsError || error instanceof SemanticQueryRequestError) {
+              // The model's own argument mistake. Feed the reason back and keep
+              // planning: one malformed call must not discard the whole analysis.
+              // Policy and infrastructure failures still abort.
+              visible = { error: 'invalid_arguments', message: error.message,
+                instruction: 'Correct the tool arguments and continue. Paths must be existing repository-relative files; use get_repository_overview, list_projects or search_symbols to list them first. The repository root is not a file.' };
+            } else {
+              throw error;
+            }
           }
         }
         const content = JSON.stringify(visible);
@@ -739,18 +749,20 @@ const toolInputKeys: Readonly<Record<ToolCallingArchitectToolName, readonly stri
 function assertToolInputKeys(toolName: ToolCallingArchitectToolName, value: Record<string, unknown>): void {
   const allowed = new Set(toolInputKeys[toolName]);
   for (const key of Object.keys(value)) {
+    // An invented field may be an attempt to smuggle input the tool never declared:
+    // it stays fatal, unlike a merely empty or missing required value below.
     if (!allowed.has(key)) throw new Error(`Tool-calling architect supplied unsupported ${toolName} argument ${key}.`);
   }
   const requireString = (key: string): void => {
     if (typeof value[key] !== "string" || !value[key].trim()) {
-      throw new Error(`Tool-calling architect must supply a non-empty ${key} to ${toolName}.`);
+      throw new InvalidToolArgumentsError(`Tool-calling architect must supply a non-empty ${key} to ${toolName}.`);
     }
   };
   if (["get_file_structure", "find_definition", "read_source_excerpt"].includes(toolName)) requireString("relativePath");
   if (toolName === "search_symbols" && !(value.query === '' && Array.isArray(value.projectIds) && value.projectIds.length > 0)) requireString("query");
   if (["get_symbol", "find_references"].includes(toolName)) requireString("symbolKey");
   if (toolName === "get_dependencies" && !["symbolKey", "relativePath", "projectId"].some((key) => value[key] !== undefined)) {
-    throw new Error("Tool-calling architect must select a symbolKey, relativePath, or projectId for get_dependencies.");
+    throw new InvalidToolArgumentsError("Tool-calling architect must select a symbolKey, relativePath, or projectId for get_dependencies.");
   }
   if (["find_definition", "read_source_excerpt"].includes(toolName) && value.sourceRange !== undefined && !isSourceRange(value.sourceRange)) {
     throw new InvalidSourceRangeError(`Tool-calling architect supplied an invalid sourceRange to ${toolName}.`);
@@ -1159,6 +1171,8 @@ function validateRevisionScopedDependency(
 }
 
 class InvalidSourceRangeError extends Error {}
+/** The model's own argument mistake. Unlike a policy violation it is correctable. */
+class InvalidToolArgumentsError extends Error {}
 
 function queryCacheKey(name: string, input: object): string {
   return JSON.stringify([name, Object.entries(input).sort(([a], [b]) => a.localeCompare(b))]);

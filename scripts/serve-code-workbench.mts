@@ -2,7 +2,7 @@ import { WorkspaceTranslationHost } from '../apps/vscode-extension/src/workspace
 import { prepareModuleTranslationScope } from '../apps/vscode-extension/src/module-translation-handoff.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
-import { readFile, realpath } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
 import type { ModuleTarget, SearchCandidate, RepositoryRole, TaskRetrievalRequest } from '@forexplore/contracts';
@@ -15,6 +15,8 @@ import { isWebviewToHostMessage, type HostToWebviewMessage, type PanelInitPayloa
 
 const { values } = parseArgs({ options: {
   target: { type: 'string', multiple: true }, reference: { type: 'string', multiple: true },
+  /** Every immediate subdirectory of these roots is registered as a history reference. */
+  corpus: { type: 'string', multiple: true },
   port: { type: 'string', default: '4040' }, 'semantic-port': { type: 'string', default: '4041' },
   database: { type: 'string' }, 'register-only': { type: 'boolean', default: false },
   'rebuild-modules': { type: 'boolean', default: false }, 'hierarchy-url': { type: 'string' },
@@ -24,7 +26,13 @@ const root = process.cwd();
 const workspaceTranslation = new WorkspaceTranslationHost(() => ({ url: values['adaptation-url'] ?? '',
   token: process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }));
 const targets = values.target?.length ? values.target : [root];
-const references = values.reference ?? [];
+const corpusReferences = (await Promise.all((values.corpus ?? []).map(async (directory) => {
+  const corpusRoot = path.resolve(directory);
+  const entries = await readdir(corpusRoot, { withFileTypes: true });
+  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => path.join(corpusRoot, entry.name)).sort();
+}))).flat();
+const references = [...(values.reference ?? []), ...corpusReferences];
 const inputs = await Promise.all([
   ...targets.map((localPath) => ({ localPath, role: 'target' as RepositoryRole })),
   ...references.map((localPath) => ({ localPath, role: 'history' as RepositoryRole })),

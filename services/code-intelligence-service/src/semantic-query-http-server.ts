@@ -7,6 +7,7 @@ import {
 } from 'node:http';
 import type { SemanticQueryPort, TaskRetrievalPort } from '@forexplore/workflow-core';
 import { validateTaskRetrievalRequest } from './task-retrieval.js';
+import { SemanticQueryArgumentError } from './semantic-query-service.js';
 
 const maxBodyBytes = 256 * 1024;
 const operations = new Set<keyof SemanticQueryPort>([
@@ -118,6 +119,10 @@ export function createSemanticQueryHttpServer(options: SemanticQueryHttpServerOp
     } catch (error) {
       if (error instanceof HttpError) {
         send(response, error.status, { error: { message: error.message } });
+      } else if (error instanceof SemanticQueryArgumentError) {
+        // A rejected argument is the caller's own input, not host detail: relaying
+        // it lets an agent correct the call instead of repeating it.
+        send(response, 400, { error: { message: error.message } });
       } else {
         // Do not leak host paths, DB connection strings, or provider details
         // across the MCP transport boundary.

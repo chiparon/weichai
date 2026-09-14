@@ -128,6 +128,23 @@ async function seed(
 }
 
 describe('SemanticQueryService', () => {
+  it('rejects a file-structure request for the repository root with a correctable message', async () => {
+    const store = new InMemoryIndexStore();
+    const seeded = await seed(store, 'history-root', 'revision-root', '3'.repeat(64));
+    await store.activateRevision(seeded);
+    const query = new SemanticQueryService(store);
+    const scope = { repositoryId: seeded.repositoryId, analysisRevision: seeded.analysisRevision };
+
+    await expect(query.getFileStructure({ ...scope, relativePath: '' }))
+      .rejects.toThrow(/get_file_structure requires an existing repository-relative file path/);
+    // A missing or null path must not crash with an internal null dereference.
+    await expect(query.getFileStructure({ ...scope, relativePath: undefined as unknown as string }))
+      .rejects.toThrow(/repository root is not a file/);
+    // An existing file still answers normally.
+    const structure = await query.getFileStructure({ ...scope, relativePath: 'src/first.ts' });
+    expect(structure.file?.value.containers.map((container) => container.name)).toEqual(['First']);
+  });
+
   it('keeps independent repository revisions isolated and never exposes local paths', async () => {
     const store = new InMemoryIndexStore();
     const left = await seed(store, 'history-one', 'revision-one', '1'.repeat(64));

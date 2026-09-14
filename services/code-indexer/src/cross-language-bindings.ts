@@ -92,6 +92,14 @@ const nativeSymbolIdentity = (symbol: SymbolRecord): string => JSON.stringify([s
  * Kotlin expect/actual does not come through here at all: an `expect` and its
  * `actual` are two distinct platform symbols by design, which is why that path
  * keeps its own ambiguity rules.
+ *
+ * The key compares signatures, so it unifies a declaration and a definition only
+ * when they spell their parameters the same way — which is what a JNI header
+ * generated from, or copied out of, its .cpp does. A hand-written pair that
+ * renames or drops parameter names in the header (`jint value` against `jint n`,
+ * or `JNIEnv*, jobject, jint`) still lands in two groups and stays `ambiguous`:
+ * comparing those would need semantic parameter analysis, and a wrong merge
+ * would be worse than an honest ambiguity.
  */
 function collapseDeclarationSites(candidates: readonly SymbolRecord[]): SymbolRecord[] {
   const groups = new Map<string, SymbolRecord[]>();

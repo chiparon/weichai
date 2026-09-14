@@ -562,17 +562,66 @@ function dedupeBy<T>(entries: readonly T[], key: (entry: T) => string): T[] {
  * source ranges, and parse diagnostics. It never attempts call-graph or
  * cross-file definition/reference claims.
  */
+/**
+ * ArkUI syntax remapped onto the TypeScript grammar without moving a single line or
+ * column.
+ *
+ * `arkts` (.ets) is registered against the TypeScript grammar, so everything a
+ * TypeScript file would contain already indexes correctly. Measured on
+ * fixtures/code-corpus/harmony-upload-arkts: `UploadBridge`, its methods, its fields
+ * and its imports — including the native `libentry.so` binding — all extract. What
+ * the grammar cannot read is the ArkUI layer: `@Entry @Component struct UploadPage`
+ * produced eight syntax errors, the page component (the symbol a HarmonyOS
+ * developer actually names) never reached the index, and UI builder calls such as
+ * `Column(...)` were misread as methods.
+ *
+ * Two substitutions, both exactly as wide as what they replace, so every source
+ * range, column and content hash derived from this text still points at the
+ * original file:
+ *   `struct Name`  ->  `class  Name`
+ *   `@Decorator`   ->  blanks
+ *
+ * Decorators are only blanked outside string literals: the fixture imports from
+ * `'@kit.BasicServicesKit'`, and rewriting that would silently break the import
+ * the graph is built on.
+ */
+export function normalizeArkTs(content: string): string {
+  return content.split('\n').map((line) => {
+    let text = '';
+    let quote: string | undefined;
+    for (let index = 0; index < line.length;) {
+      const character = line[index]!;
+      if (quote) {
+        if (character === '\\') { text += line.slice(index, index + 2); index += 2; continue; }
+        if (character === quote) quote = undefined;
+        text += character; index += 1; continue;
+      }
+      if (character === "'" || character === '"' || character === '`') { quote = character; text += character; index += 1; continue; }
+      if (character === '@' && /[A-Za-z_]/.test(line[index + 1] ?? '')) {
+        let end = index + 1;
+        while (end < line.length && /[A-Za-z0-9_]/.test(line[end]!)) end += 1;
+        text += ' '.repeat(end - index); index = end; continue;
+      }
+      if (line.startsWith('struct', index) && /\s/.test(line[index + 6] ?? ' ')) { text += 'class '; index += 6; continue; }
+      text += character; index += 1;
+    }
+    return text;
+  }).join('\n');
+}
+
 export function indexTreeSitterFile(request: TreeSitterIndexRequest): TreeSitterFileIndex {
   const parser = new Parser();
   parser.setLanguage(request.language.grammar as never);
+  // ArkUI syntax is remapped for arkts only; every other language is parsed verbatim.
+  const content = request.language.languageId === 'arkts' ? normalizeArkTs(request.content) : request.content;
   // The native binding's default input buffer cannot accept an entire large string.
-  const tree = parser.parse((offset) => request.content.slice(offset, offset + 8192));
-  const declarations = collectDeclarations(tree.rootNode, request);
+  const tree = parser.parse((offset) => content.slice(offset, offset + 8192));
+  const declarations = collectDeclarations(tree.rootNode, { ...request, content });
   return {
     declarations,
     diagnostics: collectDiagnostics(tree.rootNode, request.relativePath),
-    exports: collectExports(tree.rootNode, request, declarations),
-    imports: collectImports(tree.rootNode, request),
+    exports: collectExports(tree.rootNode, { ...request, content }, declarations),
+    imports: collectImports(tree.rootNode, { ...request, content }),
     languageId: request.language.languageId,
     relativePath: request.relativePath,
   };
@@ -583,4 +632,5 @@ export const treeSitterIndexerInternals = {
   normalizedText,
   signatureFor,
   sourceRangeForOffsets,
+  normalizeArkTs,
 };

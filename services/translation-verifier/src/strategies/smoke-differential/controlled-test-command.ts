@@ -104,7 +104,12 @@ function resolveAllowedCommand(
   workspaceRoot: string,
   cwd: string,
 ): string {
-  const base = basename(command);
+  // Windows 下可执行文件带 .exe 后缀(node.exe/python.exe/...),而白名单按裸名
+  // 登记;归一化后缀后再比对,避免跨平台误拒。
+  const base =
+    process.platform === "win32" && basename(command).endsWith(".exe")
+      ? basename(command).slice(0, -4)
+      : basename(command);
   if (!ALLOWED_TOOL_NAMES.has(base)) {
     throw new Error(`command not allowed: ${command}`);
   }

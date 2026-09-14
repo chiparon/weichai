@@ -260,7 +260,17 @@ export function runManagedProcess(
   if (signal?.aborted) return Promise.reject(abortReasonOf(signal));
   const timeoutMs = Math.max(1, input.deadlineAt - Date.now());
   return new Promise<ManagedProcessResult>((resolvePromise, reject) => {
-    const child = spawn(input.command, input.args, {
+    // Windows 下 npm 等工具以 .cmd/.bat 包装存在,Node spawn 不能直接执行批处理文件
+    // (EINVAL);经 cmd.exe /d /s /c 透传,args 仍作为独立 argv 项传入,不启用任意 shell。
+    const isWindowsBatch =
+      process.platform === "win32" && /\.(cmd|bat)$/i.test(input.command);
+    const spawnCommand = isWindowsBatch
+      ? (process.env.ComSpec ?? "cmd.exe")
+      : input.command;
+    const spawnArgs = isWindowsBatch
+      ? ["/d", "/s", "/c", input.command, ...input.args]
+      : input.args;
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: input.cwd,
       env: input.env,
       detached: process.platform !== "win32",

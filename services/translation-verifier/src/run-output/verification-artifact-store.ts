@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, posix as pathPosix, resolve, sep } from "node:path";
 import type { VerificationArtifact, VerificationStrategyContext, VerificationResultArtifact } from "../schemas/verification-types.js";
 
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
@@ -317,23 +317,28 @@ export function safePath(root: string, path: string, label: string): string {
 }
 
 function safeRelativePath(path: string, label: string): string {
+  // Canonical relative paths are POSIX. On Windows, normalize backslash
+  // separators (produced by path.relative/join on win32) to forward slashes
+  // before validation; the remaining traversal checks then apply unchanged.
+  const normalizedInput =
+    process.platform === "win32" ? path.replace(/\\/g, "/") : path;
   if (
-    typeof path !== "string" ||
-    path.trim().length === 0 ||
-    path.includes("\\") ||
-    isAbsolute(path) ||
-    /^[A-Za-z]:/.test(path)
+    typeof normalizedInput !== "string" ||
+    normalizedInput.trim().length === 0 ||
+    normalizedInput.includes("\\") ||
+    isAbsolute(normalizedInput) ||
+    /^[A-Za-z]:/.test(normalizedInput)
   ) {
     throw new Error(`${label} must be a normalized relative path.`);
   }
-  const candidate = resolve("/", path);
+  const candidate = pathPosix.resolve("/", normalizedInput);
   const normalized = candidate.slice(1);
   if (
-    normalized !== path ||
+    normalized !== normalizedInput ||
     normalized === "" ||
-    normalized.startsWith(`..${sep}`) ||
-    path === ".." ||
-    path.includes("/../")
+    normalized.startsWith("../") ||
+    normalizedInput === ".." ||
+    normalizedInput.includes("/../")
   ) {
     throw new Error(`${label} must be a normalized relative path.`);
   }

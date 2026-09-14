@@ -284,10 +284,12 @@ function normalizeTestFiles<
   T extends Pick<BehaviorTargetManifest, "testFiles" | "resultFile">,
 >(manifest: T): T {
   for (const path of manifest.testFiles) {
+    const normalized =
+      process.platform === "win32" ? path.replace(/\\/g, "/") : path;
     if (
-      path.startsWith("/") ||
-      path.includes("\\") ||
-      path.split("/").some((part) => !part || part === "." || part === "..")
+      normalized.startsWith("/") ||
+      normalized.includes("\\") ||
+      normalized.split("/").some((part) => !part || part === "." || part === "..")
     )
       throw new Error("Test files must be canonical project-relative paths.");
   }

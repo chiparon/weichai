@@ -217,15 +217,22 @@ export function findInstalledExecutable(
   name: string,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
+  // Windows 可执行文件带 .exe/.cmd 等扩展名;按 PATHEXT 逐个尝试,避免漏掉 node.exe。
+  const extensions =
+    process.platform === "win32"
+      ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+      : [""];
   for (const directory of (env.PATH ?? "").split(delimiter)) {
     // Relative PATH entries could resolve to agent-authored project executables.
     if (!isAbsolute(directory)) continue;
-    const candidate = join(directory, name);
-    try {
-      accessSync(candidate, constants.X_OK);
-      if (statSync(candidate).isFile()) return realpathSync(candidate);
-    } catch {
-      /* Try the next installed tool directory. */
+    for (const extension of extensions) {
+      const candidate = join(directory, `${name}${extension}`);
+      try {
+        accessSync(candidate, constants.X_OK);
+        if (statSync(candidate).isFile()) return realpathSync(candidate);
+      } catch {
+        /* Try the next extension / directory. */
+      }
     }
   }
   return undefined;
@@ -244,7 +251,12 @@ export function resolveBehaviorCommand(
     command.args.some((arg) => typeof arg !== "string" || arg.includes("\0"))
   )
     throw new Error("Invalid behavior command arguments.");
-  const name = basename(command.executable);
+  // Windows 下 executable 可能带 .exe 后缀,白名单按裸名登记,归一化后再比对。
+  const rawName = basename(command.executable);
+  const name =
+    process.platform === "win32" && rawName.endsWith(".exe")
+      ? rawName.slice(0, -4)
+      : rawName;
   if (!ALLOWED_TOOLS.has(name))
     throw new Error(`Command not allowed: ${command.executable}`);
   if (WRAPPERS.has(name)) {
@@ -258,11 +270,18 @@ export function resolveBehaviorCommand(
   }
   const installed = findInstalledExecutable(name, control.env);
   if (!installed) throw new Error(`Allowlisted tool is unavailable: ${name}`);
-  if (
-    command.executable !== name &&
-    realpathSync(resolve(control.scope.cwd, command.executable)) !== installed
-  )
-    throw new Error(`Command is not the installed tool: ${command.executable}`);
+  if (command.executable !== name) {
+    // Windows 路径大小写不敏感,realpath 结果可能因大小写/短名差异不同;归一化比较。
+    const resolved = realpathSync(
+      resolve(control.scope.cwd, command.executable),
+    );
+    const samePath =
+      process.platform === "win32"
+        ? resolved.toLowerCase() === installed.toLowerCase()
+        : resolved === installed;
+    if (!samePath)
+      throw new Error(`Command is not the installed tool: ${command.executable}`);
+  }
   return installed;
 }
 

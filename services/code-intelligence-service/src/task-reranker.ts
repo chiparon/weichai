@@ -25,13 +25,22 @@ import type { TaskRetrievalResult } from '@forexplore/contracts';
  *   provider | recall | MRR dev / holdout / new | mean latency
  *   llm      | 34/34  | 1.000 / 0.917 / 1.000   | 1.19-1.32 s
  *   local    | 34/34  | 0.750 / 0.501 / 0.388   | 0.46-0.52 s
+ *   cascade  | 34/34  | 0.889 / 0.626 / 0.686   | 1.37-1.64 s   (removed)
  *
  * Recall is identical because reranking only reorders a candidate set that already
  * contains every annotated target; what differs is ranking quality. A general
  * bilingual cross-encoder cannot judge *which code implements this requirement* the
- * way a large model can, so `local` is the right default where the delivery is not
- * truncated, and a cascade (local ordering, LLM on the head) is the better fit when
- * a token budget decides what survives.
+ * way a large model can.
+ *
+ * A cascade was built and removed: local ordering over all twelve candidates, then
+ * the LLM refining only the head five, was meant to buy LLM judgement at local
+ * price. It lost on both axes. Restricting the LLM to the locally chosen head caps
+ * the ranking it can produce — a target the local stage placed sixth can never be
+ * promoted to first — and the saving did not materialise because the LLM call is
+ * dominated by per-request overhead rather than by candidate count. The two
+ * remaining providers are both measured; pick `local` where latency, offline
+ * operation or code never leaving the machine matters, and `llm` where ranking
+ * quality does.
  * Anything else leaves retrieval exactly as it was.
  */
 export interface TaskRerankConfig {

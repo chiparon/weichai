@@ -44,7 +44,7 @@ function fakeStore(): SearchStore {
     clear: vi.fn(async () => undefined),
     upsert: vi.fn(async () => undefined),
     refreshIndex: vi.fn(async () => undefined),
-    semanticSearch: vi.fn(async () => [
+    semanticSearch: vi.fn(async (): Promise<RetrievedCodeDocument[]> => [
       { ...baseDocument, semanticScore: 0.92 },
       {
         ...baseDocument,
@@ -71,6 +71,23 @@ const embeddings: EmbeddingProvider = {
 };
 
 describe('SeekDbSearchEngine', () => {
+  it('rejects module targets before querying the legacy symbol index', async () => {
+    const store = fakeStore();
+    const localEmbeddings: EmbeddingProvider = {
+      dimension: 3,
+      embed: vi.fn(async () => [[1, 0, 0]]),
+    };
+    const engine = new SeekDbSearchEngine(store, localEmbeddings);
+
+    await expect(engine.search({
+      ...request,
+      target: { ...request.target, kind: 'module' },
+    })).rejects.toThrow('Module targets require module retrieval');
+    expect(localEmbeddings.embed).not.toHaveBeenCalled();
+    expect(store.semanticSearch).not.toHaveBeenCalled();
+    expect(store.textSearch).not.toHaveBeenCalled();
+  });
+
   it('queries vector and full-text indexes and fuses duplicate candidates', async () => {
     const store = fakeStore();
     const engine = new SeekDbSearchEngine(store, embeddings);

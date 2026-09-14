@@ -1,3 +1,5 @@
+import type { LanguageId } from './language-id';
+
 /**
  * Versioned, repository-scoped contracts for the code-intelligence pipeline.
  *
@@ -89,7 +91,7 @@ export type BuiltInLanguageId =
  * A language registry is extensible: a grammar installed after v1 must not
  * require a shared-contract release just to be represented in stored data.
  */
-export type LanguageId = BuiltInLanguageId | (string & {});
+export type { LanguageId } from './language-id';
 
 export type LanguageCapabilityLevel = 'structural' | 'semantic';
 

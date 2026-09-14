@@ -7,6 +7,7 @@ import type { ModelApiKey } from './model-credential';
  * materialization, and every filesystem operation stay with the host.
  */
 import {
+  isCanonicalLanguageId,
   isValidModuleId,
   moduleMigrationSchemaVersion,
   type FunctionalModule,
@@ -423,7 +424,7 @@ function validateFunctionalModule(
   if (value.purpose !== undefined) assertNonEmptyString(value.purpose, `modules[${index}].purpose`);
   if (value.domain !== undefined) assertNonEmptyString(value.domain, `modules[${index}].domain`);
   if (value.coreApis !== undefined) assertStringArray(value.coreApis, `modules[${index}].coreApis`, true);
-  if (value.language !== undefined) {
+  if (value.language !== undefined && !isCanonicalLanguageId(value.language)) {
     assertEnum<ModuleSummaryLanguage>(
       value.language,
       ["TypeScript", "Python", "Java", "C#", "Rust", "Go", "Mixed", "Unknown"],
@@ -623,7 +624,7 @@ function moduleMigrationProposalSchema(): Record<string, unknown> {
       description: "string",
       purpose: "Purpose summary for module-summary.json",
       coreApis: ["Core API names or signatures present in the snapshot"],
-      language: "TypeScript | Python | Java | C# | Rust | Go | Mixed | Unknown",
+      language: "canonical language ID from snapshot facts (legacy display labels, Mixed, and Unknown are also accepted)",
       domain: "Business or technical domain for module-summary.json",
       sourceFiles: ["snapshot source path"],
       testFiles: ["optional snapshot test path"],

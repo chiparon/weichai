@@ -8,7 +8,7 @@ import type {
   ModuleSummaryLanguage,
   RepositoryStaticAnalysis,
 } from '@forexplore/contracts';
-import { isValidModuleId, moduleMigrationSchemaVersion } from '@forexplore/contracts';
+import { isCanonicalLanguageId, isValidModuleId, moduleMigrationSchemaVersion } from '@forexplore/contracts';
 import { calculateModuleMigrationPlanHash, canonicalJson, sortedUnique } from './module-plan-utils';
 import { scheduleModuleMigration } from './module-scheduler';
 
@@ -53,7 +53,7 @@ function canonicalPath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '');
 }
 
-const moduleSummaryLanguages = new Set<ModuleSummaryLanguage>([
+const legacyModuleSummaryLanguages = new Set<ModuleSummaryLanguage>([
   'TypeScript',
   'Python',
   'Java',
@@ -711,11 +711,13 @@ function validateModuleSummaryFields(
       moduleIds: [module.id],
     });
   }
-  if (module.language !== undefined && !moduleSummaryLanguages.has(module.language)) {
+  if (module.language !== undefined &&
+      !isCanonicalLanguageId(module.language) &&
+      !legacyModuleSummaryLanguages.has(module.language)) {
     appendIssue(issues, {
       code: 'module-language-invalid',
       severity: 'error',
-      message: `Module ${module.id} language must be a supported module summary language.`,
+      message: `Module ${module.id} language must be a canonical language ID or a legacy summary label.`,
       moduleIds: [module.id],
     });
   }

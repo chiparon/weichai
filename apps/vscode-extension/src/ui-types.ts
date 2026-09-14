@@ -109,7 +109,43 @@ export type ModuleExplorerNodeKind =
   | 'constructor'
   | 'function';
 
-export type ModuleImplementationStatus = 'implemented' | 'unimplemented' | 'unknown';
+export type ModuleImplementationStatus =
+  | 'implemented'
+  | 'unimplemented'
+  | 'partial'
+  | 'unknown'
+  | 'not-applicable';
+
+export type ModuleWorkspaceAction =
+  | 'initialize-target'
+  | 'review-target-boundaries'
+  | 'retry-target-inventory'
+  | 'rebase-target'
+  | 'import-history'
+  | 'review-history-boundaries'
+  | 'generate-history-summaries'
+  | 'review-history-knowledge'
+  | 'withdraw-history-publication';
+
+export interface ModuleWorkspaceLifecyclePresentation {
+  /** Host-owned lifecycle stage. It is presentation data, not an action token. */
+  stage: string;
+  label: string;
+  message: string;
+  ready: boolean;
+  publicationActive: boolean;
+  nextAction?: ModuleWorkspaceAction;
+  nextActionLabel?: string;
+}
+
+/** Current reviewed 01A catalog identity. Draft catalogs never receive this identity. */
+export interface HistoryModuleSelectionIdentity {
+  repositoryRegistrationId: string;
+  repositoryId: string;
+  catalogId: string;
+  catalogHash: string;
+  moduleId: string;
+}
 
 /** Read-only tree item produced from a trusted host-side static-analysis snapshot. */
 export interface ModuleExplorerNode {
@@ -122,6 +158,7 @@ export interface ModuleExplorerNode {
   line?: number;
   implementationStatus?: ModuleImplementationStatus;
   targetId?: string;
+  historyModule?: HistoryModuleSelectionIdentity;
   description?: string;
   purpose?: string;
   coreApis?: string[];
@@ -145,13 +182,15 @@ export interface ModuleExplorerStats {
   methods: number;
   implemented: number;
   unimplemented: number;
+  partial: number;
   unknown: number;
+  notApplicable: number;
   dependencies: number;
 }
 
 export interface ModuleSummaryPresentation {
   exists: boolean;
-  path: '.forexplore/module-summary.json';
+  path: string;
   error?: string;
   planId?: string;
   status?: string;
@@ -191,6 +230,12 @@ export interface ModuleWorkspacePresentation {
   revision?: string;
   loading?: boolean;
   error?: string;
+  lifecycle: ModuleWorkspaceLifecyclePresentation;
+  catalog?: {
+    id: string;
+    contentHash: string;
+    status: string;
+  };
   stats: ModuleExplorerStats;
   summary: ModuleSummaryPresentation;
   /** Complete root-node count when the initial tree contains only its first host page. */

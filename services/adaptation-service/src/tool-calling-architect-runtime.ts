@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  isCanonicalLanguageId,
   isValidModuleId,
   moduleMigrationSchemaVersion,
   type ProjectId,
@@ -1100,7 +1101,7 @@ function validateRevisionScopedModule(value: unknown, index: number, evidence: E
   if (value.purpose !== undefined) assertNonEmptyString(value.purpose, `modules[${index}].purpose`);
   if (value.domain !== undefined) assertNonEmptyString(value.domain, `modules[${index}].domain`);
   if (value.coreApis !== undefined) assertStringArray(value.coreApis, `modules[${index}].coreApis`, true);
-  if (value.language !== undefined) {
+  if (value.language !== undefined && !isCanonicalLanguageId(value.language)) {
     assertEnum(value.language, ["TypeScript", "Python", "Java", "C#", "Rust", "Go", "Mixed", "Unknown"], `modules[${index}].language`);
   }
   assertStringArray(value.sourceFiles, `modules[${index}].sourceFiles`, false);
@@ -1277,7 +1278,7 @@ function revisionScopedModulePlanSchema(): Record<string, unknown> {
       description: "string",
       purpose: "optional string",
       coreApis: ["optional API names from retrieved symbols"],
-      language: "TypeScript | Python | Java | C# | Rust | Go | Mixed | Unknown",
+      language: "canonical language ID from retrieved facts (legacy display labels, Mixed, and Unknown are also accepted)",
       domain: "optional domain",
       sourceFiles: ["retrieved repository-relative source path"],
       symbolKeys: ["retrieved stable symbolKey"],

@@ -1,6 +1,7 @@
 import type {
   ModuleMigrationPlan,
   ModuleMigrationProposal,
+  ModuleSummaryLanguage,
   RepositoryStaticAnalysis,
 } from '@forexplore/contracts';
 import { moduleMigrationSchemaVersion } from '@forexplore/contracts';
@@ -36,7 +37,7 @@ export interface SemanticModulePlanProposal {
     description: string;
     purpose?: string;
     coreApis?: string[];
-    language?: 'TypeScript' | 'Python' | 'Java' | 'C#' | 'Rust' | 'Go' | 'Mixed' | 'Unknown';
+    language?: ModuleSummaryLanguage;
     domain?: string;
     sourceFiles: string[];
     symbolKeys: string[];

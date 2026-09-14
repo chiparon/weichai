@@ -1,3 +1,13 @@
+# Local planning, scratch work, and generated architecture previews
+/.scratch/
+/architecture-diagram*.html
+
+# Private verification research notes (shared product docs remain tracked)
+/services/translation-verifier/docs/black-box-test-adequacy-methods.zh.md
+/services/translation-verifier/docs/json-schema-faker-evaluation.zh.md
+/services/translation-verifier/docs/test-generation-literature-research.zh.md
+/services/translation-verifier/docs/verification-intent-review.zh.md
+
 # Codex workspace metadata
 .codex/
 
@@ -6,12 +16,24 @@ node_modules/
 
 # Build and test output
 dist/
+obj/
 coverage/
 *.tsbuildinfo
 .vscode-test/
 .vscode-test-user/
 *.vsix
-.forexplore/
+# ForeXplore's durable architecture artifacts are reviewable repository
+# evidence. Checkpoints and any other local scratch data remain untracked.
+.forexplore/*
+!.forexplore/module-summary.json
+!.forexplore/analysis/
+!.forexplore/analysis/**
+!.forexplore/ingestion/
+!.forexplore/ingestion/**
+!.forexplore/modules/
+!.forexplore/modules/**
+!.forexplore/runs/
+!.forexplore/runs/**
 
 # Local environment files
 .env
@@ -42,6 +64,7 @@ __pycache__/
 *.pyc
 
 # Experiment / test output
+/e2e-runs/
 results/
 results_副本/
 output/
@@ -69,3 +92,12 @@ logs/
 
 # Git worktrees
 .worktrees/
+
+# Local Superpowers planning artifacts
+docs/superpowers/
+
+# Smoke differential pipeline output
+test-results/
+
+# Ruff cache
+.ruff_cache/

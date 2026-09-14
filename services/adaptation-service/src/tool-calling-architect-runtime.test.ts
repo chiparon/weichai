@@ -146,6 +146,25 @@ describe("ToolCallingArchitectRuntime", () => {
     expect(client.complete).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['kotlin', 'vendor.dsl', 'Java', 'Mixed', 'Unknown'])(
+    'accepts canonical language IDs and legacy summary labels: %s',
+    async (language) => {
+      const value = proposal();
+      value.modules[0]!.language = language;
+      const client = scriptedClient([{ content: JSON.stringify(value) }]);
+      const runtime = new ToolCallingArchitectRuntime({ queryPort: projectPort(), client });
+      await expect(runtime.proposeModulePlan({ ...request, projectId: 'quote' })).resolves.toEqual(value);
+    },
+  );
+
+  it.each(['', 'not a language', '../java'])('rejects malformed summary language: %s', async (language) => {
+    const value = proposal();
+    value.modules[0]!.language = language;
+    const client = scriptedClient([{ content: JSON.stringify(value) }]);
+    const runtime = new ToolCallingArchitectRuntime({ queryPort: projectPort(), client, maxProposalRepairs: 0 });
+    await expect(runtime.proposeModulePlan({ ...request, projectId: 'quote' })).rejects.toThrow('language');
+  });
+
   it('keeps optional source inspection available after preloading evidence', async () => {
     const port = projectPort();
     vi.mocked(port.readSourceExcerpt).mockResolvedValue({ source: evidence({ value: { text: 'class QuoteService {}' } }) } as never);

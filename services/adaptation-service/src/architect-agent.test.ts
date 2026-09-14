@@ -173,6 +173,21 @@ describe("ArchitectAgent", () => {
     expect(messages[1]?.content).toContain("[PLANNING_OBJECTIVE]");
   });
 
+  it.each(["kotlin", "vendor.dsl", "Java", "Mixed", "Unknown"])(
+    "accepts canonical language IDs and legacy summary labels: %s",
+    (language) => {
+      const value = proposal();
+      value.modules[0]!.language = language;
+      expect(parseModuleMigrationProposal(JSON.stringify(value), request)).toEqual(value);
+    },
+  );
+
+  it.each(["", "not a language", "../java"])("rejects malformed summary language: %s", (language) => {
+    const value = proposal();
+    value.modules[0]!.language = language;
+    expect(() => parseModuleMigrationProposal(JSON.stringify(value), request)).toThrow("language");
+  });
+
   it("accepts a proposal returned in a JSON markdown fence", () => {
     const value = proposal();
     expect(

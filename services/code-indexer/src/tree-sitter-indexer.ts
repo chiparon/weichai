@@ -117,6 +117,17 @@ const declarationKinds: Readonly<Record<string, StructuralSymbolKind>> = {
   package_clause: 'package',
   package_declaration: 'package',
   property_declaration: 'property',
+  // A TypeScript or ArkTS class property is a `public_field_definition`, whatever
+  // its accessibility, `static`, `abstract` or `?` modifier says. Measured on
+  // fixtures/code-corpus/harmony-upload-arkts/entry/src/main/ets/pages/UploadPage.ets:
+  // the page component's `@State progress`, `@Prop fileName` and `@Link session`
+  // never reached the index, nor did `UploadBridge.native`, while the
+  // `method_signature` beside them in the same file was mapped — so the file
+  // indexed as structure with no state, and a page's state is what a HarmonyOS
+  // developer asks for by name. The grammar makes this node a child of
+  // `class_body` only, so the node type alone settles the kind and no scope guard
+  // is needed; see classifyDeclaration for why a body still cannot leak a local.
+  public_field_definition: 'field',
   record_declaration: 'record',
   struct_declaration: 'struct',
   struct_item: 'struct',
@@ -426,6 +437,20 @@ function declarationName(node: Parser.SyntaxNode, source: string): string | unde
   return name || undefined;
 }
 
+/**
+ * A class property can name itself with an expression instead of an identifier
+ * (`readonly [key] = 1`). `nameNodeFor` reads the `name` field either way, so
+ * the member would be recorded under the source text of an arbitrary
+ * expression — `[key]`, a name no developer can ask for and no stable identity
+ * can key on. Only the property node is skipped: a computed *method* name is
+ * pre-existing behaviour in a path this fix does not otherwise touch, and
+ * narrowing it would remove symbols that no measurement here called for.
+ */
+function isComputedPropertyName(node: Parser.SyntaxNode): boolean {
+  return node.type === 'public_field_definition' &&
+    node.childForFieldName('name')?.type === 'computed_property_name';
+}
+
 function signatureFor(node: Parser.SyntaxNode, source: string): string {
   const body = node.childForFieldName('body')
     ?? node.namedChildren.find((child) =>
@@ -526,7 +551,9 @@ function collectDeclarations(
 
   const visit = (node: Parser.SyntaxNode, contexts: readonly ContainerContext[]): void => {
     const declaredKind = declarationKind(node);
-    let kind = declaredKind ? classifyDeclaration(node, declaredKind, request.language.languageId) : undefined;
+    let kind = declaredKind && !isComputedPropertyName(node)
+      ? classifyDeclaration(node, declaredKind, request.language.languageId)
+      : undefined;
     if (kind && node.type === 'class_declaration' && request.language.languageId === 'kotlin') {
       kind = kotlinClassKind(node) ?? kind;
     }

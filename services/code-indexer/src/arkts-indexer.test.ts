@@ -17,13 +17,18 @@ import { indexTreeSitterFile, normalizeArkTs } from './tree-sitter-indexer.js';
  * `const handle = this.native.beginUpload(...)` in `UploadBridge.transfer` and
  * `const failure = error as BusinessError` in `UploadBridge.abort` were reported as
  * `field`s, because a TypeScript `const` is a `lexical_declaration` wherever it
- * sits. Both are gone; the fixture reports 9 declarations instead of 11, and
- * `methods` and the page component are untouched.
+ * sits. Both are gone, and `methods` and the page component are untouched.
  *
- * Remaining gap, deliberately not asserted as correct: a class *property* is not
- * extracted at all — `private readonly native = nativeBridge` and the
- * `@State progress` / `@Prop fileName` / `@Link session` members of the page are
- * `public_field_definition` nodes, which the walk does not map.
+ * Fixing that left the opposite half of the same distinction open. A class
+ * *property* is a `public_field_definition`, which the walk did not map, so a
+ * property was never extracted at all — while the `method_signature` beside it in
+ * the same file was. The page's `@State progress`, `@Prop fileName` and
+ * `@Link session`, and `UploadPage.bridge` and `UploadBridge.native` with them,
+ * were invisible: a page component's state, which is what a HarmonyOS developer
+ * asks for by name, indexed as structure with no state. They are extracted now, so
+ * the fixture reports 14 declarations — 9 before — of which 5 are `field`s; the
+ * local bindings above are still not among them, because a class body is a type
+ * scope and a callable body is not.
  */
 const fixture = new URL('../../../fixtures/code-corpus/harmony-upload-arkts/entry/src/main/ets/pages/UploadPage.ets', import.meta.url);
 
@@ -67,6 +72,9 @@ describe('ArkTS fixture through the real indexer', () => {
     expect(names).toContain('method build');
     expect(names).toContain('method startUpload');
     expect(names).toContain('class UploadBridge');
+    // The whole file, so a member cannot go missing or double without a failure:
+    // two classes, one interface, six methods and five class properties.
+    expect(result.declarations).toHaveLength(14);
   });
 
   it('keeps the imports the dependency graph is built on, including the native binding', async () => {
@@ -76,14 +84,57 @@ describe('ArkTS fixture through the real indexer', () => {
     expect(targets).toContain('@kit.BasicServicesKit');
   });
 
+  it('extracts the page state the ArkUI decorators declare, in original coordinates', async () => {
+    const result = await index();
+    const content = await readFile(fixture, 'utf8');
+    const lines = content.split('\n');
+    const page = result.declarations.find((declaration) => declaration.name === 'UploadPage')!;
+    // The decorator is blanked to spaces rather than deleted, so the node starts
+    // where the property starts; slicing the *original* line by the reported
+    // columns must still yield exactly the property.
+    for (const [name, decorator, line] of [
+      ['progress', '@State', 21],
+      ['fileName', '@Prop', 22],
+      ['session', '@Link', 23],
+    ] as const) {
+      const declaration = result.declarations.find((entry) => entry.name === name)!;
+      expect(declaration.kind).toBe('field');
+      expect(declaration.declarationNodeType).toBe('public_field_definition');
+      expect(declaration.qualifiedName).toBe(`UploadPage.${name}`);
+      expect(declaration.containerSymbolKey).toBe(page.symbolKey);
+      const original = lines[line - 1]!;
+      expect(original.startsWith(`  ${decorator} ${name}`)).toBe(true);
+      expect(declaration.sourceRange.startLine).toBe(line);
+      expect(declaration.sourceRange.endLine).toBe(line);
+      expect(original.slice(
+        declaration.sourceRange.startColumn - 1,
+        declaration.sourceRange.endColumn - 1,
+      )).toBe(declaration.signature);
+    }
+    expect(result.declarations.find((entry) => entry.name === 'progress')?.signature)
+      .toBe('progress: number = 0');
+  });
+
   it('does not index a binding local to a method as a field', async () => {
     const result = await index();
     const names = result.declarations.map((declaration) => `${declaration.kind} ${declaration.name}`);
-    // `handle` in `transfer` and `failure` in `abort` are the only two `field`
-    // declarations this file used to produce, and both are locals.
+    // `handle` in `transfer` and `failure` in `abort` are the only two bindings
+    // this file declares inside a callable body, and both are locals.
     expect(names).not.toContain('field handle');
     expect(names).not.toContain('field failure');
-    expect(result.declarations.filter((declaration) => declaration.kind === 'field')).toEqual([]);
+    // The arrow-function parameters `sent`/`total` are not declarations either.
+    expect(names).not.toContain('field sent');
+    expect(names).not.toContain('field total');
+    // Every `field` the file reports is a class property, and they are exactly
+    // the five the source declares.
+    expect(result.declarations.filter((declaration) => declaration.kind === 'field')
+      .map((declaration) => declaration.qualifiedName).sort()).toEqual([
+      'UploadBridge.native',
+      'UploadPage.bridge',
+      'UploadPage.fileName',
+      'UploadPage.progress',
+      'UploadPage.session',
+    ]);
     // The enclosing methods are still indexed, under their class.
     const transfer = result.declarations.find((declaration) => declaration.name === 'transfer')!;
     expect(transfer.kind).toBe('method');

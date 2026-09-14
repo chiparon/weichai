@@ -10,6 +10,15 @@ export interface ProjectExplorerBuildResult extends ModuleExplorerBuildResult {
 }
 const childrenPageSize = 80;
 
+/**
+ * The target id of one module.  It is a `module://` URI rather than a plain
+ * identifier, so every boundary that carries it back to the Webview must accept
+ * a URI shape (`isHostToWebviewMessage`).
+ */
+export function moduleTargetId(parts: readonly string[]): string {
+  return `module://${encodeURIComponent(JSON.stringify(parts))}`;
+}
+
 /** The live product tree consumes only the registered index and durable module artifacts. */
 export async function buildProjectExplorer(host: Pick<CodeIntelligenceHost, 'explorerData'>, currentTarget?: ModuleTarget): Promise<ProjectExplorerBuildResult> {
   const data = await host.explorerData();
@@ -70,7 +79,7 @@ export async function buildProjectExplorer(host: Pick<CodeIntelligenceHost, 'exp
         const representativePath = sourceFiles.find((file) => targetByPath.has(file));
         const representative = representativePath ? targetByPath.get(representativePath) : undefined;
         const targetId = mode === 'target' && !historical && analysis.state === 'ready' && representative
-          ? `module://${encodeURIComponent(JSON.stringify([repository.repositoryId, index.analysisRevision, projectId, module.id]))}` : undefined;
+          ? moduleTargetId([repository.repositoryId, index.analysisRevision, projectId, module.id]) : undefined;
         if (targetId && representative) result.targets.set(targetId, {
           id: targetId, name: module.name, kind: 'module', path: representative.path, language: representative.language,
           signature: (module.coreApis ?? []).join('\n'), documentation: module.purpose ?? module.description,

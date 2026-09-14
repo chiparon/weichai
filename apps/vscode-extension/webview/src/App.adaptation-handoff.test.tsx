@@ -13,7 +13,13 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-const target: ModuleTarget = { id: 'target-module', name: 'Limit module', kind: 'module', language: 'TypeScript',
+// A real module target id is a module:// URI rather than a plain identifier
+// (project-explorer.ts), and the handoff has to survive the Webview boundary
+// with exactly that shape: the explorer produces it, the Webview echoes it back,
+// the host returns it.
+const moduleTarget = 'module://' + encodeURIComponent(JSON.stringify(
+  ['repo-1', 'analysis-1', 'project-1', 'module-container-integration']));
+const target: ModuleTarget = { id: moduleTarget, name: 'Limit module', kind: 'module', language: 'TypeScript',
   path: 'target.ts', signature: '', module: { sourceFiles: ['target.ts'], coreApis: ['limit'], dependsOn: [] } };
 const candidate: SearchCandidate = { id: 'history-module', title: 'Java limit module', kind: 'module', language: 'Java',
   repository: 'History', path: 'Limit.java', signature: 'limit(int)', summary: 'Boundary policy', preview: 'class Limit {}',

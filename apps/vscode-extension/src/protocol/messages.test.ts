@@ -1,6 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { isHostToWebviewMessage, isWebviewToHostMessage, webviewMessageRejectionReason } from './messages';
 
+describe('Module translation handoff boundary', () => {
+  it('accepts the module target id the explorer actually produces', () => {
+    // A module target id is a module:// URI (project-explorer.ts). Validating it
+    // as an opaque id made the Webview drop every handoff, so the panel waited
+    // with nothing running; this id is copied from a real host log line.
+    const targetId = 'module://%5B%22repo-48af198d-3145-4df1-8c95-4ecf8a3da11b%22%2C%22analysis-32790094-a671-4360-9c11-2b1079534f77%22%2C%22project-a61821301eaff059b0967198%22%2C%22module-container-integration%22%5D';
+    expect(isHostToWebviewMessage({ type: 'MODULE_TRANSLATION_READY', targetId,
+      candidateId: 'module-b3f8374b0328a1c93bf058bc6dc27dedfb722e151820c69cb044d1523952dfa4',
+      moduleScopeId: '591bc8318d7d6def2478fc7cd041c24ae81ad4ec8138880aa45bd236aaaa414d' })).toBe(true);
+    // The same selection must stay acceptable in the other direction.
+    expect(isWebviewToHostMessage({ type: 'SELECT_WORKSPACE_TARGET', targetId })).toBe(true);
+  });
+
+  it('still refuses an unusable correlation id or scope', () => {
+    const base = { type: 'MODULE_TRANSLATION_READY', targetId: 'module://x', candidateId: 'c',
+      moduleScopeId: 'a'.repeat(64) };
+    expect(isHostToWebviewMessage(base)).toBe(true);
+    expect(isHostToWebviewMessage({ ...base, targetId: '' })).toBe(false);
+    expect(isHostToWebviewMessage({ ...base, targetId: 'module://x\u0000' })).toBe(false);
+    expect(isHostToWebviewMessage({ ...base, candidateId: 'x'.repeat(513) })).toBe(false);
+    expect(isHostToWebviewMessage({ ...base, moduleScopeId: 'not-a-scope' })).toBe(false);
+  });
+});
+
 describe('Webview refusal reasons', () => {
   it('names the field that stopped a translation request instead of dropping it', () => {
     // A silent refusal left the workbench waiting for a reply nobody owed it.

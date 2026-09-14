@@ -323,6 +323,18 @@ function isOpaqueIdentifier(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 512 && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
+/**
+ * Correlation ids the host echoes back to the Webview.  A target module id is a
+ * `module://` URI (`project-explorer.ts`), so the opaque-id charset cannot apply
+ * here: requiring it made the Webview drop every module translation handoff,
+ * which looked exactly like a service that never started.  Control characters
+ * are still refused.
+ */
+function isCorrelationIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
   if (typeof value !== 'object' || value === null) return false;
   const settings = value as Record<string, unknown>;
@@ -356,7 +368,7 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   if (typeof message.type !== 'string' || !hostMessageTypes.has(message.type)) return false;
   if (message.type === 'MODULE_TRANSLATION_READY') {
     const ready = value as Record<string, unknown>;
-    return isOpaqueIdentifier(ready.targetId) && isOpaqueIdentifier(ready.candidateId) &&
+    return isCorrelationIdentifier(ready.targetId) && isCorrelationIdentifier(ready.candidateId) &&
       typeof ready.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(ready.moduleScopeId);
   }
   // The phase and outcome literals select the progress UI, so they are

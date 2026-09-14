@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev:extension",
     "dev:code-workbench": "tsx scripts/serve-code-workbench.mts",
+    "services:up": "node scripts/start-recast-services.mjs",
     "dev:retrieval": "npm run dev --workspace @forexplore/retrieval-service",
     "dev:adaptation": "npm run dev --workspace @forexplore/adaptation-service",
     "dev:mcp": "npm run dev --workspace @forexplore/adaptation-mcp-server",

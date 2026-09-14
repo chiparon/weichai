@@ -26,19 +26,17 @@
 // Run (needs @huggingface/transformers resolvable, see FOREXPLORE_EMBEDDING_TOOLS):
 //   node scripts/benchmark-rerank-devices.mjs Xenova/bge-reranker-base dml
 
-import { env } from 'node:process';
-
 const modelId = process.argv[2] ?? 'Xenova/bge-reranker-base';
 const device = process.argv[3] ?? 'cpu';
 const moduleDir = process.env.FOREXPLORE_EMBEDDING_TOOLS;
 if (!moduleDir) throw new Error('Set FOREXPLORE_EMBEDDING_TOOLS to the directory holding @huggingface/transformers.');
-const { AutoTokenizer, AutoModelForSequenceClassification } = await import(`file://${moduleDir.replaceAll('\\', '/')}/node_modules/@huggingface/transformers/dist/transformers.node.mjs`);
-const { cacheDir } = env;
-const cache = env.FOREXPLORE_MODEL_CACHE ?? cacheDir;
+const transformersPath = `${moduleDir.replaceAll('\\', '/')}/node_modules/@huggingface/transformers`;
+const { AutoTokenizer, AutoModelForSequenceClassification, env } = await import(`file://${transformersPath}/dist/transformers.node.mjs`);
+env.cacheDir = process.env.FOREXPLORE_MODEL_CACHE ?? env.cacheDir;
 
 const started = Date.now();
-const tokenizer = await AutoTokenizer.from_pretrained(modelId, { cache_dir: cache });
-const model = await AutoModelForSequenceClassification.from_pretrained(modelId, { device, cache_dir: cache });
+const tokenizer = await AutoTokenizer.from_pretrained(modelId);
+const model = await AutoModelForSequenceClassification.from_pretrained(modelId, { device });
 const loadMs = Date.now() - started;
 
 // One requirement and one candidate shape, repeated: this measures provider

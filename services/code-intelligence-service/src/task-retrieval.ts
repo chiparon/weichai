@@ -10,6 +10,7 @@ import type { IndexStore } from './index-store.js';
 import { compileTaskContext, sourceContentHash } from './context-compiler.js';
 import { projectAnalysisProfile, projectPlanHash } from './project-analysis.js';
 import { queryExpansionFromEnvironment, type QueryExpansionPort, type QueryExpansionResult } from './query-expansion.js';
+import { RERANK_CANDIDATE_LIMIT, RERANK_PREVIEW_CHARS, rerankCandidateId, rerankTaskCandidates, taskRerankConfigFromEnvironment, type TaskRerankCandidate, type TaskRerankConfig } from './task-reranker.js';
 
 const functionKinds = ['function', 'method', 'constructor'];
 const classKinds = ['class', 'interface', 'struct', 'record', 'trait', 'enum'];
@@ -101,10 +102,12 @@ export function validateTaskRetrievalRequest(value: unknown): asserts value is T
 export class TaskRetrievalService implements TaskRetrievalPort {
   readonly #expansion: QueryExpansionPort | null;
   readonly #baselineRecallWeight: number;
+  readonly #rerank: TaskRerankConfig | null;
   /** `expansion: undefined` follows RECAST_QUERY_EXPANSION; `null` disables it explicitly. */
-  constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number } = {}) {
+  constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number; rerank?: TaskRerankConfig | null } = {}) {
     this.#expansion = options.expansion === undefined ? queryExpansionFromEnvironment() : options.expansion;
     this.#baselineRecallWeight = options.baselineRecallWeight ?? baselineRecallWeightFromEnvironment();
+    this.#rerank = options.rerank === undefined ? taskRerankConfigFromEnvironment() : options.rerank;
   }
 
   async search(request: TaskRetrievalRequest, parentSignal?: AbortSignal): Promise<ContextPacket> {
@@ -292,7 +295,41 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       }
     }
     hits.sort((a, b) => b.result.score - a.result.score || a.result.id.localeCompare(b.result.id));
-    const unique = [...new Map(hits.map((hit) => [hit.result.id, hit])).values()];
+    let unique = [...new Map(hits.map((hit) => [hit.result.id, hit])).values()];
+    // Behavioural rerank over the head of the candidate list; see task-reranker.ts.
+    // A null result leaves the fused order untouched: reranking must never fail a request.
+    if (this.#rerank && unique.length > 1) {
+      try {
+        const head = unique.slice(0, RERANK_CANDIDATE_LIMIT);
+        const candidates: TaskRerankCandidate[] = [];
+        const byId = new Map<string, (typeof head)[number]>();
+        for (const [index, hit] of head.entries()) {
+          const id = rerankCandidateId(index);
+          byId.set(id, hit);
+          const slice = hit.symbol ? await this.store.getSourceSlice!(hit.scope, hit.symbol.relativePath, hit.symbol.sourceRange, RERANK_PREVIEW_CHARS) : undefined;
+          candidates.push({ id, name: hit.result.name, granularity: hit.result.granularity,
+            relativePath: hit.result.relativePath ?? '', signature: hit.symbol?.signature, preview: slice?.text });
+        }
+        const reranked = await rerankTaskCandidates(this.#rerank, request.requirement, candidates, signal);
+        if (reranked) {
+          const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(RERANK_CANDIDATE_LIMIT)];
+          // The delivery is sorted by `score` downstream, so the model's order has to
+          // be carried by the score itself; reordering the array alone is discarded.
+          // The reranked head keeps a strictly decreasing score above every other
+          // candidate, which is where the fused ranking already put it.
+          const ceiling = Math.max(...unique.map((hit) => hit.result.score)) * 2;
+          const step = ceiling / (2 * (reranked.length + 1));
+          reranked.forEach((candidate, index) => {
+            const hit = byId.get(candidate.id);
+            if (hit) hit.result.score = ceiling - index * step;
+          });
+          unique = ordered;
+        }
+      } catch (error) {
+        // Reranking is an enhancement: any failure keeps the fused order.
+        if (process.env.RECAST_RETRIEVAL_RERANK_DEBUG === '1') console.error(JSON.stringify({ rerankFailed: error instanceof Error ? error.message : String(error) }));
+      }
+    }
     const reserved = requestedGranularity === 'auto' ? [...unique.filter((hit) => hit.result.granularity === 'function').slice(0, 4),
       ...unique.filter((hit) => hit.result.granularity === 'class').slice(0, 3), ...unique.filter((hit) => hit.result.granularity === 'module').slice(0, 1),
       ...unique.filter((hit) => hit.result.granularity === 'subsystem').slice(0, 1)] : [];

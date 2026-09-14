@@ -13,6 +13,8 @@ export interface PanelHandlers {
    * wait forever for an answer the host never knew it owed.
    */
   onInvalidMessage?(message: unknown, reason: string): void;
+  /** An older workbench panel was closed because replies go to exactly one panel. */
+  onSupersededPanel?(): void;
 }
 
 export const workbenchViewType = 'forexplore.translation';
@@ -92,6 +94,17 @@ export class TranslationPanel {
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'recast-logo.svg');
 
     const instance = new TranslationPanel(panel, context, payload, handlers);
+    // Every reply is delivered to `current`, so a second live panel would wait
+    // forever for answers sent to the other one. VS Code revives every open
+    // workbench tab on reload, so this is reachable without any misuse.
+    const orphaned = TranslationPanel.current && TranslationPanel.current !== instance
+      ? TranslationPanel.current
+      : undefined;
+    if (orphaned) {
+      TranslationPanel.current = undefined;
+      orphaned.panel.dispose();
+      instance.handlers.onSupersededPanel?.();
+    }
     TranslationPanel.current = instance;
     // The Webview is not ready to receive messages until its scripts are
     // loaded, so hold the INIT payload until it announces itself with READY.

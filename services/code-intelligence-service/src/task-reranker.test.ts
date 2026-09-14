@@ -75,9 +75,10 @@ describe('buildTaskRerankPrompt', () => {
 });
 
 describe('taskRerankConfigFromEnvironment', () => {
-  it('is off unless asked for', () => {
-    expect(taskRerankConfigFromEnvironment({})).toBeNull();
+  it('defaults to the local provider and only an explicit opt-out disables it', () => {
+    expect(taskRerankConfigFromEnvironment({})).toMatchObject({ provider: 'local' });
     expect(taskRerankConfigFromEnvironment({ RECAST_RETRIEVAL_RERANK: 'off' })).toBeNull();
+    expect(taskRerankConfigFromEnvironment({ RECAST_RETRIEVAL_RERANK: 'disabled' })).toBeNull();
     expect(taskRerankConfigFromEnvironment({ RECAST_RETRIEVAL_RERANK: 'cascade' })).toBeNull();
   });
 
@@ -102,20 +103,21 @@ describe('rerankTaskCandidates', () => {
     expect(await rerankTaskCandidates(localConfig(), 'q', [candidate('c1')])).toBeNull();
   });
 
-  it('orders by the score vector and leaves the caller untouched on a malformed answer', async () => {
+  it('orders by the score vector, and degrades to null on a malformed one', async () => {
     const candidates = [candidate('c1'), candidate('c2'), candidate('c3')];
     const stub = (body: unknown) => vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })));
     stub({ scores: [0.1, 0.9, 0.5] });
     expect((await rerankTaskCandidates(localConfig(), 'q', candidates))!.map((item) => item.id)).toEqual(['c2', 'c3', 'c1']);
     stub({ scores: [0.1, 0.9] });
-    await expect(rerankTaskCandidates(localConfig(), 'q', candidates)).rejects.toThrow(/unusable score vector/);
+    expect(await rerankTaskCandidates(localConfig(), 'q', candidates)).toBeNull();
     expect(candidates.map((item) => item.id)).toEqual(['c1', 'c2', 'c3']);
   });
 
-  it('keeps the caller order when the local server is unreachable only if the caller opted into the llm provider', async () => {
+  it('degrades to the caller order when the reranker is unreachable, and never fails the request', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('connect ECONNREFUSED'); }));
     const candidates = [candidate('c1'), candidate('c2')];
-    await expect(rerankTaskCandidates(localConfig(), 'q', candidates)).rejects.toThrow(/ECONNREFUSED/);
+    expect(await rerankTaskCandidates(localConfig(), 'q', candidates)).toBeNull();
     expect(await rerankTaskCandidates(localConfig({ provider: 'llm', url: 'http://127.0.0.1:1/x', apiKey: 'k' }), 'q', candidates)).toBeNull();
+    expect(candidates.map((item) => item.id)).toEqual(['c1', 'c2']);
   });
 });

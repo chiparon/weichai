@@ -311,6 +311,8 @@ export class TaskRetrievalService implements TaskRetrievalPort {
             relativePath: hit.result.relativePath ?? '', signature: hit.symbol?.signature, preview: slice?.text });
         }
         const reranked = await rerankTaskCandidates(this.#rerank, request.requirement, candidates, signal);
+        if (!reranked) gaps.push({ code: 'CONTEXT_RERANK_UNAVAILABLE',
+          message: `检索排序未生效（${this.#rerank.provider}），已按融合顺序交付这 ${candidates.length} 条候选。` });
         if (reranked) {
           const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(this.#rerank.candidateLimit)];
           // The delivery is sorted by `score` downstream, so the model's order has to

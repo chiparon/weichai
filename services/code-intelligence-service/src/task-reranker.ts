@@ -66,8 +66,12 @@ export const RERANK_PREVIEW_CHARS = 240;
  */
 export const RERANK_CANDIDATE_LIMIT = 12;
 
+/** Reranking defaults to the local provider: full recall at roughly a tenth of a second. */
+export const DEFAULT_RERANK_PROVIDER = 'local';
+
 export function taskRerankConfigFromEnvironment(environment: NodeJS.ProcessEnv = process.env): TaskRerankConfig | null {
-  const raw = environment.RECAST_RETRIEVAL_RERANK?.trim().toLowerCase();
+  const raw = (environment.RECAST_RETRIEVAL_RERANK?.trim().toLowerCase() || DEFAULT_RERANK_PROVIDER);
+  if (raw === 'off' || raw === '0' || raw === 'false' || raw === 'disabled') return null;
   if (raw !== 'on' && raw !== '1' && raw !== 'true' && raw !== 'enabled' && raw !== 'local' && raw !== 'llm') return null;
   const timeout = Number(environment.RECAST_RETRIEVAL_RERANK_TIMEOUT_MS);
   const limit = Number(environment.RECAST_RETRIEVAL_RERANK_LIMIT);
@@ -191,14 +195,25 @@ async function requestLocalScores(config: TaskRerankConfig, requirement: string,
  * Returns the candidates in the reranker's order, or `null` when it could not
  * produce a usable answer. A null result leaves the caller's own order untouched:
  * reranking must never make a request fail.
+ *
+ * That applies to the local provider too, which is the default. A local rerank
+ * server that is down, slow or answering nonsense degrades the delivery to the
+ * fused order rather than failing retrieval; the caller records the degradation as
+ * a gap so it is never silent. Only a cancelled request propagates.
  */
 export async function rerankTaskCandidates(config: TaskRerankConfig, requirement: string,
   candidates: readonly TaskRerankCandidate[], signal?: AbortSignal): Promise<TaskRerankCandidate[] | null> {
   if (candidates.length < 2) return null;
   if (config.provider === 'local') {
-    const scores = await requestLocalScores(config, requirement, candidates, signal);
-    return [...candidates].sort((left, right) =>
-      scores[candidates.indexOf(right)]! - scores[candidates.indexOf(left)]! || left.id.localeCompare(right.id));
+    try {
+      const scores = await requestLocalScores(config, requirement, candidates, signal);
+      const position = new Map(candidates.map((candidate, index) => [candidate.id, index]));
+      return [...candidates].sort((left, right) =>
+        scores[position.get(right.id)!]! - scores[position.get(left.id)!]! || left.id.localeCompare(right.id));
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return null;
+    }
   }
   const ids = new Set(candidates.map((candidate) => candidate.id));
   const prompt = buildTaskRerankPrompt(requirement, candidates);

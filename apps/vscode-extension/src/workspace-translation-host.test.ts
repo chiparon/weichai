@@ -91,7 +91,7 @@ describe('workspace translation host', () => {
     });
     expect(scopeId).toMatch(/^[a-f0-9]{64}$/);
 
-    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-3', action: 'describe' });
+    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-3', action: 'describe', moduleScopeId: scopeId });
     if (described.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
     expect(described.profile).toMatchObject({ moduleScopeId: scopeId, label: '模块 Multipart 流解析', behavioralVerification: true });
     expect(described.profile?.warnings).toHaveLength(1);
@@ -128,7 +128,7 @@ describe('workspace translation host', () => {
       profileId: 'f'.repeat(64), moduleScopeId: 'a'.repeat(64) });
     expect(stale).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR', message: expect.stringContaining('模块翻译范围已变化') });
 
-    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-4', action: 'describe' });
+    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-4', action: 'describe', moduleScopeId: scopeId });
     if (described.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
     const started = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-5', action: 'start',
       profileId: described.profile!.profileId, moduleScopeId: scopeId,

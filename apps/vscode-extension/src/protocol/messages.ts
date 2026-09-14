@@ -71,6 +71,7 @@ export type HostToWebviewMessage =
   | { type: 'TASK_SEARCH_RESULT'; requestId: string; packet: ContextPacket }
   | { type: 'TASK_SEARCH_ERROR'; requestId: string; message: string }
   | { type: 'ADAPT_RESULT'; result: AdaptationResult }
+  | { type: 'MODULE_TRANSLATION_READY'; targetId: string; candidateId: string; moduleScopeId: string }
   | { type: 'APPLY_RESULT'; result: ApplyResult }
   | { type: 'REPOSITORY_STATUS'; statuses: RepositoryStatus[] }
   | { type: 'CODE_INTELLIGENCE_STATUS'; presentation: CodeIntelligencePresentation }
@@ -135,6 +136,7 @@ const hostMessageTypes = new Set<string>([
   'TASK_SEARCH_RESULT',
   'TASK_SEARCH_ERROR',
   'ADAPT_RESULT',
+  'MODULE_TRANSLATION_READY',
   'APPLY_RESULT',
   'REPOSITORY_STATUS',
   'CODE_INTELLIGENCE_STATUS',
@@ -171,7 +173,9 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
       return hasOnlyKeys(message, ['type', 'open']) && typeof message.open === 'boolean';
     case 'WORKSPACE_TRANSLATION': {
       if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId', 'moduleScopeId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
-      if (message.action === 'describe') return hasOnlyKeys(message, ['type', 'requestId', 'action']);
+      if (message.action === 'describe') return message.moduleScopeId === undefined
+        ? hasOnlyKeys(message, ['type', 'requestId', 'action'])
+        : hasOnlyKeys(message, ['type', 'requestId', 'action', 'moduleScopeId']) && typeof message.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(message.moduleScopeId);
       if (message.action === 'start') {
         // Evidence is optional because a host-owned module scope can supply the
         // context; when a packet is given, its selection must stay well formed.
@@ -328,6 +332,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   if (typeof value !== 'object' || value === null) return false;
   const message = value as { type?: unknown; phase?: unknown; outcome?: unknown; mode?: unknown; message?: unknown };
   if (typeof message.type !== 'string' || !hostMessageTypes.has(message.type)) return false;
+  if (message.type === 'MODULE_TRANSLATION_READY') {
+    const ready = value as Record<string, unknown>;
+    return isOpaqueIdentifier(ready.targetId) && isOpaqueIdentifier(ready.candidateId) &&
+      typeof ready.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(ready.moduleScopeId);
+  }
   // The phase and outcome literals select the progress UI, so they are
   // verified instead of being trusted by the message name alone.
   if (message.type === 'TARGET_WORKSPACE_PROGRESS') return isTargetWorkspaceProgress(message);

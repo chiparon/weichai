@@ -71,6 +71,13 @@ const embeddings: EmbeddingProvider = {
 };
 
 describe('SeekDbSearchEngine', () => {
+  it('routes callers away from symbol-only storage for a module request', async () => {
+    const store = fakeStore();
+    await expect(new SeekDbSearchEngine(store, embeddings).search({ ...request, target: { ...request.target, kind: 'module' } }))
+      .rejects.toThrow('code-intelligence-service');
+    expect(store.semanticSearch).not.toHaveBeenCalled();
+    expect(store.textSearch).not.toHaveBeenCalled();
+  });
   it('queries vector and full-text indexes and fuses duplicate candidates', async () => {
     const store = fakeStore();
     const engine = new SeekDbSearchEngine(store, embeddings);

@@ -154,7 +154,7 @@ export function TaskSearch({ project, search, availableGranularities, onMigrate,
           </button>
         </div>
       </footer>
-      {showTranslation && translation && (packet || moduleTarget) ? <WorkspaceTranslation provider={translation}
+      {showTranslation && translation && packet ? <WorkspaceTranslation provider={translation}
         {...(packet ? { packetId: packet.packetId, evidenceIds: selected } : {})} /> : null}
       {packet?.gaps.length ? <details className="context-gaps" open={packet.status === 'unavailable'}>
         <summary>证据缺口与检索诊断 · {packet.gaps.length}</summary>
@@ -162,11 +162,10 @@ export function TaskSearch({ project, search, availableGranularities, onMigrate,
       </details> : null}
     </>}
     {!packet && moduleTarget && translation ? <footer className="context-export">
-      <div><strong>模块级生成与验收</strong> · {moduleTarget.name}（{moduleTarget.files} 个文件）</div>
+      <div><strong>模块翻译与回填</strong> · {moduleTarget.name}（{moduleTarget.files} 个文件）</div>
       <div className="context-export-actions">
-        <button type="button" className="primary-action" onClick={() => setShowTranslation(true)}>生成与验收</button>
+        <button type="button" className="primary-action" onClick={() => onMigrate(requirement)}>选择历史模块候选</button>
       </div>
     </footer> : null}
-    {showTranslation && !packet && moduleTarget && translation ? <WorkspaceTranslation provider={translation} /> : null}
   </section>;
 }

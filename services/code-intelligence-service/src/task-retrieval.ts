@@ -300,7 +300,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     // A null result leaves the fused order untouched: reranking must never fail a request.
     if (this.#rerank && unique.length > 1) {
       try {
-        const head = unique.slice(0, RERANK_CANDIDATE_LIMIT);
+        const head = unique.slice(0, this.#rerank.candidateLimit);
         const candidates: TaskRerankCandidate[] = [];
         const byId = new Map<string, (typeof head)[number]>();
         for (const [index, hit] of head.entries()) {
@@ -312,7 +312,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
         }
         const reranked = await rerankTaskCandidates(this.#rerank, request.requirement, candidates, signal);
         if (reranked) {
-          const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(RERANK_CANDIDATE_LIMIT)];
+          const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(this.#rerank.candidateLimit)];
           // The delivery is sorted by `score` downstream, so the model's order has to
           // be carried by the score itself; reordering the array alone is discarded.
           // The reranked head keeps a strictly decreasing score above every other

@@ -21,11 +21,22 @@ export interface TaskRerankConfig {
   readonly apiKey: string;
   readonly model: string;
   readonly timeoutMs: number;
+  /** How many fused candidates are shown to the model. Bounded by prompt size and latency. */
+  readonly candidateLimit: number;
 }
 
 /** Bounded so one large declaration cannot crowd the batch out of the prompt. */
 export const RERANK_PREVIEW_CHARS = 240;
-export const RERANK_CANDIDATE_LIMIT = 8;
+/**
+ * Measured over dev(12) + frozen holdout(6) + the new set(16), zero budget:
+ * 8  -> 32/34 hit, MRR 0.93/0.68/0.94
+ * 12 -> 34/34 hit, MRR 1.00/0.92/1.00
+ * 16 -> 34/34 hit, MRR 1.00/0.92/0.97
+ * 12 dominates: every annotated target is delivered and the new set's ranking is
+ * best there. The limit is what lets the model recover targets the fused ranking
+ * had placed past eighth (the main remaining failure before this sweep).
+ */
+export const RERANK_CANDIDATE_LIMIT = 12;
 
 export function taskRerankConfigFromEnvironment(environment: NodeJS.ProcessEnv = process.env): TaskRerankConfig | null {
   const raw = environment.RECAST_RETRIEVAL_RERANK?.trim().toLowerCase();
@@ -34,8 +45,10 @@ export function taskRerankConfigFromEnvironment(environment: NodeJS.ProcessEnv =
   if (!apiKey) throw new Error('RECAST_RETRIEVAL_RERANK requires DEEPSEEK_API_KEY.');
   const base = (environment.DEEPSEEK_API_BASE?.trim() || 'https://api.deepseek.com/v1').replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
   const timeout = Number(environment.RECAST_RETRIEVAL_RERANK_TIMEOUT_MS);
+  const limit = Number(environment.RECAST_RETRIEVAL_RERANK_LIMIT);
   return { url: `${base}/chat/completions`, apiKey, model: environment.RECAST_RETRIEVAL_RERANK_MODEL?.trim() || 'deepseek-v4-flash',
-    timeoutMs: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 120000 ? timeout : 8000 };
+    timeoutMs: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 120000 ? timeout : 8000,
+    candidateLimit: Number.isInteger(limit) && limit >= 2 && limit <= 40 ? limit : RERANK_CANDIDATE_LIMIT };
 }
 
 const SYSTEM_PROMPT = [

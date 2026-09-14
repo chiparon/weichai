@@ -1,6 +1,12 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-  [switch]$SkipSeekDb
+  [switch]$SkipSeekDb,
+  # Folder to open in the development window. Without it VS Code opens an empty
+  # window: no workspace folder means no target project and no folder-scoped
+  # settings, so the panel would show neither.
+  [string]$Folder,
+  # The operator already started the retrieval and adaptation services.
+  [switch]$SkipServices
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,12 +67,33 @@ function Start-DevWindow {
   ) | Out-Null
 }
 
-Start-DevWindow -Command 'npm run dev:retrieval'
+# One configuration point for the whole dev environment: database, embeddings,
+# translation token and the host-side fallback profile. Edit scripts/dev-env.ps1
+# instead of passing these around.
+. (Join-Path $PSScriptRoot 'dev-env.ps1')
+
 # The adaptation planner is revision-scoped in the rebuilt flow. It receives
 # only this loopback SemanticQueryPort and never gets repository paths.
 $env:ADAPTATION_SEMANTIC_INDEX_ENABLED = 'true'
 $env:SEMANTIC_QUERY_PORT_URL = 'http://127.0.0.1:8790'
-if (-not $env:CODE_INTELLIGENCE_SEEKDB_DATABASE) { $env:CODE_INTELLIGENCE_SEEKDB_DATABASE = 'forexplore_code_intelligence' }
-Start-DevWindow -Command 'npm run dev:adaptation'
 
-& code ('--extensionDevelopmentPath={0}' -f $extensionRoot)
+if (-not $SkipServices) {
+  Start-DevWindow -Command 'npm run dev:retrieval'
+  # `npm run dev:adaptation` alone registers no translation endpoint, so the
+  # panel's translation always failed. Start the service through the one script
+  # that owns the complete environment instead.
+  $adaptationScript = Join-Path $PSScriptRoot 'run-adaptation-full.ps1'
+  Start-DevWindow -Command ("powershell -ExecutionPolicy Bypass -File '{0}' -Port 8788 -SemanticQueryUrl 'http://127.0.0.1:8790'" -f $adaptationScript)
+}
+
+# The extension host reads the token and the fallback profile from its own
+# process environment, never from VS Code settings: without both it refuses
+# every translation before the service sees a request.
+if ($Folder) {
+  $folderRoot = (Resolve-Path -LiteralPath $Folder).Path
+  if ($folderRoot -ne (Resolve-Path -LiteralPath $env:ADAPTATION_PROJECT_ROOT).Path) {
+    Write-Warning "打开的文件夹 ($folderRoot) 不等于适配服务的目标工程 ($env:ADAPTATION_PROJECT_ROOT)：翻译会因工作区不一致被拒绝。"
+  }
+}
+
+& code (@('--extensionDevelopmentPath={0}' -f $extensionRoot) + $(if ($Folder) { @((Resolve-Path -LiteralPath $Folder).Path) } else { @() }))

@@ -92,6 +92,14 @@ const declarationKinds: Readonly<Record<string, StructuralSymbolKind>> = {
   class_declaration: 'class',
   class_definition: 'class',
   constructor_declaration: 'constructor',
+  // C and C++ declare through `declaration` whether or not a body follows, and a
+  // header is made of little else. Measured on
+  // fixtures/code-corpus/harmony-upload-native/app/src/main/cpp/upload_bridge.h:
+  // both namespace-scope functions and all three `extern "C"` JNI exports were
+  // invisible because this node type was absent, while the matching .cpp
+  // definitions were extracted. The node type cannot say whether it declares a
+  // function or data, so the declarator decides (see classifyDeclaration).
+  declaration: 'field',
   delegate_declaration: 'type',
   enum_declaration: 'enum',
   enum_item: 'enum',
@@ -219,6 +227,183 @@ function declarationKind(node: Parser.SyntaxNode): StructuralSymbolKind | undefi
   return declarationKinds[node.type];
 }
 
+/**
+ * Declarators that stand between a `function_declarator` and the name it
+ * declares. `int (*cb)(int);` declares a function *pointer* — a data member —
+ * even though it contains a function declarator. `int *lookup(int)` is the
+ * other way round: the pointer sits above the function declarator and the
+ * function is still a function.
+ */
+const indirectDeclaratorTypes = new Set([
+  'abstract_pointer_declarator',
+  'array_declarator',
+  'parenthesized_declarator',
+  'pointer_declarator',
+  'reference_declarator',
+]);
+
+/** The `function_declarator` of a node that declares a function. */
+function functionDeclarator(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  for (let current = node.childForFieldName('declarator'); current;) {
+    if (current.type === 'function_declarator') {
+      const name = current.childForFieldName('declarator');
+      return name && !indirectDeclaratorTypes.has(name.type) ? current : undefined;
+    }
+    current = current.childForFieldName('declarator');
+  }
+  return undefined;
+}
+
+/** Where a declaration sits, which the node type alone cannot express. */
+type DeclarationScope = 'callable' | 'type';
+
+/**
+ * Node types whose body holds the members of the declaration that owns it.
+ * They are only meaningful together with that owner: `declaration_list` also
+ * wraps a C++ namespace and a C# namespace, whose contents are not members.
+ */
+const typeBodyNodeTypes = new Set([
+  'class_body',
+  'class_interface',
+  'declaration_list',
+  'enum_body',
+  'enum_class_body',
+  'field_declaration_list',
+  'interface_body',
+  'object_body',
+]);
+
+/** Declarations that own a type body, so a function inside it is a method. */
+const typeDeclarationNodeTypes = new Set([
+  'annotation_type_declaration',
+  'class_declaration',
+  'class_definition',
+  'class_specifier',
+  'companion_object',
+  'enum_declaration',
+  'enum_specifier',
+  'impl_item',
+  'interface_declaration',
+  'object_declaration',
+  'record_declaration',
+  'struct_declaration',
+  'struct_item',
+  'struct_specifier',
+  'trait_item',
+  'union_specifier',
+]);
+
+/**
+ * Ancestors that make everything below them local to a callable body. The
+ * statement blocks in between (`block`, `statement_block`,
+ * `compound_statement`) are deliberately absent: they are only local because
+ * of the callable that owns them, and walking on finds it.
+ */
+const callableAncestorNodeTypes = new Set([
+  'annotated_lambda',
+  'anonymous_function',
+  'arrow_function',
+  'closure_expression',
+  'constructor_declaration',
+  'function_body',
+  'function_declaration',
+  'function_definition',
+  'function_expression',
+  'function_item',
+  'generator_function',
+  'lambda_expression',
+  'lambda_literal',
+  'local_function_statement',
+  'method_declaration',
+  'method_definition',
+]);
+
+/**
+ * Node types that always declare a callable, so only their position decides
+ * whether they are a method. Kotlin spells a member function and a top-level
+ * function `function_declaration` alike.
+ */
+const callableDeclarationNodeTypes = new Set([
+  'function_declaration',
+  'function_item',
+  'method_declaration',
+  'method_definition',
+  'method_signature',
+]);
+
+/**
+ * C/C++ node types whose declarator, not the node type, says whether a
+ * function or data is being declared.
+ */
+const declaratorDecidedNodeTypes = new Set([
+  'declaration',
+  'field_declaration',
+  'function_definition',
+]);
+
+function declarationScope(node: Parser.SyntaxNode): DeclarationScope | undefined {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (typeBodyNodeTypes.has(parent.type) && parent.parent &&
+      typeDeclarationNodeTypes.has(parent.parent.type)) return 'type';
+    if (callableAncestorNodeTypes.has(parent.type)) return 'callable';
+  }
+  return undefined;
+}
+
+/**
+ * Refines the node-type default with the two things only the parent chain and
+ * the declarator can answer:
+ *   - a function declared inside a class body is a method. C++ spells a member
+ *     function prototype `field_declaration` and Kotlin spells a member
+ *     function `function_declaration`, so `ChunkWriter::write`, `flush`,
+ *     `written` and `UploadSession.transfer` were reported as fields or plain
+ *     functions; `field` is not in the retrieval `functionKinds`, so declared
+ *     methods were not retrievable as functions;
+ *   - a binding declared inside a callable body is a local, not a field:
+ *     `const handle = this.native.beginUpload(...)` inside a method and the
+ *     `val bytes`/`val sent` inside a Kotlin lambda are not structure;
+ *   - C++ parses an in-class `std::size_t written_ = 0;` as a body-less
+ *     function definition, and that declares data.
+ */
+function classifyDeclaration(
+  node: Parser.SyntaxNode,
+  base: StructuralSymbolKind,
+  languageId: TreeSitterLanguageId,
+): StructuralSymbolKind | undefined {
+  const scope = declarationScope(node);
+  const declaratorDecided = (languageId === 'c' || languageId === 'cpp') &&
+    declaratorDecidedNodeTypes.has(node.type);
+  const declaresFunction = declaratorDecided
+    ? functionDeclarator(node) !== undefined
+    : callableDeclarationNodeTypes.has(node.type);
+  if (declaresFunction) {
+    if (base === 'field') return scope === 'type' ? 'method' : 'function';
+    return base === 'function' && scope === 'type' ? 'method' : base;
+  }
+  // The declarator settled it: this node declares data.
+  if (declaratorDecided) {
+    if (scope === 'callable') return undefined;
+    return base === 'function' ? 'field' : base;
+  }
+  if (base === 'field' && scope === 'callable') return undefined;
+  return base;
+}
+
+/**
+ * Kotlin spells `interface` and `enum class` with a `class_declaration` node,
+ * so the kind has to come from the node's own keyword: `interface` is an
+ * anonymous child and `enum` is a `class_modifier`. Both were reported as
+ * `class`, which is what `classKinds` routes class-level evidence by.
+ */
+function kotlinClassKind(node: Parser.SyntaxNode): StructuralSymbolKind | undefined {
+  if (node.children.some((child) => !child.isNamed && child.type === 'interface')) return 'interface';
+  const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
+  if (modifiers?.namedChildren.some((child) => child.type === 'class_modifier' && child.text.trim() === 'enum')) {
+    return 'enum';
+  }
+  return undefined;
+}
+
 function nameNodeFor(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
   // Native function names can be nested under pointer/qualified declarators;
   // inspecting the return type first would name `int sum()` as `int`.
@@ -340,7 +525,11 @@ function collectDeclarations(
   const fileScope = fileScopeName(root, request.language.languageId, request.content);
 
   const visit = (node: Parser.SyntaxNode, contexts: readonly ContainerContext[]): void => {
-    const kind = declarationKind(node);
+    const declaredKind = declarationKind(node);
+    let kind = declaredKind ? classifyDeclaration(node, declaredKind, request.language.languageId) : undefined;
+    if (kind && node.type === 'class_declaration' && request.language.languageId === 'kotlin') {
+      kind = kotlinClassKind(node) ?? kind;
+    }
     let nextContexts = contexts;
     if (kind) {
       const nodeNames = declarationNames(node, request.content);

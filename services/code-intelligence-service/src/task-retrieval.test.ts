@@ -231,30 +231,45 @@ export function unrelatedHelper() { return 'UNRELATED_SOURCE'; }
     expect(packet.results.map((item) => item.name)).toEqual(['issueReceipt']);
   });
 
-  it('promotes a recalled local variable to its function and preserves that implementation among class hits', async () => {
+  // The recalled member used to be a function-local `const`, which the declaration walk in
+  // @forexplore/code-indexer no longer turns into a symbol: a binding declared inside a
+  // callable body is a local, so it is index noise that retrieval must not recall. A nested
+  // function is a real declaration inside the same body, and its enclosing declaration is
+  // still the implementation, so the ownership walk stays covered.
+  it('promotes a recalled member declaration to its implementation and preserves that implementation among class hits', async () => {
     const { root, runtime, store, service, request, scope } = await setup();
     await writeFile(path.join(root, 'payment.ts'), `${Array.from({ length: 12 }, (_, i) => `export class Related${i} { value = ${i}; }`).join('\n')}
 export function enforceUploadSize(size: number) {
-  const requestSize = size;
   const sizeMax = 100;
   const fileSizeMax = 50;
-  if (requestSize > sizeMax || requestSize > fileSizeMax) throw new Error('exceeded');
-  return requestSize;
+  function exceedsLimit(requestSize: number) {
+    return requestSize > sizeMax || requestSize > fileSizeMax;
+  }
+  if (exceedsLimit(size)) throw new Error('exceeded');
+  return size;
 }
 `);
     const run = await runtime.coordinator.run({ repositoryId: scope.repositoryId });
     const documents = await store.listSearchDocuments(run.scope);
-    const local = documents.find((item) => item.kind === 'symbol' && item.title.endsWith('requestSize'))!;
-    expect(local).toBeDefined();
+    const member = documents.find((item) => item.kind === 'symbol' && item.title.endsWith('exceedsLimit'))!;
+    expect(member).toBeDefined();
+    // The local binding must not be recallable at all any more.
+    expect(documents.some((item) => item.kind === 'symbol' && item.title.endsWith('fileSizeMax'))).toBe(false);
+    // The promotion below is driven by the recalled member's enclosing declaration, which
+    // the stored symbol carries even though the search projection does not.
+    const stored = await store.querySymbols(run.scope, { relativePaths: ['payment.ts'], limit: 50 });
+    expect(stored.symbols.find((symbol) => symbol.name === 'exceedsLimit')?.containerSymbolKey)
+      .toBe(stored.symbols.find((symbol) => symbol.name === 'enforceUploadSize')?.symbolKey);
     const classes = documents.filter((item) => item.kind === 'symbol' && /^Related\d+$/.test(item.title));
     expect(classes).toHaveLength(12);
     vi.spyOn(store, 'searchSearchDocuments').mockImplementation(async (_scope, _query, _limit, kind) => kind === 'symbol'
-      ? [{ ...local, retrievalScore: { semantic: 0.9, fusion: 1 / 61 } }]
+      ? [{ ...member, retrievalScore: { semantic: 0.9, fusion: 1 / 61 } }]
       : kind === 'source-fragment' ? classes.map((item) => ({ ...item, kind: 'source-fragment' as const, retrievalScore: { lexical: 12, semantic: 0.9, fusion: 2 / 61 } })) : []);
     const packet = await service.search({ ...request, granularity: 'auto', requirement: '检查上传文件大小限制', scopes: [{ ...scope, ...run.scope }] });
-    expect(packet.results.some((item) => item.name === 'enforceUploadSize' && item.granularity === 'function')).toBe(true);
+    expect(packet.results.some((item) => item.name === 'enforceUploadSize.exceedsLimit' && item.granularity === 'function')).toBe(true);
+    expect(packet.declarations?.some((item) => item.name === 'enforceUploadSize')).toBe(true);
     expect(packet.results.some((item) => item.granularity === 'class')).toBe(true);
-    expect(packet.evidence.some((item) => item.name === 'enforceUploadSize' && item.content.includes('requestSize > sizeMax || requestSize > fileSizeMax'))).toBe(true);
+    expect(packet.evidence.some((item) => item.name === 'enforceUploadSize.exceedsLimit' && item.content.includes('requestSize > sizeMax || requestSize > fileSizeMax'))).toBe(true);
     expect(packet.usage.tokens).toBeLessThanOrEqual(request.budget.maxTokens!);
   });
 

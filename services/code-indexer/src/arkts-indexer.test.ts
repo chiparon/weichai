@@ -12,6 +12,18 @@ import { indexTreeSitterFile, normalizeArkTs } from './tree-sitter-indexer.js';
  * builder call `Column(...)` was misread as a method. That is the symbol a HarmonyOS
  * developer names when they ask for a page, so the gap mattered more than its size
  * suggests.
+ *
+ * The declaration walk also turned the method-local bindings into structure:
+ * `const handle = this.native.beginUpload(...)` in `UploadBridge.transfer` and
+ * `const failure = error as BusinessError` in `UploadBridge.abort` were reported as
+ * `field`s, because a TypeScript `const` is a `lexical_declaration` wherever it
+ * sits. Both are gone; the fixture reports 9 declarations instead of 11, and
+ * `methods` and the page component are untouched.
+ *
+ * Remaining gap, deliberately not asserted as correct: a class *property* is not
+ * extracted at all — `private readonly native = nativeBridge` and the
+ * `@State progress` / `@Prop fileName` / `@Link session` members of the page are
+ * `public_field_definition` nodes, which the walk does not map.
  */
 const fixture = new URL('../../../fixtures/code-corpus/harmony-upload-arkts/entry/src/main/ets/pages/UploadPage.ets', import.meta.url);
 
@@ -62,6 +74,20 @@ describe('ArkTS fixture through the real indexer', () => {
     const targets = result.imports.map((item) => item.targetReference);
     expect(targets).toContain('libentry.so');
     expect(targets).toContain('@kit.BasicServicesKit');
+  });
+
+  it('does not index a binding local to a method as a field', async () => {
+    const result = await index();
+    const names = result.declarations.map((declaration) => `${declaration.kind} ${declaration.name}`);
+    // `handle` in `transfer` and `failure` in `abort` are the only two `field`
+    // declarations this file used to produce, and both are locals.
+    expect(names).not.toContain('field handle');
+    expect(names).not.toContain('field failure');
+    expect(result.declarations.filter((declaration) => declaration.kind === 'field')).toEqual([]);
+    // The enclosing methods are still indexed, under their class.
+    const transfer = result.declarations.find((declaration) => declaration.name === 'transfer')!;
+    expect(transfer.kind).toBe('method');
+    expect(transfer.qualifiedName).toBe('UploadBridge.transfer');
   });
 
   it('reports source ranges in original file coordinates', async () => {

@@ -1,71 +1,27 @@
+import { modelSettingsScope, requestModelSettings } from './model-request';
+import { modelCredentialScope, requestModelCredential } from './model-credential';
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from "node:http";
-import { isDeepStrictEqual } from "node:util";
+import { timingSafeEqual } from "node:crypto";
+import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
+import { WorkspaceTranslationError, type WorkspaceTranslationRuntime } from "./workspace-translation-runtime";
+import type { DeepSeekToolCompletion, DeepSeekToolDefinition, DeepSeekToolMessage } from "./deepseek-client";
 import {
   moduleMigrationSchemaVersion,
   type AdaptationRequest,
-  type AdaptationRequestV2,
-  type AdaptationResultV2,
-  type ImplementationCandidateRef,
   type Language,
-  type MaterializedMigrationRouteDescriptor,
-  type MigrationExecutionLineageV2,
-  type MigrationExecutionOverlay,
-  type MigrationRuntimeCapabilitySnapshot,
-  type MigrationTargetRef,
-  type ModuleMappingProposal,
-  type ModuleMappingReview,
-  type ModuleDiscoveryConstraint,
-  type RepositoryModuleCatalogRef,
+  type ModuleHierarchyPlanner,
   type RepositoryArchitectureRequest,
   type RepositoryStaticAnalysis,
-  type SourceImplementationBundleV2,
-  type TargetContextSnapshotV2,
 } from "@forexplore/contracts";
-import { verifyRepositoryStaticAnalysis } from "@forexplore/code-indexer";
 import type {
   CodeAdaptationPort,
   RepositoryArchitecturePort,
 } from "@forexplore/workflow-core";
-import {
-  materializeMigrationRuntimeCapabilitySnapshot,
-  validateAdaptationRequestV2,
-  validateAdaptationResultV2,
-  validateComposedMigrationRouteRef,
-  validateImplementationCandidateRefV2,
-  validateMigrationTargetRefV2,
-  validateMigrationRuntimeCapabilitySnapshot,
-  validateRepositoryModuleWikiProposal,
-  validateSourceImplementationBundleV2,
-  validateTargetContextSnapshotV2,
-  type MigrationExecutionV2ValidationContext,
-} from "@forexplore/workflow-core";
-import {
-  MigrationRouteExecutionError,
-  type CodeAdaptationPortV2,
-} from "./adaptation-adapter-v2";
-import { TargetEngineeringUnsupportedError } from "./context-collector";
-import {
-  adaptationServiceOwnedRouteUnavailability,
-  hostOwnedRouteStages,
-} from "./runtime-capability-snapshot";
-import {
-  repositoryStaticAnalysisToUnifiedIr,
-  validateModuleDiscoveryProposal,
-  validateModuleDiscoveryRequest,
-  type ModuleDiscoveryPort,
-  type RepositoryStaticAnalysisIrBridge,
-} from "./module-discovery-agent";
-import {
-  validateModuleSummaryRequest,
-  type ModuleSummaryPort,
-  type ModuleSummaryRequest,
-} from "./module-summary-agent";
-
 import type {
   RevisionScopedArchitecturePort,
   ToolCallingArchitectRequest,
@@ -76,64 +32,30 @@ export interface StaticAnalysisSnapshotStore {
   getSnapshot(snapshotId: string, signal?: AbortSignal): Promise<RepositoryStaticAnalysis | null>;
 }
 
-/** Hash/ID-only lookup used to resolve server-owned V2 execution artifacts. */
-export interface MigrationExecutionV2ArtifactLookup {
-  requestId: string;
-  requestHash: string;
-  routeId: string;
-  targetId: string;
-  targetHash: string;
-  candidateId: string;
-  candidateHash: string;
-  sourceBundleId: string;
-  sourceBundleHash: string;
-  targetContextId: string;
-  targetContextHash: string;
-  executionLineage: MigrationExecutionLineageV2;
-}
-
-/** Authoritative artifacts are persisted by the trusted host, never uploaded ad hoc. */
-export interface MigrationExecutionV2ServerArtifacts {
-  /** Host-composed snapshot bound by the request route reference. */
-  runtimeCapabilities: MigrationRuntimeCapabilitySnapshot;
-  currentSourceCatalog: RepositoryModuleCatalogRef;
-  currentTargetCatalog: RepositoryModuleCatalogRef;
-  mappingProposal: ModuleMappingProposal;
-  mappingReview: ModuleMappingReview;
-  executionOverlay: MigrationExecutionOverlay;
-  target: MigrationTargetRef;
-  candidate: ImplementationCandidateRef;
-  sourceBundle: SourceImplementationBundleV2;
-  targetContext: TargetContextSnapshotV2;
-}
-
-export interface MigrationExecutionV2ArtifactStore {
-  getArtifacts(
-    lookup: MigrationExecutionV2ArtifactLookup,
-    signal?: AbortSignal,
-  ): Promise<MigrationExecutionV2ServerArtifacts | null>;
-}
-
 export interface HttpServerOptions {
   adapter: CodeAdaptationPort;
-  /** Formal V2 chain. It never delegates to the V1 adapter above. */
-  adapterV2?: CodeAdaptationPortV2;
-  /** Server-owned catalogs, mapping decision, source bundle, and target context. */
-  migrationExecutionV2Artifacts?: MigrationExecutionV2ArtifactStore;
-  /** Server-owned, content-addressed exact-pair route inventory. */
-  runtimeCapabilitySnapshot?: MigrationRuntimeCapabilitySnapshot;
   /** Optional read-only module-planning endpoint. It has no write-back path. */
   architecturePort?: RepositoryArchitecturePort;
   /** Server-owned static-analysis snapshots addressed by their immutable ID. */
   staticAnalysisSnapshots?: StaticAnalysisSnapshotStore;
-  /** Optional read-only module-discovery endpoint. It cannot approve or migrate modules. */
-  moduleDiscoveryPort?: ModuleDiscoveryPort;
-  /** Optional read-only Summary Agent endpoint. It cannot review, publish, or index. */
-  moduleSummaryPort?: ModuleSummaryPort;
-  /** Compatibility bridge from a verified legacy snapshot to adapter-neutral IR. */
-  repositoryIrBridge?: RepositoryStaticAnalysisIrBridge;
   /** Revision-native planning path backed only by SemanticQueryPort tools. */
   semanticArchitecturePort?: RevisionScopedArchitecturePort;
+  /** Optional evidence-only node decisions; the injected planner owns model configuration. */
+  moduleHierarchyPlanner?: ModuleHierarchyPlanner;
+  /** Explicitly configured in-place translation, authenticated separately from read-only routes. */
+  workspaceTranslation?: { runtime: WorkspaceTranslationRuntime; bearerToken: string };
+  /**
+   * Trusted-host model turns for module generation. The VS Code host owns the
+   * repository, the isolated worktrees and the compiler; this route carries no
+   * path, file or command authority, only bounded conversation turns.
+   */
+  moduleGeneration?: {
+    bearerToken: string;
+    complete(
+      turn: { messages: readonly DeepSeekToolMessage[]; tools: readonly DeepSeekToolDefinition[] },
+      signal: AbortSignal,
+    ): Promise<DeepSeekToolCompletion>;
+  };
   /** Browser CORS is opt-in; the VS Code extension host uses local HTTP directly. */
   corsOrigin?: string;
 }
@@ -147,27 +69,7 @@ class HttpError extends Error {
   }
 }
 
-class V2HttpError extends HttpError {
-  constructor(
-    status: number,
-    readonly code: string,
-    message: string,
-    readonly reasonCodes: readonly string[] = [],
-    readonly routeId?: string,
-  ) {
-    super(status, message);
-    this.name = "V2HttpError";
-  }
-}
-
 const maxBodyBytes = 2 * 1024 * 1024;
-// V2 carries the complete reviewed implementation slice and target facts. It
-// remains bounded, but cannot use the preview-sized V1 request limit.
-const maxV2AdaptBodyBytes = 32 * 1024 * 1024;
-// A Summary request carries a content-addressed RepositoryModuleBundle plus
-// one bounded EvidenceBundle. Keep it bounded, but do not apply the much
-// smaller interactive adaptation limit to a repository inventory.
-const maxModuleSummaryBodyBytes = 32 * 1024 * 1024;
 const languages = new Set<Language>([
   "TypeScript",
   "Python",
@@ -184,7 +86,7 @@ function json(
   corsOrigin: string | undefined,
 ): void {
   const headers: Record<string, string> = {
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type, authorization",
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "content-type": "application/json; charset=utf-8",
   };
@@ -193,13 +95,10 @@ function json(
   response.end(status === 204 ? undefined : JSON.stringify(body));
 }
 
-async function readBody(
-  request: IncomingMessage,
-  maximumBytes = maxBodyBytes,
-): Promise<unknown> {
+async function readBody(request: IncomingMessage): Promise<unknown> {
   const declaredLength = Number(request.headers["content-length"]);
-  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-    throw new HttpError(413, `Request body exceeds ${Math.floor(maximumBytes / 1024 / 1024)} MiB.`);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBodyBytes) {
+    throw new HttpError(413, "Request body exceeds 2 MiB.");
   }
 
   const chunks: Buffer[] = [];
@@ -207,8 +106,8 @@ async function readBody(
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > maximumBytes) {
-      throw new HttpError(413, `Request body exceeds ${Math.floor(maximumBytes / 1024 / 1024)} MiB.`);
+    if (size > maxBodyBytes) {
+      throw new HttpError(413, "Request body exceeds 2 MiB.");
     }
     chunks.push(buffer);
   }
@@ -270,20 +169,10 @@ function isAdaptationRequest(value: unknown): value is AdaptationRequest {
   );
 }
 
-interface ModulePlanHttpRequest {
+export interface ModulePlanHttpRequest {
   snapshotId: string;
   objective: string;
   immutableConstraints?: string[];
-}
-
-export type ModuleDiscoveryHttpConstraint = Pick<
-  ModuleDiscoveryConstraint,
-  "id" | "description" | "required"
->;
-
-export interface ModuleDiscoveryHttpRequest {
-  snapshotId: string;
-  constraints?: ModuleDiscoveryHttpConstraint[];
 }
 
 export interface SemanticModulePlanHttpRequest {
@@ -327,77 +216,6 @@ function isModulePlanHttpRequest(value: unknown): value is ModulePlanHttpRequest
   );
 }
 
-/** HTTP cannot upload IR, source, paths, objectives, or evidence references. */
-function isModuleDiscoveryHttpRequest(value: unknown): value is ModuleDiscoveryHttpRequest {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const body = value as Record<string, unknown>;
-  const allowedKeys = new Set(["snapshotId", "constraints"]);
-  if (Object.keys(body).some((key) => !allowedKeys.has(key))) return false;
-  if (
-    typeof body.snapshotId !== "string" ||
-    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(body.snapshotId)
-  ) {
-    return false;
-  }
-  if (body.constraints === undefined) return true;
-  if (!Array.isArray(body.constraints) || body.constraints.length > maxPlanningConstraints) {
-    return false;
-  }
-  const constraintIds = new Set<string>();
-  for (const value of body.constraints) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-    const constraint = value as Record<string, unknown>;
-    const constraintKeys = new Set(["id", "description", "required"]);
-    if (Object.keys(constraint).some((key) => !constraintKeys.has(key))) return false;
-    if (
-      typeof constraint.id !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(constraint.id) ||
-      constraintIds.has(constraint.id) ||
-      typeof constraint.description !== "string" ||
-      !constraint.description.trim() ||
-      constraint.description.length > maxPlanningConstraintChars ||
-      typeof constraint.required !== "boolean"
-    ) {
-      return false;
-    }
-    constraintIds.add(constraint.id);
-  }
-  return true;
-}
-
-function isModuleSummaryHttpRequest(value: unknown): value is ModuleSummaryRequest {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const body = value as Record<string, unknown>;
-  const keys = Object.keys(body);
-  const allowed = new Set([
-    "repositoryModuleBundle",
-    "evidenceBundle",
-    "previousProposal",
-    "reviseReview",
-  ]);
-  const hasPrevious = body.previousProposal !== undefined;
-  const hasReview = body.reviseReview !== undefined;
-  return (
-    (keys.length === 2 || keys.length === 4) &&
-    keys.every((key) => allowed.has(key)) &&
-    hasPrevious === hasReview &&
-    typeof body.repositoryModuleBundle === "object" &&
-    body.repositoryModuleBundle !== null &&
-    !Array.isArray(body.repositoryModuleBundle) &&
-    typeof body.evidenceBundle === "object" &&
-    body.evidenceBundle !== null &&
-    !Array.isArray(body.evidenceBundle) &&
-    (!hasPrevious || (
-      typeof body.previousProposal === "object" &&
-      body.previousProposal !== null &&
-      !Array.isArray(body.previousProposal) &&
-      typeof body.reviseReview === "object" &&
-      body.reviseReview !== null &&
-      !Array.isArray(body.reviseReview)
-    ))
-  );
-}
-
 /**
  * This route deliberately receives only a stable index scope and planning
  * intent.  It cannot upload a legacy snapshot, analysis hash, source text, or
@@ -434,6 +252,82 @@ function isSemanticModulePlanHttpRequest(value: unknown): value is SemanticModul
   );
 }
 
+const maxGenerationMessages = 200;
+const maxGenerationMessageChars = 64_000;
+const maxGenerationContextChars = 512_000;
+const maxGenerationTools = 64;
+const maxGenerationToolCalls = 32;
+
+/**
+ * Bounded conversation turns only: no workspace paths, no files, no commands.
+ * The trusted host owns everything that can change a repository.
+ */
+function parseModuleGenerationTurn(value: unknown): {
+  messages: DeepSeekToolMessage[];
+  tools: DeepSeekToolDefinition[];
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpError(400, "Module generation turn must be a JSON object.");
+  }
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some((key) => !["messages", "tools"].includes(key))) {
+    throw new HttpError(400, "Module generation turn accepts only messages and tools.");
+  }
+  if (!Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > maxGenerationMessages) {
+    throw new HttpError(400, "Module generation turn requires 1..200 messages.");
+  }
+  if (!Array.isArray(body.tools) || body.tools.length > maxGenerationTools) {
+    throw new HttpError(400, "Module generation turn accepts at most 64 tools.");
+  }
+  let characters = 0;
+  const messages = body.messages.map((raw): DeepSeekToolMessage => {
+    if (typeof raw !== "object" || raw === null) throw new HttpError(400, "Invalid module generation message.");
+    const message = raw as Record<string, unknown>;
+    if (Object.keys(message).some((key) => !["role", "content", "toolCalls", "toolCallId"].includes(key))) {
+      throw new HttpError(400, "Invalid module generation message field.");
+    }
+    if (!["system", "user", "assistant", "tool"].includes(String(message.role))) {
+      throw new HttpError(400, "Invalid module generation message role.");
+    }
+    if (typeof message.content !== "string" || message.content.length > maxGenerationMessageChars) {
+      throw new HttpError(400, "Invalid module generation message content.");
+    }
+    characters += message.content.length;
+    if (characters > maxGenerationContextChars) throw new HttpError(413, "Module generation turn exceeds 512000 characters.");
+    const calls = message.toolCalls;
+    if (calls !== undefined) {
+      if (!Array.isArray(calls) || calls.length > maxGenerationToolCalls) {
+        throw new HttpError(400, "Invalid module generation tool calls.");
+      }
+      for (const call of calls) {
+        const entry = call as Record<string, unknown> | null;
+        if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || typeof entry.name !== "string" ||
+          typeof entry.arguments !== "string" || entry.arguments.length > maxGenerationMessageChars) {
+          throw new HttpError(400, "Invalid module generation tool call.");
+        }
+      }
+    }
+    if (message.toolCallId !== undefined && typeof message.toolCallId !== "string") {
+      throw new HttpError(400, "Invalid module generation tool call id.");
+    }
+    return message as unknown as DeepSeekToolMessage;
+  });
+  const tools = body.tools.map((raw): DeepSeekToolDefinition => {
+    if (typeof raw !== "object" || raw === null) throw new HttpError(400, "Invalid module generation tool definition.");
+    const tool = raw as Record<string, unknown>;
+    if (Object.keys(tool).some((key) => !["name", "description", "inputSchema"].includes(key))) {
+      throw new HttpError(400, "Invalid module generation tool field.");
+    }
+    if (typeof tool.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(tool.name) ||
+      typeof tool.description !== "string" || tool.description.length > 4_000 ||
+      typeof tool.inputSchema !== "object" || tool.inputSchema === null || Array.isArray(tool.inputSchema)) {
+      throw new HttpError(400, "Invalid module generation tool definition.");
+    }
+    return tool as unknown as DeepSeekToolDefinition;
+  });
+  return { messages, tools };
+}
+
 function requireJson(request: IncomingMessage): void {
   const contentType = request.headers["content-type"] ?? "";
   if (!contentType.toLowerCase().startsWith("application/json")) {
@@ -447,275 +341,85 @@ function requestSignal(request: IncomingMessage): AbortSignal {
   return controller.signal;
 }
 
-function objectRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function adaptationRequestV2Lookup(value: unknown): MigrationExecutionV2ArtifactLookup | undefined {
-  const request = objectRecord(value);
-  const route = objectRecord(request?.route);
-  const target = objectRecord(request?.target);
-  const candidate = objectRecord(request?.candidate);
-  const sourceBundle = objectRecord(request?.sourceBundle);
-  const targetContext = objectRecord(request?.targetContext);
-  const lineage = objectRecord(request?.executionLineage);
-  const sourceCatalog = objectRecord(lineage?.sourceCatalog);
-  const targetCatalog = objectRecord(lineage?.targetCatalog);
-  const text = (candidateValue: unknown): candidateValue is string =>
-    typeof candidateValue === "string" && Boolean(candidateValue.trim());
-  if (
-    request?.schemaVersion !== "2.0" ||
-    !text(request.id) || !text(request.contentHash) ||
-    !text(route?.routeId) ||
-    !text(target?.id) || !text(target?.contentHash) ||
-    !text(candidate?.id) || !text(candidate?.contentHash) ||
-    !text(sourceBundle?.id) || !text(sourceBundle?.contentHash) ||
-    !text(targetContext?.id) || !text(targetContext?.contentHash) ||
-    !lineage || !sourceCatalog || !targetCatalog ||
-    !text(lineage.mappingProposalId) || !text(lineage.mappingProposalHash) ||
-    !text(lineage.mappingReviewId) || !text(lineage.mappingReviewHash) ||
-    !text(lineage.executionOverlayId) || !text(lineage.executionOverlayHash)
-  ) {
-    return undefined;
-  }
-  return {
-    requestId: request.id,
-    requestHash: request.contentHash,
-    routeId: route.routeId,
-    targetId: target.id,
-    targetHash: target.contentHash,
-    candidateId: candidate.id,
-    candidateHash: candidate.contentHash,
-    sourceBundleId: sourceBundle.id,
-    sourceBundleHash: sourceBundle.contentHash,
-    targetContextId: targetContext.id,
-    targetContextHash: targetContext.contentHash,
-    // SAFETY: This lookup is untrusted routing metadata; validateAdaptationRequestV2
-    // verifies the full lineage against server-owned artifacts before execution.
-    executionLineage: lineage as unknown as MigrationExecutionLineageV2,
-  };
-}
-
-function assertAuthoritativeV2Artifacts(
-  request: AdaptationRequestV2,
-  artifacts: MigrationExecutionV2ServerArtifacts,
-): void {
-  const bindings: Array<[unknown, unknown, string]> = [
-    [request.target, artifacts.target, "target"],
-    [request.candidate, artifacts.candidate, "candidate"],
-    [request.sourceBundle, artifacts.sourceBundle, "source bundle"],
-    [request.targetContext, artifacts.targetContext, "target context"],
-  ];
-  for (const [supplied, authoritative, label] of bindings) {
-    if (!isDeepStrictEqual(supplied, authoritative)) {
-      throw new V2HttpError(
-        422,
-        "ADAPTATION_ARTIFACT_BINDING_MISMATCH",
-        `Adaptation request ${label} does not match the server-owned artifact.`,
-        [`${label.replaceAll(" ", "-")}-mismatch`],
-        request.route.routeId,
-      );
-    }
-  }
-}
-
-function v2ErrorBody(error: V2HttpError): object {
-  return {
-    schemaVersion: "2.0",
-    code: error.code,
-    error: error.message,
-    reasonCodes: [...error.reasonCodes],
-    ...(error.routeId === undefined ? {} : { routeId: error.routeId }),
-  };
-}
-
 export function createHttpServer(options: HttpServerOptions): Server {
-  const runtimeCapabilitySnapshot = validateMigrationRuntimeCapabilitySnapshot(
-    structuredClone(
-      options.runtimeCapabilitySnapshot ?? materializeMigrationRuntimeCapabilitySnapshot({
-        routes: [],
-        createdAt: new Date().toISOString(),
-      }),
-    ),
-  );
-  return createServer(async (request, response) => {
+  if (options.workspaceTranslation && options.workspaceTranslation.bearerToken.trim().length < 32) {
+    throw new Error("Workspace translation requires a bearer token of at least 32 characters.");
+  }
+  const handleRequest = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "OPTIONS") {
       json(response, 204, null, options.corsOrigin);
       return;
     }
 
     try {
+      if (request.url?.startsWith("/v1/workspace-translations")) {
+        const translation = options.workspaceTranslation;
+        if (!translation) throw new HttpError(404, "Workspace translation is not configured.");
+        const supplied = Buffer.from(request.headers.authorization ?? "");
+        const expected = Buffer.from(`Bearer ${translation.bearerToken}`);
+        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+          throw new HttpError(401, "Workspace translation requires a valid bearer token.");
+        }
+        if (request.headers.origin && request.headers.origin !== options.corsOrigin) {
+          throw new HttpError(403, "Browser origin is not configured for workspace translation.");
+        }
+        if (request.method === "GET" && request.url === "/v1/workspace-translations/configuration") {
+          json(response, 200, translation.runtime.configuration(), options.corsOrigin);
+          return;
+        }
+        const route = /^\/v1\/workspace-translations(?:\/([a-f0-9-]{36})(?:\/(cancel|resume|rollback))?)?$/.exec(request.url);
+        if (!route) throw new HttpError(404, "Not found.");
+        const [, id, action] = route;
+        if (request.method === "POST" && !id) {
+          requireJson(request);
+          const run = translation.runtime.start(await readBody(request));
+          json(response, 202, run, options.corsOrigin);
+          return;
+        }
+        if (request.method === "GET" && id && !action) {
+          json(response, 200, translation.runtime.get(id), options.corsOrigin);
+          return;
+        }
+        if (request.method === "POST" && id && action) {
+          const run = action === "cancel" ? await translation.runtime.cancel(id)
+            : action === "resume" ? translation.runtime.resume(id) : translation.runtime.rollback(id);
+          json(response, action === "resume" ? 202 : 200, run, options.corsOrigin);
+          return;
+        }
+        throw new HttpError(405, "Method not allowed.");
+      }
+      if (request.method === "POST" && request.url === "/v1/module-generation/turn") {
+        const generation = options.moduleGeneration;
+        if (!generation) throw new HttpError(404, "Module generation is not configured.");
+        const supplied = Buffer.from(request.headers.authorization ?? "");
+        const expected = Buffer.from(`Bearer ${generation.bearerToken}`);
+        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+          throw new HttpError(401, "Module generation requires a valid bearer token.");
+        }
+        if (request.headers.origin !== undefined) {
+          throw new HttpError(403, "Browser origins cannot request module generation.");
+        }
+        requireJson(request);
+        const turn = parseModuleGenerationTurn(await readBody(request));
+        json(response, 200, await generation.complete(turn, requestSignal(request)), options.corsOrigin);
+        return;
+      }
+
       if (request.method === "GET" && request.url === "/health") {
         json(
           response,
           200,
-          { status: "ok", provider: "deepseek" },
+          { status: "ok", provider: "deepseek", capabilities: {
+            semanticModulePlanning: Boolean(options.semanticArchitecturePort),
+            moduleHierarchyPlanning: Boolean(options.moduleHierarchyPlanner),
+            moduleGeneration: Boolean(options.moduleGeneration),
+          } },
           options.corsOrigin,
         );
-        return;
-      }
-
-      if (request.method === "GET" && request.url === "/v2/runtime-capabilities") {
-        json(
-          response,
-          200,
-          runtimeCapabilitySnapshot,
-          options.corsOrigin,
-        );
-        return;
-      }
-
-      if (request.method === "POST" && request.url === "/v2/adapt") {
-        requireJson(request);
-        const body = await readBody(request, maxV2AdaptBodyBytes);
-        const lookup = adaptationRequestV2Lookup(body);
-        if (!lookup) {
-          throw new V2HttpError(
-            422,
-            "INVALID_ADAPTATION_REQUEST_V2",
-            "AdaptationRequestV2 is missing its immutable artifact references.",
-            ["invalid-v2-request-envelope"],
-          );
-        }
-        const adaptationRequest = body as AdaptationRequestV2;
-        const serviceRoute = runtimeCapabilitySnapshot.routes.find(
-          (candidate) => candidate.id === lookup.routeId,
-        );
-        if (!serviceRoute) {
-          throw new V2HttpError(
-            409,
-            "MIGRATION_ROUTE_NOT_REGISTERED",
-            `Migration route ${lookup.routeId} is not registered by this runtime.`,
-            ["route-not-registered"],
-            lookup.routeId,
-          );
-        }
-        const serviceOwnedBlockers = adaptationServiceOwnedRouteUnavailability(
-          runtimeCapabilitySnapshot,
-          lookup.routeId,
-        );
-        if (serviceOwnedBlockers.length > 0) {
-          throw new V2HttpError(
-            409,
-            "MIGRATION_ROUTE_UNAVAILABLE",
-            `Migration route ${lookup.routeId} has unavailable adaptation-service stages.`,
-            serviceOwnedBlockers,
-            lookup.routeId,
-          );
-        }
-        if (!options.adapterV2 || !options.migrationExecutionV2Artifacts) {
-          throw new V2HttpError(
-            503,
-            "MIGRATION_V2_EXECUTION_NOT_CONFIGURED",
-            "The V2 execution adapter or authoritative artifact store is not configured.",
-            ["server-owned-v2-execution-not-configured"],
-            lookup.routeId,
-          );
-        }
-
-        const signal = requestSignal(request);
-        const artifacts = await options.migrationExecutionV2Artifacts.getArtifacts(lookup, signal);
-        if (!artifacts) {
-          throw new V2HttpError(
-            409,
-            "MIGRATION_EXECUTION_ARTIFACTS_UNAVAILABLE",
-            "The server-owned V2 execution artifacts are missing or stale.",
-            ["server-owned-execution-artifacts-unavailable"],
-            lookup.routeId,
-          );
-        }
-        let combinedRoute: MaterializedMigrationRouteDescriptor;
-        try {
-          combinedRoute = validateComposedMigrationRouteRef(
-            adaptationRequest.route,
-            artifacts.runtimeCapabilities,
-            runtimeCapabilitySnapshot,
-            hostOwnedRouteStages,
-          );
-        } catch (error) {
-          throw new V2HttpError(
-            409,
-            "MIGRATION_RUNTIME_COMPOSITION_REJECTED",
-            error instanceof Error ? error.message : "Host runtime composition is invalid.",
-            ["service-owned-stage-composition-mismatch"],
-            lookup.routeId,
-          );
-        }
-        if (combinedRoute.availability.status === "unavailable") {
-          throw new V2HttpError(
-            409,
-            "MIGRATION_ROUTE_UNAVAILABLE",
-            `Host-composed migration route ${lookup.routeId} is unavailable.`,
-            combinedRoute.availability.reasonCodes,
-            lookup.routeId,
-          );
-        }
-        const validationContext: MigrationExecutionV2ValidationContext = {
-          runtimeCapabilities: artifacts.runtimeCapabilities,
-          currentSourceCatalog: artifacts.currentSourceCatalog,
-          currentTargetCatalog: artifacts.currentTargetCatalog,
-          mappingProposal: artifacts.mappingProposal,
-          mappingReview: artifacts.mappingReview,
-          executionOverlay: artifacts.executionOverlay,
-        };
-        try {
-          validateMigrationTargetRefV2(artifacts.target, artifacts.runtimeCapabilities);
-          validateImplementationCandidateRefV2(artifacts.candidate);
-          validateSourceImplementationBundleV2(artifacts.sourceBundle);
-          validateTargetContextSnapshotV2(artifacts.targetContext, artifacts.runtimeCapabilities);
-          assertAuthoritativeV2Artifacts(adaptationRequest, artifacts);
-          validateAdaptationRequestV2(adaptationRequest, validationContext);
-        } catch (error) {
-          if (error instanceof V2HttpError) throw error;
-          throw new V2HttpError(
-            422,
-            "INVALID_ADAPTATION_REQUEST_V2",
-            error instanceof Error ? error.message : "AdaptationRequestV2 validation failed.",
-            ["v2-request-validation-failed"],
-            lookup.routeId,
-          );
-        }
-
-        let result: AdaptationResultV2;
-        try {
-          result = await options.adapterV2.adapt(adaptationRequest, validationContext, signal);
-          validateAdaptationResultV2(result, adaptationRequest, validationContext);
-        } catch (error) {
-          if (error instanceof MigrationRouteExecutionError) {
-            throw new V2HttpError(
-              409,
-              error.code,
-              error.message,
-              error.reasonCodes,
-              lookup.routeId,
-            );
-          }
-          if (error instanceof TargetEngineeringUnsupportedError) {
-            throw new V2HttpError(
-              422,
-              error.reason.code,
-              error.reason.detail,
-              [error.reason.code.toLowerCase().replaceAll("_", "-")],
-              lookup.routeId,
-            );
-          }
-          throw new V2HttpError(
-            422,
-            "INVALID_ADAPTATION_RESULT_V2",
-            error instanceof Error ? error.message : "AdaptationResultV2 validation failed.",
-            ["v2-result-validation-failed"],
-            lookup.routeId,
-          );
-        }
-        json(response, 200, result, options.corsOrigin);
         return;
       }
 
       if (request.method === "POST" && request.url === "/v1/adapt") {
-        // Deprecated compatibility boundary. The V2 handler above never calls
-        // this adapter or converts its artifacts to V1 shapes.
         requireJson(request);
         const body = await readBody(request);
         if (!isAdaptationRequest(body)) {
@@ -775,98 +479,28 @@ export function createHttpServer(options: HttpServerOptions): Server {
         return;
       }
 
-      if (request.method === "POST" && request.url === "/v1/module-discovery") {
-        if (!options.moduleDiscoveryPort || !options.staticAnalysisSnapshots) {
-          json(
-            response,
-            404,
-            { error: "Module discovery is not configured." },
-            options.corsOrigin,
-          );
-          return;
-        }
+      if (request.method === 'POST' && request.url === '/module-hierarchy/decision') {
+        if (!options.moduleHierarchyPlanner) throw new HttpError(503, 'Module hierarchy model is not configured.');
         requireJson(request);
-        const body = await readBody(request);
-        if (!isModuleDiscoveryHttpRequest(body)) {
-          json(
-            response,
-            400,
-            { error: "Invalid module discovery payload. Submit only snapshotId and optional constraints." },
-            options.corsOrigin,
-          );
-          return;
-        }
-
-        const signal = requestSignal(request);
-        const stored = await options.staticAnalysisSnapshots.getSnapshot(body.snapshotId, signal);
-        if (!stored) {
-          json(response, 404, { error: "Static analysis snapshot was not found." }, options.corsOrigin);
-          return;
-        }
-        if (stored.snapshotId !== body.snapshotId) {
-          throw new Error("Static analysis snapshot store returned a mismatched snapshot ID.");
-        }
-        const verified = verifyRepositoryStaticAnalysis(stored);
-        const bridge = options.repositoryIrBridge ?? repositoryStaticAnalysisToUnifiedIr;
-        const ir = await bridge(verified, signal);
-        signal.throwIfAborted();
-        if (ir.repositoryContentHash !== verified.contentHash) {
-          throw new Error("Repository IR bridge returned an IR for a different repository snapshot.");
-        }
-        validateModuleDiscoveryRequest({ ir, constraints: body.constraints });
-        const result = await options.moduleDiscoveryPort.discoverModules(
-          { ir, constraints: body.constraints },
-          signal,
-        );
-        validateModuleDiscoveryProposal(result, { ir, constraints: body.constraints });
-        json(response, 200, result, options.corsOrigin);
-        return;
-      }
-
-      if (request.method === "POST" && request.url === "/v1/module-summary") {
-        if (!options.moduleSummaryPort) {
-          json(
-            response,
-            404,
-            { error: "Module summary is not configured." },
-            options.corsOrigin,
-          );
-          return;
-        }
-        requireJson(request);
-        const body = await readBody(request, maxModuleSummaryBodyBytes);
-        if (!isModuleSummaryHttpRequest(body)) {
-          json(
-            response,
-            400,
-            {
-              error: "Invalid module summary payload. Submit repositoryModuleBundle and evidenceBundle, plus the paired previousProposal and reviseReview only for a revision.",
-            },
-            options.corsOrigin,
-          );
-          return;
-        }
+        const raw = await readBody(request);
+        let body;
+        try { body = parseModuleHierarchyDecisionRequest(raw); }
+        catch { throw new HttpError(400, 'Invalid bounded module hierarchy evidence snapshot.'); }
+        const controller = new AbortController();
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once('close', disconnect);
+        const signal = AbortSignal.any([requestSignal(request), controller.signal, AbortSignal.timeout(45_000)]);
         try {
-          validateModuleSummaryRequest(body);
+          const decision = parseModuleHierarchyDecision(await options.moduleHierarchyPlanner.decide(body, signal), body);
+          signal.throwIfAborted();
+          json(response, 200, decision, options.corsOrigin);
         } catch (error) {
-          throw new HttpError(
-            400,
-            error instanceof Error ? error.message : "Invalid module summary evidence.",
-          );
-        }
-        const signal = requestSignal(request);
-        const result = await options.moduleSummaryPort.summarizeModule(body, signal);
-        validateRepositoryModuleWikiProposal(
-          result,
-          body.evidenceBundle,
-          body.previousProposal === undefined
-            ? undefined
-            : {
-                previousProposal: body.previousProposal,
-                reviseReview: body.reviseReview!,
-              },
-        );
-        json(response, 200, result, options.corsOrigin);
+          if (error instanceof ModuleHierarchyDecisionError) {
+            json(response, 502, { code: 'MODULE_DECISION_INVALID', detail: error.detail }, options.corsOrigin);
+            return;
+          }
+          throw new HttpError(signal.aborted ? 504 : 502, signal.aborted ? 'Module hierarchy decision timed out or was cancelled.' : 'Module hierarchy model could not produce a valid decision.');
+        } finally { response.removeListener('close', disconnect); }
         return;
       }
 
@@ -923,16 +557,16 @@ export function createHttpServer(options: HttpServerOptions): Server {
       json(response, 404, { error: "Not found." }, options.corsOrigin);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown adaptation error.";
-      const status = error instanceof HttpError ? error.status : 502;
-      if (!(error instanceof HttpError)) console.error(error);
-      json(
-        response,
-        status,
-        error instanceof V2HttpError ? v2ErrorBody(error) : { error: message },
-        options.corsOrigin,
-      );
+      const status = error instanceof HttpError || error instanceof WorkspaceTranslationError ? error.status : 502;
+      if (!(error instanceof HttpError) && !(error instanceof WorkspaceTranslationError)) console.error(error);
+      json(response, status, { error: message }, options.corsOrigin);
     }
+  };
+  return createServer((request, response) => {
+    let credential: string | undefined;
+    let modelSettings;
+    try { credential = requestModelCredential(request); modelSettings = requestModelSettings(request); }
+    catch { json(response, 403, { error: 'Invalid local IDE credential request.' }, options.corsOrigin); return; }
+    void modelSettingsScope.run(modelSettings, () => modelCredentialScope.run(credential, () => handleRequest(request, response)));
   });
 }
-
-export type { ModulePlanHttpRequest };

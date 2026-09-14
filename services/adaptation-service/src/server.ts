@@ -1,54 +1,94 @@
 import 'dotenv/config';
+import { ModelModuleHierarchyPlanner } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { loadConfig } from './config.js';
+import { completeWithDeepSeek, completeWithDeepSeekTools } from './deepseek-client.js';
+import { deepSeekModelConfig } from './model-config.js';
+import { observeAgentModelCall } from './agent-model-observer.js';
 import { createHttpServer } from './http-server.js';
 import { AdaptationAdapter } from './adaptation-adapter.js';
 import { ArchitectAgent } from './architect-agent.js';
 import { FileStaticAnalysisSnapshotStore } from './analysis-snapshot-store.js';
-import { ModuleDiscoveryAgent } from './module-discovery-agent.js';
-import { ModuleSummaryAgent } from './module-summary-agent.js';
-import { createDefaultTargetEngineeringAdapterRegistry } from './context-collector.js';
-import { createAdaptationV2Runtime } from './adaptation-v2-runtime.js';
 import { HttpSemanticQueryPort } from './http-semantic-query-port.js';
+import { HttpWorkspaceEvidencePort } from './http-workspace-evidence-port.js';
+import { WorkspaceTranslationRuntime } from './workspace-translation-runtime.js';
+import { createWorkspaceTranslationModelClient } from './workspace-translation-agent.js';
 import {
   createDeepSeekToolCallingArchitectClient,
   ToolCallingArchitectRuntime,
 } from './tool-calling-architect-runtime.js';
 
 const config = loadConfig();
-const targetEngineeringRegistry = createDefaultTargetEngineeringAdapterRegistry();
 
 const adapter = new AdaptationAdapter({
-  apiKey: config.apiKey,
+  apiKey: () => config.apiKey,
   skeletonProjectPath: config.skeletonProjectPath,
   projectRoot: config.projectRoot,
-  targetEngineeringRegistry,
 });
 
 let server: ReturnType<typeof createHttpServer> | undefined;
+let workspaceTranslationRuntime: WorkspaceTranslationRuntime | undefined;
 
 async function main(): Promise<void> {
-  const runtime = createAdaptationV2Runtime(config, { targetEngineeringRegistry });
-  const { runtimeCapabilitySnapshot, adapterV2 } = runtime;
+  if (config.workspaceTranslation) {
+    workspaceTranslationRuntime = new WorkspaceTranslationRuntime({
+      workspaceRoot: config.projectRoot,
+      compileCommand: config.workspaceTranslation.compileCommand,
+      verification: config.workspaceTranslation.verification,
+      maxModelTurns: config.workspaceTranslation.maxModelTurns,
+      timeoutMs: config.workspaceTranslation.timeoutMs,
+      // The Analyzer and Translator may query the host's read-only index
+      // themselves; the host still decides which revisions exist and are visible.
+      ...(config.semanticQueryPort ? { evidence: { port: new HttpWorkspaceEvidencePort({
+        endpoint: config.semanticQueryPort.endpoint,
+        ...(config.semanticQueryPort.bearerToken ? { bearerToken: config.semanticQueryPort.bearerToken } : {}),
+      }) } } : {}),
+      client: createWorkspaceTranslationModelClient({ apiKey: () => config.apiKey, temperature: 0 }),
+    });
+  }
   // Legacy /v1/module-plan remains snapshot-compatible. The semantic route is
   // explicitly opt-in and talks only to the VS Code host's read-only HTTP
   // SemanticQueryPort endpoint; this process never creates an index runtime.
+  const semanticModel = createDeepSeekToolCallingArchitectClient({ apiKey: () => config.apiKey, temperature: 0 });
   const semanticArchitecturePort = config.semanticQueryPort
     ? new ToolCallingArchitectRuntime({
       queryPort: new HttpSemanticQueryPort(config.semanticQueryPort),
-      client: createDeepSeekToolCallingArchitectClient({ apiKey: config.apiKey, temperature: 0 }),
+      client: { complete: (messages, tools, signal) => observeAgentModelCall({
+        strategy: 'semantic', model: deepSeekModelConfig.model, inputChars: JSON.stringify({ messages, tools }).length,
+      }, () => semanticModel.complete(messages, tools, signal), (result) => JSON.stringify(result).length, signal) },
     })
     : undefined;
   const httpServer = createHttpServer({
     adapter,
-    adapterV2,
-    runtimeCapabilitySnapshot,
-    architecturePort: new ArchitectAgent({ apiKey: config.apiKey }),
-    moduleDiscoveryPort: new ModuleDiscoveryAgent({ apiKey: config.apiKey }),
-    moduleSummaryPort: new ModuleSummaryAgent({ apiKey: config.apiKey }),
+    moduleHierarchyPlanner: new ModelModuleHierarchyPlanner({
+      timeoutMs: 45_000,
+      maxRepairs: 1,
+      complete: (messages, signal) => observeAgentModelCall({
+        strategy: 'hierarchy', model: deepSeekModelConfig.model, inputChars: JSON.stringify(messages).length,
+      }, () => completeWithDeepSeek(messages, {
+        apiKey: () => config.apiKey, temperature: 0, jsonMode: true,
+      }, signal), (result) => result.length, signal),
+    }),
+    architecturePort: new ArchitectAgent({ apiKey: () => config.apiKey }),
     staticAnalysisSnapshots: new FileStaticAnalysisSnapshotStore({
       analysisRoot: config.analysisRoot,
     }),
     ...(semanticArchitecturePort ? { semanticArchitecturePort } : {}),
+    ...(workspaceTranslationRuntime && config.workspaceTranslation ? {
+      workspaceTranslation: { runtime: workspaceTranslationRuntime, bearerToken: config.workspaceTranslation.bearerToken },
+    } : {}),
+    ...(config.moduleGeneration ? {
+      moduleGeneration: {
+        bearerToken: config.moduleGeneration.bearerToken,
+        // The trusted host owns the repository, the isolated worktrees and the
+        // compiler; this process only performs the credentialed model turn.
+        complete: (turn, signal) => observeAgentModelCall({
+          strategy: 'module-generation', model: deepSeekModelConfig.model,
+          inputChars: JSON.stringify(turn.messages).length + JSON.stringify(turn.tools).length,
+        }, () => completeWithDeepSeekTools(turn.messages, turn.tools, {
+          apiKey: () => config.apiKey, temperature: 0,
+        }, signal), (result) => JSON.stringify(result).length, signal),
+      },
+    } : {}),
     corsOrigin: config.corsOrigin,
   });
   server = httpServer;
@@ -57,9 +97,6 @@ async function main(): Promise<void> {
     console.log(`Adaptation service listening on http://${config.host}:${config.port}`);
     console.log(`Target project: ${config.projectRoot}`);
     console.log(`Static analysis snapshots: ${config.analysisRoot}`);
-    console.log(`Runtime capability snapshot: ${runtimeCapabilitySnapshot.id}`);
-    console.log('Behavior verification: local process on adaptation-service host (not isolated)');
-    console.log(`Verification artifacts: ${config.verificationArtifactRoot}`);
     if (semanticArchitecturePort) {
       console.log('Revision-scoped semantic module planning is enabled.');
     }
@@ -67,6 +104,7 @@ async function main(): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
+  await workspaceTranslationRuntime?.shutdown();
   const activeServer = server;
   if (!activeServer) return;
   await new Promise<void>((resolve, reject) => {

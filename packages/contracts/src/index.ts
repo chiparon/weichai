@@ -1,7 +1,9 @@
 export * from './adaptation';
+export * from './llm-settings';
 export * from './backfill';
 export * from './code-intelligence';
 export * from './project-analysis';
+export * from './module-hierarchy';
 export * from './indexing';
 export * from './language-id';
 export * from './migration-route';
@@ -16,3 +18,5 @@ export * from './repository-ingestion';
 export * from './repository-knowledge';
 export * from './target-workspace';
 export * from './validation';
+export * from './workspace-translation';
+export * from './task-retrieval';

@@ -159,26 +159,24 @@ docker volume inspect retrieval-service_seekdb-data
 Compose 会在卷名前添加项目名。本次实际创建并验证的卷名是
 `retrieval-service_seekdb-data`。
 
-## 8. 配置 ForeXplore 连接 SeekDB
+## 8. 配置连接 SeekDB
 
-SeekDB 容器启动后，还需要配置 retrieval service 和 Web。以下不是 Docker
-命令，但它们是让 ForeXplore 真正使用 SeekDB 的必要步骤。
+SeekDB 容器启动后，还需要配置 retrieval service。以下不是 Docker
+命令，但它们是让服务真正使用 SeekDB 的必要步骤。
 
 创建本地配置文件：
 
 ```bash
 cp services/retrieval-service/.env.example services/retrieval-service/.env
-cp web/.env.example web/.env
 ```
 
-两个文件的职责：
-
-- `services/retrieval-service/.env`：配置 SeekDB 地址、数据库、表、向量维度和
-  embedding provider。
-- `web/.env`：设置 `VITE_RETRIEVAL_API_URL`，让 Web 从 Mock
-  检索切换到真实 retrieval service。
+该文件配置 SeekDB 地址、数据库、表、向量维度和 embedding provider。
 
 `.env` 可能包含数据库密码或 API Key，不应提交到 Git。
+
+> 说明（2026-09-12）：旧的 `web/` 独立原型及其 `VITE_RETRIEVAL_API_URL`
+> 配置已随前端迁移到 VS Code 扩展而删除；当前浏览器入口是
+> `npm run dev:code-workbench`。
 
 ## 9. 初始化检索表和代码索引
 
@@ -226,15 +224,16 @@ curl http://127.0.0.1:8787/health
 
 该响应证明 HTTP service 和 SeekDB 两层连接都正常。
 
-## 11. 启动 Web
+## 11. 启动工作台（原 Web 原型）
+
+旧的独立 Web 原型已于 2026-09-12 删除，前端全部迁移到 VS Code 扩展。浏览器入口改为
+同一个工作台服务：
 
 ```bash
-npm run dev:web
+npm run dev:code-workbench -- --target <目标工程> --reference <参考工程>
 ```
 
-Web 启动时会读取 `web/.env`。当
-`VITE_RETRIEVAL_API_URL=http://127.0.0.1:8787` 存在时，检索端口使用 SeekDB；
-缺少该变量时自动回退到 Mock。成功接入后，界面状态栏会显示 `SeekDB`。
+默认页面端口 4040、查询端口 4041；启动参数决定工程范围，端口占用时自动递增并打印实际地址。
 
 ## 12. 日常启停命令
 
@@ -281,4 +280,4 @@ docker compose -f services/retrieval-service/docker-compose.yml down -v
 5. 使用 `mysqladmin ping` 确认 2881 数据库端口可用。
 
 SeekDB 基础设施已经就绪。后续需要完成 `.env` 配置、schema 初始化、corpus
-索引和 retrieval service 启动，ForeXplore Web 才会从 Mock 切换到真实检索。
+索引和 retrieval service 启动，检索链路才会使用真实数据而非本地回退实现。

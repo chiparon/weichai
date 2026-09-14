@@ -1,7 +1,7 @@
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ProjectPicker, type ProjectPickerProps } from './ProjectPicker';
+import { ProjectPicker, type ProjectPickerProps, type TargetAddUiState } from './ProjectPicker';
 
 let root: Root | undefined;
 afterEach(async () => { if (root) await act(async () => root!.unmount()); document.body.innerHTML = ''; });
@@ -10,17 +10,26 @@ const repository = {
   repositoryId: 'repo-history', displayName: 'account-stream-rs', role: 'history', selectedRevision: 'revision-one',
   projects: [{ projectId: 'cargo-project', displayName: 'Cargo', relativePath: '' }],
 } as ProjectPickerProps['repositories'][number];
+const indexingRepository = {
+  repositoryId: 'repo-target', displayName: 'engine', role: 'target', analysisStatus: 'indexing',
+  selectedRevision: null, projects: [],
+} as unknown as ProjectPickerProps['repositories'][number];
 const workspace = { id: 'repo-history', repositoryId: 'repo-history', projectId: 'cargo-project',
   name: 'account-stream-rs / Cargo', rootLabel: '.',
 } as ProjectPickerProps['workspace'];
 
-async function mount(mode: ProjectPickerProps['mode'] = 'history') {
+async function mount(
+  mode: ProjectPickerProps['mode'] = 'history',
+  options: { targetAdd?: TargetAddUiState; repositories?: ProjectPickerProps['repositories'] } = {},
+) {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const callbacks = { onSelect: vi.fn(), onRefresh: vi.fn(), onAdd: vi.fn(), onOpenSettings: vi.fn() };
+  const repositories = options.repositories ?? [repository];
+  const targetAdd = options.targetAdd;
   function Harness() {
     const [open, setOpen] = useState(false);
-    return <ProjectPicker mode={mode} workspace={workspace} repositories={[repository]} open={open}
-      onOpenChange={setOpen} refreshing={false} {...callbacks} />;
+    return <ProjectPicker mode={mode} workspace={workspace} repositories={repositories} open={open}
+      onOpenChange={setOpen} refreshing={false} targetAdd={targetAdd} {...callbacks} />;
   }
   const container = document.createElement('div'); document.body.append(container);
   root = createRoot(container);
@@ -44,7 +53,7 @@ it('supports keyboard opening, navigation and escape with restored focus', async
   await act(async () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
   expect(document.activeElement?.getAttribute('role')).toBe('menuitemradio');
   await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })));
-  expect(document.activeElement?.textContent).toContain('管理历史仓库');
+  expect(document.activeElement?.textContent).toContain('管理参考工程');
   await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(document.querySelector('[role="menu"]')).toBeNull();
   expect(document.activeElement).toBe(trigger);
@@ -61,4 +70,39 @@ it('keeps target commands in the target menu and dismisses an outside click', as
   await act(async () => trigger.click());
   await act(async () => document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })));
   expect(document.querySelector('[role="menu"]')).toBeNull();
+});
+
+/**
+ * The menu closes before the native dialog opens, so progress must survive on
+ * its own; otherwise a slow selection looks like a button that did nothing.
+ */
+it('shows the pending phase after the menu closed and blocks duplicate requests', async () => {
+  await mount('target', { targetAdd: { status: 'pending', mode: 'browse', phase: 'attaching' } });
+  const status = document.querySelector('.target-add-status');
+  expect(status?.textContent).toContain('正在将目标目录加入工作区');
+  expect(status?.querySelector('.is-spinning')).not.toBeNull();
+
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click());
+  const commands = [...document.querySelectorAll<HTMLButtonElement>('.workspace-picker-commands button')];
+  expect(commands.length).toBe(3);
+  expect(commands.every((command) => command.disabled)).toBe(true);
+});
+
+it('offers a retry that replays the entry point that failed', async () => {
+  const callbacks = await mount('target', { targetAdd: {
+    status: 'failed', mode: 'input', message: '目标目录不存在或不可访问，请检查路径。' } });
+  const retry = document.querySelector<HTMLButtonElement>('.target-add-status button')!;
+  expect(document.querySelector('.target-add-status')?.textContent).toContain('目标目录不存在');
+  await act(async () => retry.click());
+  expect(callbacks.onAdd).toHaveBeenCalledExactlyOnceWith('input');
+});
+
+it('renders a live index state for a target directory that has no projects yet', async () => {
+  await mount('target', { repositories: [indexingRepository] });
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click());
+  const row = [...document.querySelectorAll<HTMLButtonElement>('.workspace-picker-option')]
+    .find((option) => option.textContent?.includes('正在建立索引'))!;
+  expect(row).toBeDefined();
+  expect(row.disabled).toBe(true);
+  expect(row.querySelector('.is-spinning')).not.toBeNull();
 });

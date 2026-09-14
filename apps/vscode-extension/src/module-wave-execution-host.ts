@@ -15,6 +15,8 @@ import {
   recordModulePlanDecision,
 } from '@forexplore/workflow-core';
 import type {
+  ModulePatchPreparer,
+  ModuleWaveAutomatedPreparationRequest,
   ModuleWaveCommitRequest,
   ModuleWaveCommitResult,
   ModuleWavePreparationRequest,
@@ -27,6 +29,8 @@ import type { ModuleWaveValidator } from './module-wave-validation';
 
 export interface ModuleWaveExecutionPort {
   prepare(request: ModuleWavePreparationRequest): Promise<PreparedModuleWave>;
+  /** Generated preparation through the trusted scheduler, one worktree per module. */
+  prepareWithPreparer(request: ModuleWaveAutomatedPreparationRequest): Promise<PreparedModuleWave>;
   commit(request: ModuleWaveCommitRequest): Promise<ModuleWaveCommitResult>;
 }
 
@@ -88,6 +92,70 @@ export async function prepareLocalModuleWave(
     manifest,
     waveId: wave.id,
     preparedModules,
+    validate: (worktreeRoot) => request.validator.validate({
+      worktreeRoot,
+      analysis: request.analysis,
+      plan: request.plan,
+      wave,
+    }),
+    ...(request.now === undefined ? {} : { now: request.now }),
+  });
+  return {
+    prepared,
+    storedPrepared: storedPreparedModuleWave(prepared),
+  };
+}
+
+export interface PrepareGeneratedModuleWaveRequest {
+  repositoryRoot: string;
+  analysis: RepositoryStaticAnalysis;
+  plan: ModuleMigrationPlan;
+  manifest?: MigrationRunManifest;
+  runId?: string;
+  /**
+   * Trusted generator for this wave. It receives a disposable detached
+   * worktree per module and may only return patch evidence; the coordinator
+   * still owns scheduling, joint validation and bundle hashing.
+   */
+  preparer: ModulePatchPreparer;
+  validator: ModuleWaveValidator;
+  coordinator: ModuleWaveExecutionPort;
+  /** Generation stays serial in this version: reduce, never exceed, the plan limit. */
+  maxPreparationParallelism?: number;
+  now?: string;
+}
+
+/**
+ * Prepares the next reviewable wave by generation instead of a locally
+ * imported patch bundle. Preparation never edits the user checkout: the
+ * scheduler materializes one detached worktree per module, the preparer
+ * returns patches, and the coordinator reruns joint validation over the
+ * combined bundle before a human can approve its exact prepared hash.
+ */
+export async function prepareGeneratedModuleWave(
+  request: PrepareGeneratedModuleWaveRequest,
+): Promise<PreparedLocalModuleWave> {
+  assertHostWriteSetOwnership(request.plan, request.analysis);
+  const wave = nextWaveForReadOnlyReview(request.plan);
+  if (!wave) throw new Error('没有依赖已提交且可准备的后续波次。');
+  const manifest = requireRunManifest(
+    request.manifest,
+    request.plan,
+    request.runId ?? defaultRunId(),
+    request.now,
+  );
+  const parallelism = request.maxPreparationParallelism ?? 1;
+  if (!Number.isInteger(parallelism) || parallelism < 1) {
+    throw new Error('模块生成准备并发数必须是正整数；本版本只支持串行生成。');
+  }
+  const prepared = await request.coordinator.prepareWithPreparer({
+    repositoryRoot: request.repositoryRoot,
+    analysis: request.analysis,
+    plan: request.plan,
+    manifest,
+    waveId: wave.id,
+    preparer: request.preparer,
+    maxPreparationParallelism: Math.min(parallelism, wave.maxParallelism),
     validate: (worktreeRoot) => request.validator.validate({
       worktreeRoot,
       analysis: request.analysis,

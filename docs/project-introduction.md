@@ -1,11 +1,10 @@
 # ForeXplore 项目介绍
 
-> 代码仓入库层现已扩展为开放 `LanguageId`、运行时分析适配器、统一 IR、入库时
-> `ModuleDiscoveryAgent` 和 LLMwiki 风格模块知识制品；它与仍按语言对授权的迁移执行层
-> 相互独立。四阶段实现与剩余门禁详见
-> [《语言无关的代码仓入库与模块知识架构》](./architecture/language-neutral-repository-ingestion.md)；
-> 本阶段明确的模块处理范围与下游 Bundle 边界见
-> [《存量代码仓模块划分与知识发布：工程边界》](./architecture/repository-module-processing-boundary.md)。
+> **口径说明（2026-09-12）**：本文是 **ForeXplore 时期的早期介绍**，描述的 GUI 宿主是已删除的
+> `web/` 独立原型。对外材料请以 RECAST 说明书（`docs/guochuang-front-chapters.zh-CN.md` 等三份主稿）
+> 为准。本文保留的原因：它是检索/适配设计原则的取证锚点，仍被
+> [`docs/code-retrieval-long-context-literature-survey.zh-CN.md`](code-retrieval-long-context-literature-survey.zh-CN.md)
+> 按章节引用（§3.2、§3.3–3.4、§4）。文中的 `web` 模块与 `packages/mock-adapters` 已不存在。
 
 ## 1. 项目定位
 
@@ -185,14 +184,17 @@ ForeXplore 支持四种适配策略：
 
 ## 8. 架构边界
 
+> 说明（2026-09-12）：早期独立的 `web` 原型与 `packages/mock-adapters` 已删除，
+> 前端交互现由 VS Code 扩展承载（`apps/vscode-extension`）。
+
 ```text
-web
+apps/vscode-extension
         |
         v
 packages/workflow-core ----> packages/contracts
         ^                            ^
         |                            |
-packages/mock-adapters        production adapters
+ 宿主提供的端口               production adapters
                                      |
               +----------------------+----------------------+
               |                      |                      |
@@ -203,10 +205,9 @@ packages/mock-adapters        production adapters
 
 | 模块 | 职责 |
 | --- | --- |
-| `web` | 模块选择、需求输入、候选对比、补丁审阅等 GUI 交互 |
+| `apps/vscode-extension` | 模块选择、需求输入、候选对比、补丁审阅等 GUI 交互 |
 | `packages/contracts` | 检索、候选、适配、补丁和模块符号的共享类型 |
 | `packages/workflow-core` | 工作流状态、状态转换和能力端口 |
-| `packages/mock-adapters` | 用于演示完整链路的静态数据和 Mock 实现 |
 | `services/code-indexer` | 仓库发现、语言解析、符号和依赖索引 |
 | `services/retrieval-service` | 多路召回、过滤、重排与 Top-K 返回 |
 | `services/adaptation-service` | 翻译、桥接、接口映射、补丁生成和验证 |
@@ -217,23 +218,22 @@ packages/mock-adapters        production adapters
 
 当前仓库已经完成：
 
-- React/Vite 工作流 GUI 和 VS Code Webview，支持目标选择、Top-K 候选、人工明确选择、验证记录和文件 diff。
-- SeekDB 符号级向量/全文混合检索；原 `code_symbols` 投影继续保留。
-- 存量仓 01A 的开放语言分析 registry、统一 IR、Module Discovery、两道人审、模块 Wiki、SQLite publication registry、独立 SeekDB 模块 active head、发布补偿和显式撤销骨架。
-- 目标工作区 01B：复用 01A 分析/模块发现与 Gate 1，生成 module/file/type/callable 五态实现状态目录，并从 reviewed callable 进入既有符号检索/翻译流程。
-- `target → requirement → candidates → adaptation → patch → complete` 状态机以及可替换检索、适配和回填端口。
-- 以 Java → C# 为历史回归基线的真实 `translate` 链路、独立编译和目标 skeleton 集成编译，以及有限次数的编译错误修复；当前施工方向是能力注册驱动的全面多语言迁移。
-- 受保护的本地写回、检查点恢复，以及模块迁移波次的隔离 Git transaction 骨架。
+- React/Vite 工作流 GUI。
+- `class` / `function` 粒度的静态模块树。
+- 目标选择、需求输入、Top-K 候选对比和人工备注交互。
+- 工作流状态机以及检索、适配、回填端口。
+- 翻译、桥接、包装和直接复用策略的数据契约。
+- 接口映射、验证结果和文件 diff 的展示。
+- 从模块选择到 Mock 回填的端到端测试。
 
-当前仍未完整实现或必须按原型口径描述的部分包括：
+当前仍属于 Mock 或预留边界的部分包括：
 
-- 01B 目标模块与 01A 来源模块的匹配、模块/符号融合召回、人工来源选择制品和最小可迁移实现切片。
-- 各 source × target × strategy 路线的目标上下文、补丁、编译、独立验证和工程集成能力仍不齐整；必须逐路线声明支持状态，不能把多语言翻译或编译骨架等同于生产闭环。
-- `bridge`、`wrap`、`reuse` 的真实适配实现。
-- 业务行为、并发、超时、取消、幂等和错误语义的独立验证闭环；当前编译通过不能证明这些语义正确。
-- 完整的多文件原子回填、并发工作区修改处理和通用回滚；现有安全边界仍需继续加固。
-- 生产级多租户 ACL/RBAC、完整 DLP、许可证治理、大仓增量调度和真实 SeekDB 故障演练。
-- 01B append-only 历史快照账本和历史 UI；当前只持久化并 CAS 保护每个 workspace 的 current Host record。
+- 真实工程的符号解析和增量索引。
+- 面向大规模多语言代码仓的召回与重排服务。
+- 基于模型或规则的代码翻译与桥接生成。
+- 编译、测试、安全与许可证验证执行器。
+- 对真实工作区的事务写入和恢复机制。
+- VS Code、Trae 或其他 IDE 的正式集成。
 
 ## 10. 设计原则
 

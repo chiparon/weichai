@@ -10,8 +10,8 @@ export interface PanelHandlers {
   onMessage(message: WebviewToHostMessage): void;
 }
 
-const VIEW_TYPE = 'forexplore.translation';
-const PANEL_TITLE = 'ForeXplore 代码迁移';
+export const workbenchViewType = 'forexplore.translation';
+const PANEL_TITLE = 'RECAST 智能开发工作台';
 
 /**
  * Owns the translation Webview panel: creation, focus reuse, HTML injection
@@ -47,7 +47,7 @@ export class TranslationPanel {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      VIEW_TYPE,
+      workbenchViewType,
       PANEL_TITLE,
       vscode.ViewColumn.Beside,
       {
@@ -56,6 +56,35 @@ export class TranslationPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
       },
     );
+    return TranslationPanel.attach(panel, context, payload, handlers);
+  }
+
+  /**
+   * Revives the panel VS Code hands back after a window reload or an extension
+   * host restart. The previous Webview is gone, so scripts and resource roots
+   * have to be granted again before the workbench can load.
+   */
+  static async restore(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    payload: PanelInitPayload,
+    handlers: PanelHandlers,
+  ): Promise<TranslationPanel> {
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')],
+    };
+    return TranslationPanel.attach(panel, context, payload, handlers);
+  }
+
+  /** Takes ownership of a panel this class will drive from now on. */
+  private static async attach(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    payload: PanelInitPayload,
+    handlers: PanelHandlers,
+  ): Promise<TranslationPanel> {
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'recast-logo.svg');
 
     const instance = new TranslationPanel(panel, context, payload, handlers);
     TranslationPanel.current = instance;
@@ -65,11 +94,11 @@ export class TranslationPanel {
       if (!isWebviewToHostMessage(message)) return;
       if (message.type === 'READY') {
         instance.post({ type: 'INIT', payload: instance.payload });
-        return;
       }
       instance.handlers.onMessage(message);
     });
     panel.onDidDispose(() => {
+      void vscode.commands.executeCommand('setContext', 'forexplore.settingsOpen', false);
       if (TranslationPanel.current === instance) TranslationPanel.current = undefined;
     });
     panel.webview.html = await buildHtml(panel.webview, context.extensionUri);
@@ -81,8 +110,9 @@ export class TranslationPanel {
     if (message.type === 'REPOSITORY_STATUS') this.payload.repositoryStatuses = message.statuses;
     if (message.type === 'MODULE_EXPLORER') this.payload.moduleExplorer = message.explorer;
     if (message.type === 'CODE_INTELLIGENCE_STATUS') this.payload.codeIntelligence = message.presentation;
-    if (message.type === 'PROJECT_EXPLORER') this.payload.projectExplorer = message.explorer;
     if (message.type === 'SETTINGS_UPDATED') this.payload.settings = message.settings;
+    if (message.type === 'TARGET_SELECTED') this.payload.target = message.target;
+    if (message.type === 'TARGET_CLEARED') this.payload.target = null;
     void this.panel.webview.postMessage(message);
   }
 

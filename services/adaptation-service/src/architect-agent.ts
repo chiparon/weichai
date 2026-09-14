@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 /**
  * Read-only repository architecture planning agent.
  *
@@ -34,7 +35,7 @@ export interface ArchitectModelClient {
 }
 
 export interface ArchitectAgentOptions {
-  apiKey?: string;
+  apiKey?: ModelApiKey;
   client?: ArchitectModelClient;
   modelConfig?: DeepSeekModelConfig;
   /** Host-owned verification for persisted static-analysis evidence. */
@@ -651,7 +652,7 @@ function moduleMigrationProposalSchema(): Record<string, unknown> {
 }
 
 function createDeepSeekArchitectClient(
-  apiKey: string,
+  apiKey: ModelApiKey,
   config: DeepSeekModelConfig,
 ): ArchitectModelClient {
   return {
@@ -678,7 +679,8 @@ function truncateInvalidOutput(value: string): string {
   return `${value.slice(0, MAX_INVALID_OUTPUT_CHARS)}\n... [truncated]`;
 }
 
-function requireApiKey(apiKey: string | undefined): string {
+function requireApiKey(apiKey: ModelApiKey | undefined): ModelApiKey {
+  if (typeof apiKey === "function") return apiKey;
   if (!apiKey?.trim()) throw new Error("DEEPSEEK_API_KEY is required for ArchitectAgent.");
   return apiKey.trim();
 }

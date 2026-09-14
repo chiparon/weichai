@@ -43,7 +43,7 @@ function result(index: StructuralIndex, scope: ProjectAnalysisScope): ProjectAna
 }
 
 describe('module implementation search', () => {
-  it('retrieves a reviewed module before returning only symbols owned by that module', async () => {
+  it('annotates a recalled symbol with its reviewed module instead of gating on it', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'forexplore-module-search-'));
     roots.push(root);
     await mkdir(path.join(root, 'src'));
@@ -93,6 +93,70 @@ describe('module implementation search', () => {
     expect(candidates.every((candidate) => candidate.sourceModule?.analysisRevision === run.scope.analysisRevision)).toBe(true);
   });
 
+  it('ranks symbols flat: a module that loses the module race no longer hides its symbols', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'forexplore-flat-search-'));
+    roots.push(root);
+    await writeFile(path.join(root, 'package.json'), '{"name":"flat"}');
+    // `zqMarker` appears in no summary field: not in a module name, a description,
+    // a core API, a file path, or a hex id.
+    await writeFile(path.join(root, 'compute.ts'), [
+      "export function computeThing() { return 'zqMarker'; }",
+      "export function computeThingTwo() { return 'zqMarker'; }",
+      "export function computeThingThree() { return 'zqMarker'; }",
+      '',
+    ].join('\n'));
+    // Six modules that outrank `helpers` on every module-level signal: they match
+    // the requirement, and their core APIs match the target signature.
+    const rivals = Array.from({ length: 6 }, (_, index) => `m${index + 1}`);
+    for (const [index, id] of rivals.entries()) {
+      await writeFile(path.join(root, `${id}.ts`), `export function paymentApi${index + 1}() { return ${index + 1}; }\n`);
+    }
+
+    const runtime = await createCodeIntelligenceRuntime({ store: new InMemoryIndexStore() });
+    await runtime.registry.register({ repositoryId: 'history-flat', displayName: 'flat-history', localPath: root, role: 'history' });
+    const run = await runtime.coordinator.run({ repositoryId: 'history-flat' });
+    const index = (await runtime.store.getStructuralIndex(run.scope))!;
+    const scope = { ...run.scope, projectId: index.projects[0]!.projectId };
+    const base = { kind: 'feature', description: '', language: 'TypeScript', symbolKeys: [], dependsOn: [], evidenceIds: [`project:${scope.projectId}`] };
+    const proposal = {
+      ...scope,
+      analysisHash: index.analysisHash,
+      objective: projectAnalysisObjective,
+      summary: 'Flat symbol hierarchy',
+      unassignedFiles: [],
+      modules: [
+        ...rivals.map((id) => ({ ...base, id, name: `Payment processor ${id}`, description: 'Submits customer payments',
+          coreApis: ['computeThing'], sourceFiles: [`${id}.ts`] })),
+        { ...base, id: 'helpers', name: 'Helper utilities', description: 'Helper utilities', coreApis: [],
+          sourceFiles: ['compute.ts', 'package.json'] },
+      ],
+    };
+    const analysis = new ProjectAnalysisCoordinator({ store: runtime.store, plan: async () => ({ proposal,
+      evidence: { ...scope, analysisHash: index.analysisHash, planHash: projectPlanHash(proposal), evidenceIds: [`project:${scope.projectId}`] } }) });
+    await analysis.ensure(scope, true);
+    const ready = await analysis.read(scope);
+    expect(ready.state, ready.error).toBe('ready');
+
+    const target = { id: 'target-compute', name: 'computeThing', kind: 'function' as const, path: 'compute.ts', language: 'TypeScript' as const, signature: 'computeThing()' };
+    const query = [target.name, target.signature, '', 'payment zqMarker'].join('\n');
+    const summaries = await runtime.store.searchSearchDocuments!(scope, query, 20, 'summary');
+    // Only the six rivals are recalled by a summary; `helpers` never matches one,
+    // and `topK: 3` lets the module stage expand at most `max(4, topK * 2) = 6`
+    // of the seven modules, so `helpers` is the one module it cannot reach.
+    expect([...new Set(summaries.map((document) => (JSON.parse(document.text) as { moduleId: string }).moduleId))].sort()).toEqual(rivals);
+
+    const candidates = await runtime.moduleImplementationSearch.search({ target, requirement: 'payment zqMarker', topK: 3, repositoryIds: ['history-flat'] });
+    const compute = candidates.find((candidate) => candidate.title === 'computeThing');
+    expect(compute).toBeDefined();
+    expect(compute!.path).toBe('compute.ts');
+    // The module is still reported - as an annotation, not as a gate.
+    expect(compute!.sourceModule).toMatchObject({ moduleId: 'helpers', name: 'Helper utilities', sourceFiles: ['compute.ts', 'package.json'] });
+    // Two candidates per file: the sibling overloads cannot fill the page.
+    expect(candidates.filter((candidate) => candidate.path === 'compute.ts')).toHaveLength(2);
+    // The summary channel still works: a recalled module contributes its symbols.
+    expect(candidates.some((candidate) => rivals.includes(candidate.sourceModule?.moduleId ?? ''))).toBe(true);
+  });
+
   it('rejects searches without an explicitly scoped historical corpus', async () => {
     const runtime = await createCodeIntelligenceRuntime({ store: new InMemoryIndexStore() });
     await expect(runtime.moduleImplementationSearch.search({
@@ -100,6 +164,6 @@ describe('module implementation search', () => {
       requirement: '',
       topK: 1,
       repositoryIds: [],
-    })).rejects.toThrow(/历史仓库/);
+    })).rejects.toThrow(/参考工程/);
   });
 });

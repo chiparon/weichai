@@ -1,6 +1,7 @@
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
+import type { WorkspaceCompileCommand } from "@forexplore/contracts";
+import { validateWorkspaceCompileCommand } from "./workspace-compiler";
 
 const defaultProjectPath = fileURLToPath(
   new URL("../../../fixtures/target-system/commons-fileupload-java-skeleton", import.meta.url),
@@ -16,11 +17,13 @@ export interface AdaptationServiceConfig {
   projectRoot: string;
   /** Server-owned analysis snapshot location used by the read-only planner. */
   analysisRoot: string;
-  /** Server-owned local behavior verification workspace. */
-  verificationWorkspaceRoot: string;
-  /** Server-owned verification evidence artifacts. */
-  verificationArtifactRoot: string;
-  verificationTimeoutMs: number;
+  workspaceTranslation?: {
+    bearerToken: string;
+    compileCommand: WorkspaceCompileCommand;
+    verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
+    maxModelTurns: number;
+    timeoutMs: number;
+  };
   /**
    * Optional host-owned read-only semantic-query endpoint for revision-scoped
    * plans. The adaptation process never receives a database or index-runtime
@@ -29,6 +32,14 @@ export interface AdaptationServiceConfig {
   semanticQueryPort?: {
     endpoint: string;
     bearerToken?: string;
+  };
+  /**
+   * Optional tool-calling model turns for module generation driven by the
+   * trusted VS Code host. The host owns the repository, the worktrees and the
+   * compiler; this process only performs the model call with its credential.
+   */
+  moduleGeneration?: {
+    bearerToken: string;
   };
 }
 
@@ -42,10 +53,7 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServiceConfig {
   const apiKey = env.DEEPSEEK_API_KEY?.trim() ?? "";
-  if (!apiKey) {
-    throw new Error("DEEPSEEK_API_KEY is required to start the adaptation service.");
-  }
-
+  // A local IDE can supply its encrypted credential on each model request.
   const skeletonProjectPath = resolveConfiguredPath(
     env.ADAPTATION_SKELETON_PROJECT_PATH?.trim() ||
       env.ADAPTATION_SKELETON_PATH?.trim(),
@@ -61,6 +69,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
   const semanticQueryPort = semanticPlanningEnabled
     ? loadSemanticQueryPortConfig(env)
     : undefined;
+  const workspaceTranslation = env.ADAPTATION_WORKSPACE_TRANSLATION_ENABLED?.trim().toLowerCase() === "true"
+    ? loadWorkspaceTranslationConfig(env) : undefined;
+  const moduleGeneration = env.ADAPTATION_MODULE_GENERATION_ENABLED?.trim().toLowerCase() === "true"
+    ? loadModuleGenerationConfig(env) : undefined;
   return {
     host: env.ADAPTATION_HOST?.trim() || "127.0.0.1",
     port: positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
@@ -72,20 +84,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
       env.ADAPTATION_ANALYSIS_ROOT?.trim(),
       join(projectRoot, ".forexplore", "analysis"),
     ),
-    verificationWorkspaceRoot: resolveConfiguredPath(
-      env.ADAPTATION_VERIFICATION_WORKSPACE_ROOT?.trim(),
-      join(tmpdir(), "forexplore-verification-workspaces"),
-    ),
-    verificationArtifactRoot: resolveConfiguredPath(
-      env.ADAPTATION_VERIFICATION_ARTIFACT_ROOT?.trim(),
-      join(projectRoot, ".forexplore", "verification-artifacts"),
-    ),
-    verificationTimeoutMs: positiveInteger(
-      env.ADAPTATION_VERIFICATION_TIMEOUT_MS,
-      300000,
-      "ADAPTATION_VERIFICATION_TIMEOUT_MS",
-    ),
     ...(semanticQueryPort ? { semanticQueryPort } : {}),
+    ...(workspaceTranslation ? { workspaceTranslation } : {}),
+    ...(moduleGeneration ? { moduleGeneration } : {}),
+  };
+}
+
+function loadModuleGenerationConfig(env: NodeJS.ProcessEnv): NonNullable<AdaptationServiceConfig["moduleGeneration"]> {
+  const bearerToken = env.ADAPTATION_MODULE_GENERATION_TOKEN?.trim() ?? "";
+  if (bearerToken.length < 32) throw new Error("ADAPTATION_MODULE_GENERATION_TOKEN must contain at least 32 characters.");
+  return { bearerToken };
+}
+
+function loadWorkspaceTranslationConfig(env: NodeJS.ProcessEnv): NonNullable<AdaptationServiceConfig["workspaceTranslation"]> {
+  const bearerToken = env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN?.trim() ?? "";
+  if (bearerToken.length < 32) throw new Error("ADAPTATION_WORKSPACE_TRANSLATION_TOKEN must contain at least 32 characters.");
+  let compileCommand: unknown;
+  try { compileCommand = JSON.parse(env.ADAPTATION_WORKSPACE_COMPILE_COMMAND ?? ""); }
+  catch { throw new Error("ADAPTATION_WORKSPACE_COMPILE_COMMAND must be a JSON command object."); }
+  validateWorkspaceCompileCommand(compileCommand);
+  let verification: NonNullable<AdaptationServiceConfig["workspaceTranslation"]>["verification"];
+  if (env.ADAPTATION_WORKSPACE_VERIFICATION) {
+    const value = JSON.parse(env.ADAPTATION_WORKSPACE_VERIFICATION);
+    validateWorkspaceCompileCommand(value.command);
+    if (!Array.isArray(value.protectedFiles) || !value.protectedFiles.length || value.protectedFiles.some((path: unknown) => typeof path !== "string")) throw new Error("Verification protectedFiles must be a nonempty path array.");
+    verification = value;
+  }
+  return {
+    bearerToken, compileCommand, ...(verification ? { verification } : {}),
+    maxModelTurns: positiveInteger(env.ADAPTATION_WORKSPACE_MAX_TURNS, 80, "ADAPTATION_WORKSPACE_MAX_TURNS"),
+    timeoutMs: positiveInteger(env.ADAPTATION_WORKSPACE_TIMEOUT_MS, 1_800_000, "ADAPTATION_WORKSPACE_TIMEOUT_MS"),
   };
 }
 

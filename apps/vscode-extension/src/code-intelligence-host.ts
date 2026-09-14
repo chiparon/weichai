@@ -6,15 +6,20 @@ import type {
   AnalysisRevisionRecord,
   ModuleArtifactRecord,
   ModuleTarget,
+  ModuleHierarchyPlanner,
   RepositoryId,
   RepositoryRecord,
   RepositoryRole,
+  RepositoryAnalysisStatus,
   RepositoryRevisionScope,
   RepositoryStaticAnalysis,
   SearchCandidate,
   ProjectId,
+  ProjectRecord,
   ProjectAnalysisPort, ProjectAnalysisResult, ProjectAnalysisScope, ProjectAnalysisRecord,
   StructuralIndex,
+  TaskRetrievalRequest,
+  ContextPacket,
 } from '@forexplore/contracts';
 import type { SemanticQueryPort } from '@forexplore/workflow-core';
 import type {
@@ -22,6 +27,8 @@ import type {
   CodeIntelligenceRepositoryPresentation,
   CodeIntelligenceSummaryPresentation,
 } from './ui-types';
+import type { TaskSearchIntent, TaskSearchTargetScope } from './protocol/messages';
+import { projectAnalysisPresentation } from './project-analysis-presentation';
 
 /** Local-only SeekDB configuration; credentials never cross a UI boundary. */
 export interface SeekDbRuntimeConfig {
@@ -48,6 +55,8 @@ export interface CodeIntelligenceEnvironmentOptions {
 interface HostIndexStore {
   getRevision(scope: RepositoryRevisionScope): Promise<AnalysisRevisionRecord | null>;
   getStructuralIndex(scope: RepositoryRevisionScope): Promise<StructuralIndex | null>;
+  getStructuralIndexMetadata?(scope: RepositoryRevisionScope): Promise<Pick<StructuralIndex, 'repositoryId' | 'analysisRevision' | 'analysisHash'> | null>;
+  listProjects?(scope: RepositoryRevisionScope): Promise<ProjectRecord[]>;
   listRevisions(repositoryId: RepositoryId): Promise<AnalysisRevisionRecord[]>;
   listModuleArtifacts(scope: RepositoryRevisionScope): Promise<ModuleArtifactRecord[]>;
   putModuleArtifact(artifact: ModuleArtifactRecord): Promise<void>;
@@ -57,6 +66,14 @@ interface HostRepositoryRegistry {
   get(repositoryId: RepositoryId): Promise<RepositoryRecord | null>;
   list?(): Promise<RepositoryRecord[]>;
   unregister?(repositoryId: RepositoryId): Promise<void>;
+  /**
+   * Optional so a minimal registry stays valid. When present, the host
+   * publishes the lifecycle transitions that make a long scan observable.
+   */
+  setAnalysisStatus?(
+    repositoryId: RepositoryId,
+    analysisStatus: RepositoryAnalysisStatus,
+  ): Promise<RepositoryRecord>;
   register(request: {
     repositoryId: RepositoryId;
     displayName?: string;
@@ -87,6 +104,10 @@ export interface CodeIntelligenceRuntime {
   /** Trusted host bridge for legacy compiler-probe evidence; never expose it to Agent/MCP callers. */
   javaCsharpSpecializedProvider?: HostJavaCsharpSpecializedProvider;
   queryPort: SemanticQueryPort;
+  projectAnalysis?: ProjectAnalysisPort;
+  taskRetrieval?: {
+    search(request: TaskRetrievalRequest, signal?: AbortSignal): Promise<ContextPacket>;
+  };
   moduleImplementationSearch?: {
     search(request: {
       target: ModuleTarget;
@@ -101,7 +122,8 @@ export interface CodeIntelligenceRuntime {
 interface CodeIntelligenceServiceModule {
   ProjectAnalysisCoordinator: new (options: {
     store: HostIndexStore;
-    plan(scope: ProjectAnalysisScope & { objective: string }): Promise<ProjectAnalysisResult>;
+    plan?(scope: ProjectAnalysisScope & { objective: string }): Promise<ProjectAnalysisResult>;
+    hierarchyPlanner?: ModuleHierarchyPlanner;
     onChange?(): void;
   }) => ProjectAnalysisPort;
   createCodeIntelligenceRuntime(
@@ -112,6 +134,7 @@ interface CodeIntelligenceServiceModule {
   };
   createSemanticQueryHttpServer(options: {
     queryPort: SemanticQueryPort;
+    taskRetrieval?: CodeIntelligenceRuntime['taskRetrieval'];
     bearerToken?: string;
   }): Server;
 }
@@ -168,7 +191,16 @@ export type CodeIntelligenceRuntimeFactory = (
 export interface CodeIntelligenceHostOptions {
   projectAnalysisPort?: ProjectAnalysisPort;
   planProject?: (scope: ProjectAnalysisScope & { objective: string }) => Promise<ProjectAnalysisResult>;
+  hierarchyPlanner?: ModuleHierarchyPlanner;
   onChange?: () => void;
+  /**
+   * Module analysis calls a model, so the trusted host refuses it while this
+   * returns a reason (e.g. no API Key in the settings). Indexing, symbols and
+   * source search are unaffected by a refusal.
+   */
+  modelKeyRefusal?: () => Promise<string | undefined>;
+  /** Surfaces a refusal to the user; called once per refused scheduling attempt. */
+  onModelRefusal?: (reason: string) => void;
   /**
    * The VS Code host owns this composition.  It can use SeekDB when its local
    * process environment has been configured, but it is never created by a
@@ -188,6 +220,7 @@ export interface CodeIntelligenceHostOptions {
   /** Test seam; production uses the code-intelligence service transport. */
   semanticQueryServerFactory?: (options: {
     queryPort: SemanticQueryPort;
+    taskRetrieval?: CodeIntelligenceRuntime['taskRetrieval'];
     bearerToken?: string;
   }) => Server;
 }
@@ -372,7 +405,10 @@ function compilerProbeFilesMatchStructuralIndex(
 export class CodeIntelligenceHost {
   #projectAnalysis?: ProjectAnalysisPort;
   #planProject?: CodeIntelligenceHostOptions['planProject'];
+  #hierarchyPlanner?: ModuleHierarchyPlanner;
   #onChange?: () => void;
+  #modelKeyRefusal?: CodeIntelligenceHostOptions['modelKeyRefusal'];
+  #onModelRefusal?: CodeIntelligenceHostOptions['onModelRefusal'];
   #syncQueue: Promise<unknown> = Promise.resolve();
   #selectedTarget?: RepositoryId;
   #selectionSequence = 0;
@@ -401,7 +437,10 @@ export class CodeIntelligenceHost {
   constructor(options: CodeIntelligenceHostOptions = {}) {
     this.#projectAnalysis = options.projectAnalysisPort;
     this.#planProject = options.planProject;
+    this.#hierarchyPlanner = options.hierarchyPlanner;
     this.#onChange = options.onChange;
+    this.#modelKeyRefusal = options.modelKeyRefusal;
+    this.#onModelRefusal = options.onModelRefusal;
     this.#runtimeFactory = options.runtimeFactory ?? defaultRuntimeFactory;
     this.#runtimeOptions = options.runtimeOptions ?? {};
     this.#identityStore = options.identityStore;
@@ -452,8 +491,23 @@ export class CodeIntelligenceHost {
     if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
       throw new Error('Semantic query server port must be a valid TCP port.');
     }
+    const runtime = await this.runtime();
     const server = this.#semanticQueryServerFactory({
       queryPort: await this.semanticQueryPort(),
+      ...(runtime.taskRetrieval ? { taskRetrieval: {
+        search: async (request: TaskRetrievalRequest, signal?: AbortSignal) => {
+          if (!Array.isArray(request.scopes) || request.scopes.length < 1 || request.scopes.length > 8 ||
+            request.scopes.some((scope) => !this.#visibleRepositoryIds.has(scope.repositoryId))) {
+            throw new Error('Requested repositories are outside this window.');
+          }
+          for (const scope of request.scopes) {
+            signal?.throwIfAborted();
+            const revision = await runtime.store.getRevision(scope);
+            if (!revision || !['ready', 'superseded'].includes(revision.status)) throw new Error('Requested revision is not available for read-only queries.');
+          }
+          return runtime.taskRetrieval!.search(request, signal);
+        },
+      } } : {}),
       ...(options.bearerToken ? { bearerToken: options.bearerToken } : {}),
     });
     const endpoint = `http://127.0.0.1:${port}`;
@@ -524,6 +578,42 @@ export class CodeIntelligenceHost {
     return runtime.moduleImplementationSearch.search({ ...request, repositoryIds }, signal);
   }
 
+  async searchTaskContext(requestId: string, targetScope: TaskSearchTargetScope, request: TaskSearchIntent,
+    signal?: AbortSignal): Promise<ContextPacket> {
+    signal?.throwIfAborted();
+    const runtime = await this.runtime();
+    if (!runtime.taskRetrieval) throw new Error('当前代码智能运行时未提供任务检索能力。');
+    if (!this.#visibleRepositoryIds.has(targetScope.repositoryId)) throw new Error('所选工程不在当前窗口的检索范围内。');
+    const repository = await runtime.registry.get(targetScope.repositoryId);
+    const revision = await runtime.store.getRevision(targetScope);
+    if (!repository || !revision || !['ready', 'superseded'].includes(revision.status)) {
+      throw new Error('所选代码版本尚不可查询，请先完成基础索引。');
+    }
+    if (targetScope.projectId) {
+      const projects = await runtime.queryPort.listProjects(targetScope, signal);
+      if (!projects.projects.some((project) => project.value.projectId === targetScope.projectId)) {
+        throw new Error('所选项目不属于当前代码版本。');
+      }
+    }
+    const scopes: TaskRetrievalRequest['scopes'] = [{ ...targetScope, role: 'target' }];
+    if (request.scope === 'all') {
+      for (const reference of await runtime.registry.list?.() ?? []) {
+        if (reference.repositoryId === targetScope.repositoryId || !this.#visibleRepositoryIds.has(reference.repositoryId) ||
+          reference.role !== 'history' || !reference.activeRevision) continue;
+        const scope = { repositoryId: reference.repositoryId, analysisRevision: reference.activeRevision, role: 'reference' as const };
+        if ((await runtime.store.getRevision(scope))?.status === 'ready') scopes.push(scope);
+      }
+    }
+    signal?.throwIfAborted();
+    return runtime.taskRetrieval.search({
+      requestId,
+      requirement: request.requirement.trim(),
+      granularity: request.granularity,
+      scopes,
+      budget: { maxLatencyMs: 30_000 },
+    }, signal);
+  }
+
   /** Returns the active structural index for trusted host-side presentation. */
   async structuralIndexForPath(localPath: string): Promise<StructuralIndex | null> {
     try {
@@ -578,7 +668,7 @@ export class CodeIntelligenceHost {
     if (!repository) throw new Error('The selected repository is not registered in this host.');
     const [revision, index] = await Promise.all([
       runtime.store.getRevision(request),
-      runtime.store.getStructuralIndex(request),
+      runtime.store.getStructuralIndexMetadata?.(request) ?? runtime.store.getStructuralIndex(request),
     ]);
     if (
       !revision ||
@@ -735,6 +825,8 @@ export class CodeIntelligenceHost {
     }
 
     const registered = new Map<RepositoryId, RepositoryRecord>();
+    const persistedByPath = new Map((await runtime.registry.list?.() ?? [])
+      .map((repository) => [stableIdentityKey(repository.localPath), repository.repositoryId]));
     const previouslyVisible = this.#visibleRepositoryIds;
     const failedRepositoryIds: RepositoryId[] = [];
     let registrationFailed = false;
@@ -747,7 +839,7 @@ export class CodeIntelligenceHost {
       : undefined;
     for (const input of preferredInputs) {
       try {
-        const repositoryId = await this.repositoryIdFor(input.localPath);
+        const repositoryId = await this.repositoryIdFor(input.localPath, persistedByPath.get(stableIdentityKey(input.localPath)));
         const repository = await runtime.registry.register({
           repositoryId,
           localPath: input.localPath,
@@ -779,6 +871,12 @@ export class CodeIntelligenceHost {
           (!requestedScanPaths || repository.activeRevision)) continue;
         try {
           this.#output?.appendLine(`[forexplore] indexing ${repository.role} repository: ${repository.displayName}.`);
+          // The coordinator flips the registry to 'indexing' inside its own
+          // run, so publish that transition from here: a long first-time scan
+          // of a freshly selected target must be visible to the Webview rather
+          // than only its final result.
+          await runtime.registry.setAnalysisStatus?.(repository.repositoryId, 'indexing');
+          this.#onChange?.();
           await runtime.coordinator.run({
             repositoryId: repository.repositoryId,
             mode: request.forceFull || !repository.activeRevision ? 'full' : 'incremental',
@@ -794,6 +892,7 @@ export class CodeIntelligenceHost {
           }
         } catch (error) {
           failedRepositoryIds.push(repository.repositoryId);
+          await this.markIndexFailure(runtime, repository.repositoryId);
           this.logFailure(`index repository ${repository.repositoryId}`, error);
         } finally {
           this.#onChange?.();
@@ -816,19 +915,65 @@ export class CodeIntelligenceHost {
     return { presentation, scannedRepositoryIds, failedRepositoryIds };
   }
 
+  /**
+   * A failed refresh of an already-indexed repository keeps its last usable
+   * revision and status. A failed *first* scan would otherwise stay 'indexing'
+   * forever, hiding the failure behind a spinner that never resolves.
+   */
+  private async markIndexFailure(
+    runtime: CodeIntelligenceRuntime,
+    repositoryId: RepositoryId,
+  ): Promise<void> {
+    try {
+      const current = await runtime.registry.get(repositoryId);
+      if (current?.analysisStatus === 'indexing' && !current.activeRevision) {
+        await runtime.registry.setAnalysisStatus?.(repositoryId, 'failed');
+      }
+    } catch (error) {
+      this.logFailure(`mark index failure ${repositoryId}`, error);
+    }
+  }
+
   private async projectAnalysis(): Promise<ProjectAnalysisPort> {
     const runtime = await this.runtime();
+    if (!this.#projectAnalysis && !this.#planProject && !this.#hierarchyPlanner && runtime.projectAnalysis) this.#projectAnalysis = runtime.projectAnalysis;
     this.#projectAnalysis ??= new (codeIntelligenceService().ProjectAnalysisCoordinator)({
       store: runtime.store,
-      plan: (scope) => this.#planProject!(scope),
+      ...(this.#planProject ? { plan: (scope: ProjectAnalysisScope & { objective: string }) => this.#planProject!(scope) } : {}),
+      hierarchyPlanner: this.#hierarchyPlanner,
       onChange: this.#onChange,
     });
     return this.#projectAnalysis;
   }
 
+  /**
+   * Module analysis is the only step here that calls a model, so it is refused
+   * while the selected provider has no stored API Key. A refusal never blocks
+   * indexing: the revision, its symbols and source search stay usable.
+   */
+  private async moduleAnalysisRefusal(): Promise<string | undefined> {
+    if (!this.#modelKeyRefusal) return undefined;
+    try {
+      return await this.#modelKeyRefusal();
+    } catch (error) {
+      this.logFailure('check model credential', error);
+      return '无法确认模型凭据，已停止模块解析；请在设置中重新配置 API Key。';
+    }
+  }
+
+  private async ensureProjectAnalysis(scope: ProjectAnalysisScope, force: boolean): Promise<void> {
+    const refusal = await this.moduleAnalysisRefusal();
+    if (refusal) {
+      this.#onModelRefusal?.(refusal);
+      throw new Error(refusal);
+    }
+    const analysis = await this.projectAnalysis();
+    await analysis.ensure(scope, force);
+  }
+
   private scheduleProject(scope: ProjectAnalysisScope, force = false): void {
-    if (!this.#planProject || this.#disposed) return;
-    void this.projectAnalysis().then((analysis) => analysis.ensure(scope, force))
+    if (this.#disposed) return;
+    void this.ensureProjectAnalysis(scope, force)
       .catch((error) => this.logFailure('project module analysis', error));
   }
 
@@ -838,6 +983,9 @@ export class CodeIntelligenceHost {
     if (repository?.activeRevision !== scope.analysisRevision) throw new Error('只能重试活动版本的项目。');
     const index = await runtime.store.getStructuralIndex(scope);
     if (!index?.projects.some((p) => p.projectId === scope.projectId)) throw new Error('项目不存在。');
+    // An explicit user action fails loudly instead of being logged and forgotten.
+    const refusal = await this.moduleAnalysisRefusal();
+    if (refusal) throw new Error(refusal);
     this.scheduleProject(scope, force);
   }
 
@@ -856,14 +1004,18 @@ export class CodeIntelligenceHost {
     return (await Promise.all(repositories.map(async (repository) => {
       const analysisRevision = this.#selectedRevisions.get(repository.repositoryId) ?? repository.activeRevision;
       if (!analysisRevision) return null;
-      const index = await runtime.store.getStructuralIndex({ repositoryId: repository.repositoryId, analysisRevision });
+      const scope = { repositoryId: repository.repositoryId, analysisRevision };
+      const projects = await runtime.store.listProjects?.(scope);
+      if (projects && projects.length > 1 && repository.role !== 'history' &&
+        !projects.some((project) => project.projectId === this.#selectedProjects.get(repository.repositoryId))) return null;
+      const index = await runtime.store.getStructuralIndex(scope);
       if (!index) return null;
       const projectId = index.projects.find((p) => p.projectId === this.#selectedProjects.get(repository.repositoryId))?.projectId
         ?? (repository.role === 'history' || index.projects.length === 1 ? index.projects[0]?.projectId : undefined);
       if (!projectId) return null;
       return {
         repository, index, projectId, selectedTarget: repository.repositoryId === target?.repositoryId,
-        ...(this.#planProject ? { analysis: await (await this.projectAnalysis()).read({ repositoryId: repository.repositoryId, analysisRevision, projectId }) } : {}),
+        analysis: await (await this.projectAnalysis()).read({ repositoryId: repository.repositoryId, analysisRevision, projectId }),
       };
     }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
   }
@@ -879,9 +1031,14 @@ export class CodeIntelligenceHost {
     return this.#runtimePromise;
   }
 
-  private async repositoryIdFor(localPath: string): Promise<RepositoryId> {
+  private async repositoryIdFor(localPath: string, persistedId?: RepositoryId): Promise<RepositoryId> {
     const key = stableIdentityKey(await realpath(path.resolve(localPath)).catch(() => path.resolve(localPath)));
     const stored = this.#identityStore?.get<RepositoryId>(key) ?? this.#ephemeralRepositoryIds.get(key);
+    if (persistedId) {
+      this.#ephemeralRepositoryIds.set(key, persistedId);
+      if (stored !== persistedId) await this.#identityStore?.update(key, persistedId);
+      return persistedId;
+    }
     if (stored) return stored;
     const generated = `repo-${randomUUID()}`;
     this.#ephemeralRepositoryIds.set(key, generated);
@@ -943,7 +1100,7 @@ export class CodeIntelligenceHost {
         kind: project.value.kind,
         relativePath: project.value.relativePath,
         languageIds: [...project.value.languageIds],
-        ...(this.#planProject ? { analysis: await (await this.projectAnalysis()).read(project.value) } : {}),
+        analysis: projectAnalysisPresentation(await (await this.projectAnalysis()).read(project.value)),
       })));
       const requestedProjectId = this.#selectedProjects.get(repository.repositoryId);
       const selectedProjectId = requestedProjectId && projects.some((project) => project.projectId === requestedProjectId)
@@ -962,7 +1119,7 @@ export class CodeIntelligenceHost {
         languages: overview.overview.value.languages.map((language) => ({ ...language })),
         projects,
         selectedProjectId,
-        summary: this.#planProject ? {
+        summary: projectAnalysis?.proposal || projectAnalysis?.state === 'stale' ? {
           status: projectAnalysis?.state === 'stale' ? 'stale' : projectAnalysis?.proposal ? 'current' : 'missing',
           analysisRevision: selectedRevision.analysisRevision,
           ...(projectAnalysis?.planHash ? { planHash: projectAnalysis.planHash } : {}),
@@ -996,7 +1153,7 @@ export class CodeIntelligenceHost {
     const records = await runtime.store.listRevisions(repositoryId);
     const candidates = await Promise.all(records.map(async (revision) => {
       if (!isReadOnlyQueryableRevision(revision)) return null;
-      const index = await runtime.store.getStructuralIndex(revision);
+      const index = await (runtime.store.getStructuralIndexMetadata?.(revision) ?? runtime.store.getStructuralIndex(revision));
       if (!index || index.analysisHash !== revision.analysisHash) return null;
       return {
         analysisRevision: revision.analysisRevision,

@@ -17,3 +17,4 @@ export * from './repository-knowledge-lifecycle';
 export * from './repository-ingestion';
 export * from './target-workspace';
 export * from './semantic-query-port';
+export * from './task-retrieval-port';

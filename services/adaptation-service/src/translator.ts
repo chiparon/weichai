@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 /**
  * Translator helpers for target-contract code adaptation.
  *
@@ -37,7 +38,7 @@ export function projectTargetContext(
   context: TargetModuleContext,
 ): TranslatorTargetContext {
   if (context.target.kind === "module") {
-    throw new Error("The V1 Translator supports only class or function targets.");
+    throw new Error("Module targets require the workspace translation workflow.");
   }
   return {
     // Workspace symbols can omit modifiers present in the source declaration.
@@ -128,7 +129,7 @@ export interface RepairTranslationRequest extends AnalyzeTranslationRequest {
 }
 
 export interface TranslatorModelOptions {
-  apiKey: string;
+  apiKey: ModelApiKey;
   request?: typeof globalThis.fetch;
 }
 

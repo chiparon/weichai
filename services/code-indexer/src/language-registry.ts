@@ -1,3 +1,6 @@
+import C from 'tree-sitter-c';
+import Cpp from 'tree-sitter-cpp';
+import Kotlin from '@tree-sitter-grammars/tree-sitter-kotlin';
 import CSharp from 'tree-sitter-c-sharp';
 import Go from 'tree-sitter-go';
 import Java from 'tree-sitter-java';
@@ -16,6 +19,10 @@ import type {
  * even though the legacy retrieval contract has no JavaScript member yet.
  */
 export type TreeSitterLanguageId =
+  | 'c'
+  | 'cpp'
+  | 'kotlin'
+  | 'arkts'
   | 'csharp'
   | 'go'
   | 'java'
@@ -128,6 +135,7 @@ export class LanguageRegistry {
 
 function displayNameFor(languageId: TreeSitterLanguageId): string {
   const names: Readonly<Record<TreeSitterLanguageId, string>> = {
+    c: 'C', cpp: 'C++', kotlin: 'Kotlin', arkts: 'ArkTS (TypeScript syntax subset)',
     csharp: 'C#',
     go: 'Go',
     java: 'Java',
@@ -140,6 +148,21 @@ function displayNameFor(languageId: TreeSitterLanguageId): string {
 }
 
 const defaultRegistrations: readonly TreeSitterLanguageRegistration[] = [
+  // A `.h` is the interface half of a C/C++ pair and is written in whatever the
+  // implementation is written in. Parsing it with the C grammar loses every C++
+  // construct — measured on fixtures/code-corpus/harmony-upload-native, whose header
+  // reported seven syntax errors, dropped the `ChunkWriter` class entirely and kept
+  // only two bogus function entries, while the matching .cpp indexed cleanly. Since
+  // that header is where the JNI export declarations live, C++ interfaces were
+  // reachable only through their definitions, which is the broken dependency chain
+  // the platform is meant to repair. The C++ grammar reads C headers fine, so the
+  // header extension takes it; `.c` keeps the C grammar.
+  { languageId: 'c', fileExtensions: ['.c', '.h'], grammar: C as TreeSitterGrammar,
+    grammarsByExtension: { '.h': Cpp as TreeSitterGrammar }, capabilityLevel: 'structural' },
+  { languageId: 'cpp', fileExtensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'], grammar: Cpp as TreeSitterGrammar, capabilityLevel: 'structural' },
+  { languageId: 'kotlin', fileExtensions: ['.kt', '.kts'], grammar: Kotlin as TreeSitterGrammar, capabilityLevel: 'structural' },
+  // ArkUI-specific syntax remains diagnostic; do not advertise compiler-level ArkTS support.
+  { languageId: 'arkts', fileExtensions: ['.ets'], grammar: TypeScript.typescript as TreeSitterGrammar, capabilityLevel: 'structural' },
   {
     languageId: 'java',
     fileExtensions: ['.java'],

@@ -2,33 +2,26 @@ import {
   AlertTriangle,
   Box,
   CheckCircle2,
+  Code2,
   FileCode2,
   GitBranch,
   PackageSearch,
   Sparkles,
 } from 'lucide-react';
-import type {
-  SearchCandidateV2,
-  SourceImplementationBundleV2,
-} from '@forexplore/contracts';
-import type { TargetWorkspaceMigrationSelection } from '../../../src/protocol/messages';
-import {
-  selectedCandidateV2,
-  type WorkflowEventV2,
-  type WorkflowStateV2,
-} from '../v2-workflow';
+import type { SearchCandidate } from '@forexplore/contracts';
+import type { WorkflowEvent, WorkflowState } from '@forexplore/workflow-core';
+import { selectedCandidate } from '@forexplore/workflow-core';
 
 interface CandidatesStageProps {
-  state: WorkflowStateV2;
-  dispatch: React.Dispatch<WorkflowEventV2>;
-  adaptationProvider: 'DeepSeek';
-  migrationSelection: TargetWorkspaceMigrationSelection | null;
+  state: WorkflowState;
+  dispatch: React.Dispatch<WorkflowEvent>;
+  adaptationProvider: string;
   onSelectCandidate: (candidateId: string) => void;
   onAdapt: () => void;
 }
 
 interface RankedCandidate {
-  candidate: SearchCandidateV2;
+  candidate: SearchCandidate;
   rank: number;
 }
 
@@ -50,28 +43,14 @@ export function CandidatesStage({
   state,
   dispatch,
   adaptationProvider,
-  migrationSelection,
   onSelectCandidate,
   onAdapt,
 }: CandidatesStageProps) {
-  const candidate = selectedCandidateV2(state);
+  const candidate = selectedCandidate(state);
   const adapting = state.pending === 'adapt';
-  const resolving = state.pending === 'resolve';
   const modules = groupCandidatesByModule(state.candidates);
-  const repositoryCount = new Set(
-    state.candidates.map((item) => item.candidate.lineage.repositoryId),
-  ).size;
-  const targetLanguage =
-    migrationSelection?.target.entity.languageId ??
-    state.target?.entity.languageId ??
-    '目标语言';
-  const sourceLanguageId = candidate?.candidate.entity.languageId ?? null;
-  const routeOption = sourceLanguageId === null ? null : migrationSelection?.routeOptions.find(
-    ({ route }) =>
-      route.sourceLanguageId === sourceLanguageId &&
-      route.targetLanguageId === targetLanguage,
-  ) ?? null;
-  const canAdapt = candidate !== null && routeOption !== null && state.sourceBundle !== null;
+  const repositoryCount = new Set(state.candidates.map((item) => item.repository)).size;
+  const targetLanguage = state.target?.language ?? '目标语言';
 
   return (
     <div className="stage-stack candidate-stage">
@@ -80,7 +59,7 @@ export function CandidatesStage({
           <div>
             <span>02 · 检索结果</span>
             <h1 id="candidate-browser-title">选择一个可复用实现</h1>
-            <p>{state.target?.entity.name} · 候选按仓库和模块路径归组，先判断模块上下文，再选择具体实现。</p>
+            <p>{state.target?.name}</p>
           </div>
           <div className="candidate-result-stats" aria-label="检索结果规模">
             <span><strong>{repositoryCount}</strong> 仓库</span>
@@ -105,7 +84,6 @@ export function CandidatesStage({
                 <div className="candidate-module-items">
                   {module.candidates.map(({ candidate: item, rank }) => {
                     const active = item.id === state.selectedCandidateId;
-                    const entity = item.candidate.entity;
                     return (
                       <button
                         type="button"
@@ -117,13 +95,11 @@ export function CandidatesStage({
                         <span className="candidate-rank">{String(rank).padStart(2, '0')}</span>
                         <span className="candidate-copy">
                           <strong>{item.title}</strong>
-                          <code title={entity.signature ?? entity.qualifiedName ?? entity.name}>
-                            {entity.signature ?? entity.qualifiedName ?? entity.name}
-                          </code>
+                          <code title={item.signature}>{item.signature}</code>
                           <span className="candidate-tags">
-                            <small>{entity.languageId}</small>
-                            <small>{entityKindLabel(entity.kind)}</small>
-                            <small>{item.candidate.license ?? '许可证未声明'}</small>
+                            <small>{item.language}</small>
+                            <small>{item.kind === 'module' ? '模块' : item.kind === 'class' ? '类' : '函数'}</small>
+                            <small>{item.license}</small>
                           </span>
                         </span>
                         <span className="candidate-score" title="用于候选排序，不是正确率或兼容概率">
@@ -146,43 +122,20 @@ export function CandidatesStage({
         )}
       </section>
 
-      {candidate ? (
-        <CandidateDetail candidate={candidate} sourceBundle={state.sourceBundle} />
-      ) : state.candidates.length > 0 ? (
-        <section className="candidate-selection-prompt">
-          <CheckCircle2 size={16} />
-          <span>从上方模块中选择一个具体实现，系统会自动解析并复验完整源码。</span>
-        </section>
-      ) : null}
+      {candidate ? <CandidateDetail candidate={candidate} /> : (
+        state.candidates.length > 0 ? (
+          <section className="candidate-selection-prompt">
+            <CheckCircle2 size={16} />
+            <span>从上方模块中选择一个具体实现，再确认适配。</span>
+          </section>
+        ) : null
+      )}
 
-      <section className="candidate-decision card decision-card">
+      <section className="candidate-decision">
         <div className="candidate-decision-copy">
-          <span>迁移路线</span>
-          <strong>{sourceLanguageId ?? '?'} → {targetLanguage}</strong>
-          {routeOption ? (
-            <>
-              <small>
-                {routeOption.route.strategy} · {routeOption.route.id}@{routeOption.route.version}
-                {' · '}{adaptationProvider}
-              </small>
-              <small>
-                {state.sourceBundle
-                  ? `完整来源已自动解析：${state.sourceBundle.id}`
-                  : resolving
-                    ? '系统正在从当前有效索引解析完整来源…'
-                    : '选择候选后，系统将自动解析完整来源。'}
-              </small>
-              {routeOption.warnings.length > 0 ? (
-                <small>{routeOption.warnings.join('；')}</small>
-              ) : null}
-            </>
-          ) : (
-            <small>
-              {candidate
-                ? '没有与当前源/目标语言精确匹配的可执行路线；系统已阻止生成。'
-                : '选择候选后，系统将自动检查精确迁移路线。'}
-            </small>
-          )}
+          <span>适配目标</span>
+          <strong>任意候选语言 → {targetLanguage}</strong>
+          <small>由 {adaptationProvider} 根据目标签名、需求和所选实现生成适配代码。</small>
         </div>
         <label>
           <span>人工备注 / 额外约束 <small>可选</small></span>
@@ -199,36 +152,18 @@ export function CandidatesStage({
           type="button"
           className="primary-action"
           onClick={onAdapt}
-          disabled={adapting || resolving || !canAdapt}
+          disabled={adapting || !candidate || candidate.kind === 'module' || state.target?.kind === 'module'}
         >
           {adapting ? <span className="spinner" /> : <Sparkles size={15} />}
-          {adapting
-            ? '正在生成迁移实现…'
-            : resolving
-              ? '正在解析完整来源…'
-              : !candidate
-                ? '请选择一个具体实现'
-                : !state.sourceBundle
-                  ? '完整来源尚未复验'
-                  : !routeOption
-                    ? '当前语言对不可执行'
-                    : '使用所选实现生成适配'}
+          {adapting ? '正在生成适配…' : candidate?.kind === 'module' || state.target?.kind === 'module' ? '多文件适配暂不可用' : !candidate ? '请选择一个具体实现' : '使用所选实现生成适配'}
         </button>
       </section>
     </div>
   );
 }
 
-function CandidateDetail({
-  candidate,
-  sourceBundle,
-}: {
-  candidate: SearchCandidateV2;
-  sourceBundle: SourceImplementationBundleV2 | null;
-}) {
-  const path = candidate.candidate.entity.path ?? candidate.indexGeneration.sourceCatalogId;
-  const module = moduleIdentity(path);
-  const dependencies = sourceBundle?.dependencyIds ?? [];
+function CandidateDetail({ candidate }: { candidate: SearchCandidate }) {
+  const module = candidate.sourceModule ?? moduleIdentity(candidate.path);
   return (
     <section className="candidate-detail" aria-label="已选候选详情">
       <header className="candidate-detail-header">
@@ -236,22 +171,27 @@ function CandidateDetail({
           <span>已选实现</span>
           <h2>{candidate.title}</h2>
         </div>
-        <strong title="用于排序，不代表正确率">
-          匹配 {Math.round(candidate.score.overall * 100)}
-        </strong>
+        <strong title="用于排序，不代表正确率">匹配 {Math.round(candidate.score.overall * 100)}</strong>
       </header>
 
       <div className="candidate-provenance">
-        <span><GitBranch size={12} />{candidate.candidate.lineage.repositoryId}</span>
+        <span><GitBranch size={12} />{candidate.repository}</span>
         <span><Box size={12} />{module.name}</span>
-        <span title={path}><FileCode2 size={12} />{path}</span>
+        <span title={candidate.path}><FileCode2 size={12} />{candidate.path}</span>
       </div>
 
       <p className="candidate-summary">{candidate.summary}</p>
-      {candidate.preview ? <pre className="code-preview"><code>{candidate.preview}</code></pre> : null}
+      {candidate.kind === 'module' ? <details open className="candidate-evidence">
+        <summary>模块文件（{candidate.sourceModule?.sourceFiles?.length ?? 0}）</summary>
+        <ul className="candidate-module-files">{candidate.sourceModule?.sourceFiles?.map((file) => <li key={file}><code>{file}</code></li>)}</ul>
+        <p>接口匹配：{candidate.moduleMatch?.matchedApis.join('、') || '暂无'}</p>
+        <p>尚无匹配证据：{candidate.moduleMatch?.missingApis.join('、') || '暂无'}；行为待验证</p>
+        {candidate.moduleMatch?.previewTruncated ? <p>以下为部分源码预览</p> : null}
+      </details> : null}
+      <pre className="code-preview"><code>{candidate.preview}</code></pre>
 
       <details className="candidate-evidence">
-        <summary>查看匹配依据、来源与风险</summary>
+        <summary>查看匹配依据、依赖与风险</summary>
         <div className="score-bars">
           {(['semantic', 'symbol', 'contract'] as const).map((key) => (
             <div className="score-row" key={key}>
@@ -266,16 +206,13 @@ function CandidateDetail({
             </div>
           ))}
         </div>
+        {candidate.rerankReason ? (
+          <p className="candidate-rerank"><Code2 size={12} />重排依据：{candidate.rerankReason}</p>
+        ) : null}
         <dl className="risk-list">
           <div>
-            <dt>索引版本</dt>
-            <dd>
-              {candidate.indexGeneration.sourceCatalogId}@{candidate.indexGeneration.generation}
-            </dd>
-          </div>
-          <div>
             <dt>依赖</dt>
-            <dd>{dependencies.join('、') || (sourceBundle ? '无' : '完整来源解析中')}</dd>
+            <dd>{candidate.dependencies.join('、') || '无'}</dd>
           </div>
           <div>
             <dt>兼容性</dt>
@@ -294,18 +231,21 @@ function CandidateDetail({
   );
 }
 
-function groupCandidatesByModule(candidates: SearchCandidateV2[]): CandidateModuleGroup[] {
+function groupCandidatesByModule(candidates: SearchCandidate[]): CandidateModuleGroup[] {
   const groups = new Map<string, CandidateModuleGroup>();
   candidates.forEach((candidate, index) => {
-    const repository = candidate.candidate.lineage.repositoryId;
-    const path = candidate.candidate.entity.path ?? candidate.indexGeneration.sourceCatalogId;
-    const module = moduleIdentity(path);
-    const id = JSON.stringify([repository, module.path]);
+    const inferred = moduleIdentity(candidate.path);
+    const module = candidate.sourceModule
+      ? { name: candidate.sourceModule.name, path: candidate.sourceModule.projectPath || '/' }
+      : inferred;
+    const id = candidate.sourceModule
+      ? JSON.stringify([candidate.sourceModule.repositoryId, candidate.sourceModule.analysisRevision, candidate.sourceModule.projectId, candidate.sourceModule.moduleId])
+      : JSON.stringify([candidate.repository, module.path]);
     const group = groups.get(id) ?? {
       id,
       name: module.name,
       path: module.path,
-      repository,
+      repository: candidate.repository,
       candidates: [],
     };
     group.candidates.push({ candidate, rank: index + 1 });
@@ -323,10 +263,4 @@ function moduleIdentity(candidatePath: string): { name: string; path: string } {
     name: directoryParts.at(-1) ?? '仓库根模块',
     path: directoryParts.join('/'),
   };
-}
-
-function entityKindLabel(kind: string): string {
-  if (['class', 'record', 'struct', 'interface'].includes(kind)) return '类型';
-  if (['function', 'method', 'callable'].includes(kind)) return '函数';
-  return kind;
 }

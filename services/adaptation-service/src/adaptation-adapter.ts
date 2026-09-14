@@ -1,3 +1,4 @@
+import type { ModelApiKey } from './model-credential';
 /**
  * CodeAdaptationPort orchestration:
  * collect context -> analyze -> translate -> compile/repair -> patch preview.
@@ -48,7 +49,7 @@ const STANDALONE_CLASS_NAME = "ForeXploreStandalone";
 
 export interface AdaptationAdapterOptions {
   /** DeepSeek API key used by the specialized translation agents */
-  apiKey: string;
+  apiKey: ModelApiKey;
   /** Target skeleton project root (optional; enables integrated compilation). */
   skeletonProjectPath?: string;
   /** 目标项目根目录（可选，有则生成定点 context patch 而非全量替换） */
@@ -115,6 +116,9 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     request: AdaptationRequest,
     signal?: AbortSignal,
   ): Promise<AdaptationResult> {
+    if (request.target.kind === "module") {
+      throw new Error("Module targets require the workspace translation workflow.");
+    }
     assertSupportedTranslation(request);
     if (request.target.kind === "module") {
       throw new Error("The deprecated V1 adaptation route supports only class or function targets.");

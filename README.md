@@ -1,18 +1,24 @@
-# ForeXplore
+# RECAST
 
-ForeXplore is a VS Code code-translation extension with local retrieval and
-adaptation services. The standalone `web/` application remains as a workflow
-prototype; it is not the primary product entry point.
+RECAST is the competition-facing product name for the ForeXplore codebase. It
+combines task-driven code context retrieval and code reuse/migration in a VS
+Code workbench, backed by shared offline repository indexes. A local browser
+workbench runs the same UI and real indexing/query services. See the
+[offline modeling and Context guide](docs/task-code-context-implementation.zh-CN.md)
+for `npm run dev:code-workbench`. Both product chains (ForeXplore reuse/migration
+and RECAST retrieval) now live in the VS Code extension; the earlier standalone
+React prototype under `web/` was removed on 2026-09-12 together with its
+`mock-adapters`, `seekdb-adapter` and `workspace-adapters` packages (still
+recoverable from git history).
+
+The [guochuang implementation guide](docs/guochuang-implementation.zh-CN.md) covers
+evidence handoff, multi-file generation, behavioral verification, and labeled retrieval evaluation.
 
 ## Repository layout
 
-- `apps/vscode-extension`: primary VS Code extension application.
-- `web`: standalone React workflow prototype.
+- `apps/vscode-extension`: primary VS Code extension application (both product chains).
 - `packages/contracts`: shared request, result, symbol, and patch types.
 - `packages/workflow-core`: workflow state machine and implementation ports.
-- `packages/workspace-adapters`: workspace discovery and module-symbol providers.
-- `packages/mock-adapters`: demonstration search, adaptation, and backfill implementations.
-- `packages/seekdb-adapter`: browser-to-retrieval-service `CodeSearchPort` adapter.
 - `services/retrieval-service`: SeekDB-backed semantic, structural, and hybrid search.
 - `services/adaptation-mcp-server`: deprecated legacy V1 stdio MCP compatibility server; it is not a V2 capability authority.
 - `services`: backend boundaries for indexing, retrieval, and adaptation services.
@@ -34,21 +40,20 @@ Install the workspace dependencies and create local environment files:
 npm install
 cp services/retrieval-service/.env.example services/retrieval-service/.env
 cp services/adaptation-service/.env.example services/adaptation-service/.env
-cp web/.env.example web/.env
 ```
 
 The checked-in examples use these local endpoints:
 
 | Component | Address | Environment file |
 | --- | --- | --- |
-| Web prototype | Vite prints the selected port at startup | `web/.env` |
+| Browser workbench | `http://127.0.0.1:4040` (query port 4041) | `services/*/.env` |
 | Retrieval API | `http://127.0.0.1:8787` | `services/retrieval-service/.env` |
 | Adaptation API | `http://127.0.0.1:8788` | `services/adaptation-service/.env` |
 | SeekDB | `127.0.0.1:2881` | `services/retrieval-service/.env` |
 
-Only public API URLs belong in the Web environment. Never put an embedding or
-DeepSeek API key in `web/.env`, because Vite variables are exposed
-to the browser.
+Browser-facing configuration comes from the workbench command line; embedding and
+DeepSeek API keys stay in server-side `.env` files and are never exposed to the
+browser.
 
 ### Configure retrieval
 
@@ -164,16 +169,11 @@ the tool boundary.
 
 ### Start the application
 
-Start the standalone Web prototype with retrieval:
+Start retrieval, the browser workbench and adaptation:
 
 ```bash
 npm run dev:retrieval
-npm run dev:web
-```
-
-Start adaptation in a second terminal:
-
-```bash
+npm run dev:code-workbench -- --target <target> --reference <reference>
 npm run dev:adaptation
 ```
 
@@ -192,27 +192,22 @@ Use `npm run dev:extension -- -SkipSeekDb` when SeekDB is already running.
 `adaptation` to it; start `npm run dev:adaptation` separately when needed.
 
 To run each layer independently, use `npm run dev:retrieval`,
-`npm run dev:adaptation`, and `npm run dev:web`. Verify the backend services:
+`npm run dev:adaptation`, and `npm run dev:code-workbench`. Verify the backend services:
 
 ```bash
 curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8788/health
 ```
 
-If `VITE_RETRIEVAL_API_URL` or `VITE_ADAPTATION_API_URL` is absent, the Web app
-keeps the corresponding mock adapter. Backfill currently remains mocked even
-when both real service URLs are configured.
-
 ## Commands
 
 ```bash
 npm run dev
-npm run dev:web
+npm run dev:code-workbench
 npm run dev:retrieval
 npm run dev:adaptation
 npm run dev:extension
 npm run build
-npm run build:web
 npm run build:retrieval
 npm run build:adaptation
 npm test

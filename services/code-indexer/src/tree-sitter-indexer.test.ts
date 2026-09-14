@@ -72,7 +72,7 @@ describe('Tree-sitter structural indexer', () => {
   it('indexes declarations and explicit import/export syntax for every registered v1 grammar', () => {
     const registry = createDefaultLanguageRegistry();
     expect(registry.describe().map((entry) => entry.languageId)).toEqual([
-      'csharp', 'go', 'java', 'javascript', 'python', 'rust', 'typescript',
+      'arkts', 'c', 'cpp', 'csharp', 'go', 'java', 'javascript', 'kotlin', 'python', 'rust', 'typescript',
     ]);
 
     for (const sample of samples) {
@@ -130,6 +130,29 @@ describe('Tree-sitter structural indexer', () => {
         expect.objectContaining({ exportKind: 'declaration', targetReference: 'run' }),
       ]));
     }
+  });
+
+  it('skips a class member that declares no identifier to key a symbol on', () => {
+    const language = createDefaultLanguageRegistry().resolvePath('src/Members.ts');
+    if (!language) throw new Error('TypeScript grammar missing');
+    const result = indexTreeSitterFile({
+      content: [
+        'class Members {',
+        '  readonly [computed] = 1;',
+        '  [key: string]: unknown;',
+        '  named = 2;',
+        '}',
+      ].join('\n'),
+      language,
+      relativePath: 'src/Members.ts',
+    });
+    // No file under fixtures/code-corpus contains either construct (measured: zero
+    // computed class-property names and zero class index signatures), so this one
+    // rule is pinned from source text. `[computed]` would otherwise be named by
+    // the source text of an arbitrary expression, and an index signature declares
+    // no name at all.
+    expect(result.declarations.map((entry) => `${entry.kind} ${entry.name}`))
+      .toEqual(['class Members', 'field named']);
   });
 
   it('retains syntax errors as diagnostics instead of rejecting the whole file', () => {

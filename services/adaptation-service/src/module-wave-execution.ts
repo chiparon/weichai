@@ -30,6 +30,8 @@ import {
   type ModulePatchPreparer,
 } from "./module-wave-preparation-runner";
 
+export type { ModulePatchPreparer, ModulePatchPreparationContext } from "./module-wave-preparation-runner";
+
 export interface PreparedModulePatch {
   moduleId: string;
   files: FilePatch[];

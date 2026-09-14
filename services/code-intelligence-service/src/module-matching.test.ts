@@ -2,7 +2,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ModuleTarget } from '@forexplore/contracts';
+import type { ModuleTarget, ProjectModuleProposal } from '@forexplore/contracts';
 import { createCodeIntelligenceRuntime, InMemoryIndexStore, ProjectAnalysisCoordinator, projectPlanHash, projectAnalysisObjective } from './index.js';
 
 const roots: string[] = [];
@@ -58,6 +58,32 @@ describe('module-to-module matching', () => {
     expect(list).not.toHaveBeenCalled();
   });
 
+  it('retains the entire descendant manifest when matching a parent module', async () => {
+    const { runtime, store, scope, index } = await setup();
+    const base = { kind: 'feature', description: 'Payment receipt implementation', language: 'TypeScript', symbolKeys: [], dependsOn: [], evidenceIds: [`project:${scope.projectId}`] };
+    const proposal: ProjectModuleProposal = { ...scope, analysisHash: index.analysisHash, objective: projectAnalysisObjective, summary: 'Payment hierarchy', modules: [
+      { ...base, id: 'parent', name: 'Payment subsystem', nodeKind: 'subsystem', sourceFiles: [], refinement: { state: 'split', reason: 'Separate implementation', decisionSource: 'structural' } },
+      { ...base, id: 'leaf', name: 'Payment implementation', parentId: 'parent', nodeKind: 'module', sourceFiles: index.files.map((file) => file.relativePath), refinement: { state: 'leaf', reason: 'Cohesive implementation', decisionSource: 'structural' } },
+    ] };
+    const analysis = new ProjectAnalysisCoordinator({ store, plan: async () => ({ proposal,
+      evidence: { ...scope, analysisHash: index.analysisHash, planHash: projectPlanHash(proposal), evidenceIds: [`project:${scope.projectId}`] } }) });
+    await analysis.ensure(scope, true);
+    const ready = await analysis.read(scope);
+    expect(ready.state, ready.error).toBe('ready');
+    const parentDocuments = (await store.listSearchDocuments(scope)).filter((document) => document.kind === 'summary' && JSON.parse(document.text).moduleId === 'parent');
+    vi.spyOn(store, 'searchSearchDocuments').mockResolvedValue(parentDocuments);
+    const previews = vi.spyOn(store, 'getSourcePreview');
+    const candidates = await runtime.moduleImplementationSearch.search({ target, requirement: 'payment', topK: 3, repositoryIds: ['history'] });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.sourceModule?.sourceFiles).toEqual(index.files.map((file) => file.relativePath));
+    expect(candidates[0]!.sourceModule?.moduleId).toBe('parent');
+    expect(candidates[0]!.preview).toContain('submitPayment');
+    expect(previews).toHaveBeenCalledTimes(3);
+    const implementations = await runtime.moduleImplementationSearch.search({ target: { ...target, kind: 'function', name: 'submitPayment', signature: 'submitPayment()' }, requirement: 'payment', topK: 3, repositoryIds: ['history'] });
+    expect(implementations.some((candidate) => candidate.title === 'submitPayment' && candidate.sourceModule?.moduleId === 'parent')).toBe(true);
+    expect(implementations.every((candidate) => index.files.some((file) => file.relativePath === candidate.path))).toBe(true);
+  });
+
   it('rejects an artifact whose proposal no longer matches its evidence hash', async () => {
     const { runtime, store } = await setup();
     const get = store.getModuleArtifacts.bind(store);
@@ -103,5 +129,31 @@ describe('module-to-module matching', () => {
     await store.putRepository({ ...(await store.getRepository('history'))!, role: 'target' });
     expect(await runtime.moduleImplementationSearch.search({ target, requirement: 'payment', topK: 5, repositoryIds: ['history'] })).toEqual([]);
     await expect(runtime.moduleImplementationSearch.search({ target, requirement: 'payment', topK: 5, repositoryIds: Array.from({ length: 33 }, (_, i) => String(i)) })).rejects.toThrow('32');
+  });
+
+  it('attributes an implementation fragment to a sibling module whose summary never matched', async () => {
+    const { runtime, store, scope, index } = await setup();
+    const base = { kind: 'feature', description: 'Helper utilities', language: 'TypeScript', symbolKeys: [], dependsOn: [], evidenceIds: [`project:${scope.projectId}`] };
+    const leaf = { state: 'leaf' as const, reason: 'Cohesive implementation', decisionSource: 'structural' as const };
+    // `payments` is recalled by its summary; `helpers` shares the proposal but has
+    // no summary field containing `accepted`, so only its code can identify it.
+    const proposal: ProjectModuleProposal = { ...scope, analysisHash: index.analysisHash, objective: projectAnalysisObjective, summary: 'Upload hierarchy', modules: [
+      { ...base, id: 'payments', name: 'Upload payment pipeline', description: 'Upload gateway', nodeKind: 'module', sourceFiles: ['package.json'], refinement: leaf },
+      { ...base, id: 'helpers', name: 'Helper utilities', description: 'Helper utilities', nodeKind: 'module', sourceFiles: ['payment.ts', 'receipt.ts'], refinement: leaf },
+    ] };
+    const analysis = new ProjectAnalysisCoordinator({ store, plan: async () => ({ proposal,
+      evidence: { ...scope, analysisHash: index.analysisHash, planHash: projectPlanHash(proposal), evidenceIds: [`project:${scope.projectId}`] } }) });
+    await analysis.ensure(scope, true);
+    const ready = await analysis.read(scope);
+    expect(ready.state, ready.error).toBe('ready');
+    const target: ModuleTarget = { id: 'target', kind: 'module', name: 'Upload', path: 'receipt.ts', language: 'TypeScript',
+      signature: 'accepted', documentation: 'accepted', module: { sourceFiles: ['receipt.ts'], coreApis: [], dependsOn: [] } };
+    const query = [target.name, target.signature, target.documentation, 'accepted'].join('\n');
+    const summaryOnly = await store.searchSearchDocuments!(scope, query, 20, 'summary');
+    expect([...new Set(summaryOnly.map((document) => (JSON.parse(document.text) as { moduleId: string }).moduleId))]).toEqual(['payments']);
+    const candidates = await runtime.moduleImplementationSearch.search({ target, requirement: 'accepted', topK: 3, repositoryIds: ['history'] });
+    expect(candidates.map((candidate) => candidate.sourceModule?.moduleId).sort()).toEqual(['helpers', 'payments']);
+    expect(candidates.find((candidate) => candidate.sourceModule?.moduleId === 'helpers')!.sourceModule?.sourceFiles)
+      .toEqual(['payment.ts', 'receipt.ts']);
   });
 });

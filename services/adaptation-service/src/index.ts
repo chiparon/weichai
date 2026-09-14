@@ -77,6 +77,18 @@ export type {
   PrepareModuleWavePatchesRequest,
 } from "./module-wave-preparation-runner";
 
+export { WorkspaceModulePatchPreparer, moduleGenerationDefaults } from "./module-patch-preparer";
+export type { ModuleGenerationEvent, ModuleWaveGenerationOptions } from "./module-patch-preparer";
+
+export { HttpWorkspaceEvidencePort } from "./http-workspace-evidence-port";
+export type { HttpWorkspaceEvidencePortOptions } from "./http-workspace-evidence-port";
+export type {
+  WorkspaceEvidenceExcerpt,
+  WorkspaceEvidencePort,
+  WorkspaceEvidenceQueryRequest,
+  WorkspaceEvidenceResult,
+} from "./workspace-evidence-port";
+
 export {
   projectTargetContext,
   repairTranslation,
@@ -284,3 +296,9 @@ export type {
 
 export { FileStaticAnalysisSnapshotStore } from "./analysis-snapshot-store";
 export type { FileStaticAnalysisSnapshotStoreOptions } from "./analysis-snapshot-store";
+
+export { WorkspaceTranslationRuntime, WorkspaceTranslationError } from "./workspace-translation-runtime";
+export type { WorkspaceTranslationRuntimeOptions } from "./workspace-translation-runtime";
+export { createWorkspaceTranslationModelClient } from "./workspace-translation-agent";
+export type { WorkspaceTranslationModelClient } from "./workspace-translation-agent";
+export { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";

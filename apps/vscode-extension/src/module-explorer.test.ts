@@ -1,218 +1,346 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
 import type {
-  RepositoryIngestionManifest,
-  RepositoryModuleCatalog,
-  UnifiedRepositoryIR,
+  ModuleSummary,
+  ModuleTarget,
+  RepositoryStaticAnalysis,
 } from '@forexplore/contracts';
-import {
-  projectHistoryRepository,
-  projectTargetWorkspaceRecord,
-} from './module-explorer';
+import { buildModuleExplorer, workspacePresentationFromAnalysis } from './module-explorer';
 
-const hash = 'a'.repeat(64);
-const producer = { kind: 'ingestion-host' as const, id: 'test' };
+const temporaryDirectories: string[] = [];
 
-const ir = {
-  schemaVersion: '1.1',
-  id: 'ir-1',
-  repositoryId: 'repo-1',
-  profileId: 'profile-1',
-  repositoryContentHash: hash,
-  sourceShardIds: ['shard-1'],
-  capabilities: ['symbol-index'],
-  files: [{
-    id: 'file-1',
-    path: 'src/payment.ts',
-    contentHash: hash,
-    role: 'source',
-    languageId: 'typescript',
-    projectIds: [],
-  }],
-  entities: [
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true }),
+  ));
+});
+
+const analysis: RepositoryStaticAnalysis = {
+  schemaVersion: '1.0',
+  snapshotId: 'snapshot-module-ui',
+  contentHash: 'analysis-hash',
+  analyzerVersion: 'test',
+  createdAt: '2026-09-01T00:00:00.000Z',
+  repository: { revision: '0123456789abcdef' },
+  files: [
+    { path: 'src/Payments/PaymentService.cs', sha256: 'a', role: 'source', language: 'C#', project: 'Payments.csproj' },
+    { path: 'src/Orders/OrderService.cs', sha256: 'b', role: 'source', language: 'C#', project: 'Orders.csproj' },
+  ],
+  symbols: [
     {
-      id: 'type-1',
-      kind: 'type',
+      id: 'payment-class',
       name: 'PaymentService',
-      languageId: 'typescript',
-      fileId: 'file-1',
-      range: { path: 'src/payment.ts', startLine: 1 },
-      attributes: { staticSymbolKind: 'class' },
+      qualifiedName: 'Payments.PaymentService',
+      kind: 'class',
+      language: 'C#',
+      path: 'src/Payments/PaymentService.cs',
+      range: { path: 'src/Payments/PaymentService.cs', startLine: 3, endLine: 12 },
+      signature: 'public class PaymentService',
+      project: 'Payments.csproj',
     },
     {
-      id: 'callable-1',
-      kind: 'callable',
-      name: 'pay',
-      languageId: 'typescript',
-      fileId: 'file-1',
-      containerEntityId: 'type-1',
-      signature: 'pay(): Promise<void>',
-      range: { path: 'src/payment.ts', startLine: 2 },
-      attributes: { staticSymbolKind: 'method' },
+      id: 'payment-method',
+      name: 'Pay',
+      qualifiedName: 'Payments.PaymentService.Pay',
+      kind: 'method',
+      language: 'C#',
+      path: 'src/Payments/PaymentService.cs',
+      range: { path: 'src/Payments/PaymentService.cs', startLine: 5, endLine: 9 },
+      signature: 'public void Pay()',
+      project: 'Payments.csproj',
+    },
+    {
+      id: 'order-method',
+      name: 'Create',
+      qualifiedName: 'Orders.OrderService.Create',
+      kind: 'method',
+      language: 'C#',
+      path: 'src/Orders/OrderService.cs',
+      range: { path: 'src/Orders/OrderService.cs', startLine: 4, endLine: 7 },
+      signature: 'public void Create()',
+      project: 'Orders.csproj',
     },
   ],
-  apiSurfaces: [],
-  dependencies: [],
-  coverage: {
-    discoveredFileCount: 1,
-    analysedFileCount: 1,
-    failedFileCount: 0,
-    skippedFileCount: 0,
-    languageIds: ['typescript'],
-    missingCapabilities: [],
-    segments: [],
-  },
-  diagnostics: [],
-  contentHash: hash,
-  producer,
-  createdAt: '2026-09-02T00:00:00.000Z',
-} as UnifiedRepositoryIR;
-
-function catalog(status: RepositoryModuleCatalog['status']): RepositoryModuleCatalog {
-  return {
-    schemaVersion: '1.1',
-    id: `catalog-${status}`,
-    repositoryId: 'repo-1',
-    sourceIrId: ir.id,
-    sourceIrHash: ir.contentHash,
-    sourceProposalId: 'proposal-1',
-    sourceProposalHash: hash,
-    status,
-    modules: [{
-      id: 'payments',
-      name: 'Payments',
-      kind: 'business-capability',
-      description: 'Payment capability',
-      responsibilities: [],
-      businessCapabilities: [],
-      fileIds: ['file-1'],
-      entityIds: ['type-1', 'callable-1'],
-      entryPointEntityIds: ['callable-1'],
-      publicApiEntityIds: ['callable-1'],
-      boundaryRationale: 'test',
-      evidenceRefs: [],
-    }],
-    assignments: [{
-      fileId: 'file-1',
-      moduleIds: ['payments'],
-      kind: 'owned',
-      rationale: 'test',
-      evidenceRefs: [],
-    }],
-    dependencies: [],
-    unassignedFileIds: [],
-    overlappingFileIds: [],
-    ...(status === 'active' ? { reviewId: 'review-1', reviewHash: hash } : {}),
-    contentHash: hash,
-    producer,
-    createdAt: '2026-09-02T00:00:00.000Z',
-    updatedAt: '2026-09-02T00:00:00.000Z',
-  };
-}
-
-function manifest(status: RepositoryIngestionManifest['status']): RepositoryIngestionManifest {
-  return {
-    schemaVersion: '1.1',
-    id: 'ingestion-1',
-    repositoryId: 'repo-1',
-    mode: 'full',
-    status,
-    repositoryContentHash: hash,
-    requestedCapabilities: [],
-    completedCapabilities: [],
-    analysisAdapters: [],
-    artifacts: {
-      shards: [],
-      moduleEvidenceBundles: [],
-      moduleWikiProposals: status === 'ready' ? [{
-        id: 'wiki-1',
-        kind: 'repository-module-wiki-proposal',
-        contentHash: hash,
-      }] : [],
-      moduleKnowledgeReviews: [],
-      knowledgePublications: [],
-      moduleIndexReceipts: [],
-      publicationHeads: [],
-      knowledge: [],
+  dependencies: [
+    {
+      id: 'dep-1',
+      sourcePath: 'src/Payments/PaymentService.cs',
+      targetPath: 'src/Orders/OrderService.cs',
+      kind: 'invocation',
+      internal: true,
+      resolution: 'resolved',
+      evidence: 'syntactic',
+      evidenceRanges: [],
+      snapshotId: 'snapshot-module-ui',
     },
-    events: [],
-    diagnostics: [],
-    requestedAt: '2026-09-02T00:00:00.000Z',
-    updatedAt: '2026-09-02T00:00:00.000Z',
-  } as RepositoryIngestionManifest;
-}
+  ],
+  diagnostics: [],
+};
 
-describe('module workspace presentation', () => {
-  it('projects only an active reviewed 01A catalog as selectable history modules', () => {
-    const projected = projectHistoryRepository({
-      registrationId: 'history:one',
-      root: 'D:/history',
-      name: 'history',
-      analysisSnapshotId: 'analysis-1',
-      manifest: manifest('ready'),
-      ir,
-      catalog: catalog('active'),
-    });
+const currentTarget: ModuleTarget = {
+  id: 'workspace://src/Payments/PaymentService.cs#L5',
+  name: 'Pay',
+  kind: 'function',
+  path: 'src/Payments/PaymentService.cs',
+  language: 'C#',
+  signature: 'public void Pay()',
+  line: 5,
+  implementationStatus: 'unimplemented',
+};
 
-    expect(projected.lifecycle).toMatchObject({
-      ready: true,
-      publicationActive: true,
-      nextAction: 'withdraw-history-publication',
-    });
-    expect(projected.tree[0]?.historyModule).toEqual({
-      repositoryRegistrationId: 'history:one',
-      repositoryId: 'repo-1',
-      catalogId: 'catalog-active',
-      catalogHash: hash,
-      moduleId: 'payments',
-    });
-    expect(projected.tree[0]?.children[0]?.children[0]?.children[0]?.historyModule)
-      .toEqual(projected.tree[0]?.historyModule);
-    expect(JSON.stringify(projected.tree)).toContain('pay(): Promise<void>');
+describe('module explorer host transform', () => {
+  it('assigns a nested member to its nearest enclosing type without duplicating it', () => {
+    const outer = analysis.symbols[0]!;
+    const inner = { ...outer, id: 'inner', name: 'Nested', qualifiedName: `${outer.qualifiedName}.Nested` };
+    const member = { ...analysis.symbols[1]!, qualifiedName: `${inner.qualifiedName}.Pay` };
+    const result = workspacePresentationFromAnalysis({ analysis: { ...analysis, symbols: [outer, inner, member] },
+      mode: 'target', name: 'Target', rootLabel: '.' });
+    const serialized = JSON.stringify(result.presentation.tree);
+    expect(serialized.match(/"id":"symbol:payment-method"/g)).toHaveLength(1);
+    expect(result.presentation.stats.methods).toBe(1);
   });
 
-  it('keeps a draft 01A catalog browseable but does not mint a selection identity', () => {
-    const projected = projectHistoryRepository({
-      registrationId: 'history:draft',
-      root: 'D:/history',
-      name: 'history',
-      manifest: manifest('awaiting-module-review'),
-      ir,
-      catalog: catalog('draft'),
+  it('builds module/file/type/method hierarchy and a host-owned target catalog', () => {
+    const result = workspacePresentationFromAnalysis({
+      analysis,
+      contents: new Map([
+        ['src/Payments/PaymentService.cs', 'namespace Payments;\n\nclass PaymentService {\n\n void Pay() { throw new NotImplementedException(); }\n}'],
+        ['src/Orders/OrderService.cs', 'namespace Orders;\nclass OrderService {\n void Create() { Save(); }\n}'],
+      ]),
+      currentTarget,
+      mode: 'target',
+      name: 'Target Workspace',
+      rootLabel: 'target',
     });
 
-    expect(projected.lifecycle.nextAction).toBe('review-history-boundaries');
-    expect(projected.lifecycle.ready).toBe(false);
-    expect(projected.tree[0]?.historyModule).toBeUndefined();
+    expect(result.presentation.stats).toMatchObject({
+      modules: 2,
+      files: 2,
+      types: 1,
+      methods: 2,
+      dependencies: 1,
+      unimplemented: 2,
+      implemented: 1,
+    });
+    expect(result.targets.get(currentTarget.id)).toMatchObject({
+      name: 'Pay',
+      path: currentTarget.path,
+      implementationStatus: 'unimplemented',
+    });
+    const payments = result.presentation.tree.find((node) => node.name === 'Payments');
+    expect(payments?.kind).toBe('module');
+    expect(JSON.stringify(payments)).toContain('PaymentService.cs');
+    expect(JSON.stringify(payments)).toContain('Pay');
   });
 
-  it('keeps a withdrawn active catalog browseable but removes its formal selection identity', () => {
-    const projected = projectHistoryRepository({
-      registrationId: 'history:withdrawn',
-      root: 'D:/history',
-      name: 'history',
-      manifest: manifest('superseded'),
-      ir,
-      catalog: catalog('active'),
+  it('uses a committed module summary as the functional module boundary', () => {
+    const summary = moduleSummary();
+    const result = workspacePresentationFromAnalysis({
+      analysis,
+      mode: 'history',
+      name: 'History',
+      rootLabel: 'history',
+      summary,
     });
 
-    expect(projected.lifecycle).toMatchObject({
-      ready: false,
-      publicationActive: false,
-      nextAction: 'import-history',
+    expect(result.presentation.tree.map((node) => node.name)).toEqual([
+      '支付模块',
+      '订单模块',
+    ]);
+    expect(result.presentation.tree[0]?.description).toBe('支付业务边界');
+    expect(result.presentation.tree[0]).toMatchObject({
+      purpose: '负责支付发起、确认与退款复用入口',
+      coreApis: ['PaymentService.Pay'],
+      language: 'C#',
+      domain: '支付',
     });
-    expect(projected.tree[0]?.historyModule).toBeUndefined();
+    expect(result.presentation.summary).toMatchObject({
+      exists: true,
+      planId: 'plan-ui',
+      status: 'approved',
+      approvalsCurrent: true,
+      moduleCount: 2,
+      waveCount: 1,
+    });
+    expect(result.targets.size).toBe(0);
   });
 
-  it('exposes initialization as the only action before 01B exists', () => {
-    const projected = projectTargetWorkspaceRecord(
-      null,
-      'Target',
-      'D:/target',
-      'file:///D:/target',
+  it('keeps the file tree usable when module-summary.json is malformed', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'forexplore-explorer-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await mkdir(path.join(root, '.forexplore'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'Target.java'), 'class Target { void run() {} }');
+    await writeFile(path.join(root, '.forexplore', 'module-summary.json'), '{ invalid json');
+
+    const result = await buildModuleExplorer({
+      workspaceRoot: root,
+      workspaceName: 'Target',
+      currentTarget: {
+        id: 'editor-target',
+        name: 'run',
+        kind: 'function',
+        path: 'src/Target.java',
+        language: 'Java',
+        signature: 'void run()',
+        line: 1,
+      },
+      historyRoots: [],
+    });
+
+    expect(result.presentation.target.error).toBeUndefined();
+    expect(result.presentation.target.stats.files).toBe(1);
+    expect(result.presentation.target.tree).not.toHaveLength(0);
+    expect(result.presentation.target.summary).toMatchObject({
+      exists: false,
+      error: expect.stringContaining('JSON'),
+    });
+  });
+
+  it('keeps same-named history repository paths distinct before and after analysis', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'forexplore-explorer-'));
+    temporaryDirectories.push(root);
+    const targetRoot = path.join(root, 'target');
+    const firstHistory = path.join(root, 'first', 'legacy');
+    const secondHistory = path.join(root, 'second', 'legacy');
+    await mkdir(path.join(targetRoot, 'src'), { recursive: true });
+    await mkdir(firstHistory, { recursive: true });
+    await mkdir(secondHistory, { recursive: true });
+    await writeFile(path.join(targetRoot, 'src', 'Target.cs'), 'class Target { void Run() {} }\n');
+
+    const request = {
+      workspaceRoot: targetRoot,
+      workspaceName: 'Target',
+      currentTarget: {
+        id: 'workspace://src/Target.cs#L1',
+        name: 'Run',
+        kind: 'function' as const,
+        path: 'src/Target.cs',
+        language: 'C#' as const,
+        signature: 'void Run()',
+        line: 1,
+      },
+      historyRoots: [firstHistory, secondHistory, firstHistory],
+    };
+    const pending = await buildModuleExplorer(request, { includeHistory: false });
+    const refreshed = await buildModuleExplorer(request);
+
+    expect(pending.presentation.history).toHaveLength(2);
+    expect(new Set(pending.presentation.history.map((repository) => repository.id)).size).toBe(2);
+    expect(refreshed.presentation.history.map((repository) => repository.id)).toEqual(
+      pending.presentation.history.map((repository) => repository.id),
     );
+  });
 
-    expect(projected.id).toBe('file:///D:/target');
-    expect(projected.lifecycle.nextAction).toBe('initialize-target');
-    expect(projected.tree).toEqual([]);
+  it('keeps the file tree usable when optional module summary metadata is malformed', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'forexplore-explorer-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await mkdir(path.join(root, '.forexplore'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'Target.java'), 'class Target { void run() {} }');
+    await writeFile(path.join(root, '.forexplore', 'module-summary.json'), JSON.stringify({
+      schemaVersion: '1.0',
+      generated: {
+        snapshotId: 'snapshot',
+        planId: 'plan',
+        status: 'approved',
+        modules: [{
+          id: 'target',
+          name: '目标模块',
+          description: '目标模块边界',
+          coreApis: 'Target.run',
+          sourceFiles: ['src/Target.java'],
+        }],
+        executionWaves: [],
+      },
+      human: { approvalsCurrent: true },
+    }));
+
+    const result = await buildModuleExplorer({
+      workspaceRoot: root,
+      workspaceName: 'Target',
+      currentTarget: {
+        id: 'editor-target',
+        name: 'run',
+        kind: 'function',
+        path: 'src/Target.java',
+        language: 'Java',
+        signature: 'void run()',
+        line: 1,
+      },
+      historyRoots: [],
+    });
+
+    expect(result.presentation.target.error).toBeUndefined();
+    expect(result.presentation.target.tree).not.toHaveLength(0);
+    expect(result.presentation.target.summary).toMatchObject({
+      exists: false,
+      error: expect.stringContaining('结构无效'),
+    });
   });
 });
+
+function moduleSummary(): ModuleSummary {
+  const moduleBase = {
+    kind: 'feature' as const,
+    testFiles: [],
+    generatedFiles: [],
+    symbolIds: [],
+    dependsOn: [],
+    writeSet: [],
+    resourceLocks: [],
+    evidenceIds: [],
+  };
+  return {
+    schemaVersion: '1.0',
+    generated: {
+      snapshotId: analysis.snapshotId,
+      analysisHash: analysis.contentHash,
+      planId: 'plan-ui',
+      planHash: 'sha256:plan',
+      status: 'approved',
+      modules: [
+        {
+          ...moduleBase,
+          id: 'payments',
+          name: '支付模块',
+          description: '支付业务边界',
+          purpose: '负责支付发起、确认与退款复用入口',
+          coreApis: ['PaymentService.Pay'],
+          language: 'C#',
+          domain: '支付',
+          sourceFiles: ['src/Payments/PaymentService.cs'],
+        },
+        {
+          ...moduleBase,
+          id: 'orders',
+          name: '订单模块',
+          description: '订单业务边界',
+          sourceFiles: ['src/Orders/OrderService.cs'],
+        },
+      ],
+      dependencies: [],
+      executionGroups: [],
+      executionWaves: [{
+        id: 'wave-01',
+        order: 1,
+        groupIds: [],
+        moduleIds: ['payments', 'orders'],
+        dependsOnWaveIds: [],
+        maxParallelism: 1,
+        requiresApproval: true,
+        status: 'pending',
+        parallelismBlockedBy: [],
+      }],
+      risks: [],
+    },
+    human: {
+      approvalsCurrent: true,
+      decisions: [],
+      notes: [],
+      acceptedRisks: [],
+    },
+  };
+}

@@ -1,7 +1,7 @@
 {
   "name": "forexplore-vscode",
-  "displayName": "ForeXplore Code Migration",
-  "description": "在 VSCode 中运行 ForeXplore 跨语言代码迁移工作流：检索历史实现、选择明确迁移路线、生成目标补丁并独立验证。",
+  "displayName": "RECAST Code Intelligence",
+  "description": "在 VS Code 中运行 RECAST 智能检索与代码复用工作流：定位实现、组织上下文、生成目标代码并审阅回填。",
   "version": "0.1.0",
   "publisher": "forexplore",
   "license": "MIT",
@@ -21,37 +21,26 @@
     "README.md"
   ],
   "activationEvents": [
-    "onCommand:forexplore.startLegacyTranslation",
     "onView:forexplore.launcher",
+    "onWebviewPanel:forexplore.translation",
     "onCommand:forexplore.showPanel",
     "onCommand:forexplore.checkRepositories",
     "onCommand:forexplore.reindex",
     "onCommand:forexplore.refreshCodeIntelligence",
     "onCommand:forexplore.restoreLastCheckpoint",
-    "onCommand:forexplore.initializeTargetWorkspace",
-    "onCommand:forexplore.reviewTargetWorkspaceModules",
-    "onCommand:forexplore.openTargetWorkspace",
-    "onCommand:forexplore.rebaseTargetWorkspaceBodyOnly",
-    "onCommand:forexplore.retryTargetWorkspaceInventory",
     "onCommand:forexplore.indexModuleMigrationRepository",
-    "onCommand:forexplore.reviewRepositoryModuleBoundaries",
-    "onCommand:forexplore.generateRepositoryModuleSummaries",
-    "onCommand:forexplore.reviewRepositoryModuleKnowledge",
-    "onCommand:forexplore.withdrawRepositoryModuleKnowledge",
-    "onCommand:forexplore.proposeModuleMapping",
-    "onCommand:forexplore.reviewModuleMapping",
-    "onCommand:forexplore.reviewLegacyModuleMigrationPlan",
-    "onCommand:forexplore.reviewLegacyModuleMigrationWave",
-    "onCommand:forexplore.prepareLegacyModuleMigrationWave",
-    "onCommand:forexplore.approveLegacyModuleMigrationWave",
-    "onCommand:forexplore.recoverLegacyModuleMigrationReview"
+    "onCommand:forexplore.reviewModuleMigrationPlan",
+    "onCommand:forexplore.reviewModuleMigrationWave",
+    "onCommand:forexplore.prepareModuleMigrationWave",
+    "onCommand:forexplore.approveModuleMigrationWave",
+    "onCommand:forexplore.recoverModuleMigrationReview"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
           "id": "forexplore",
-          "title": "ForeXplore",
+          "title": "RECAST",
           "icon": "media/forexplore.svg"
         }
       ]
@@ -60,7 +49,7 @@
       "forexplore": [
         {
           "id": "forexplore.launcher",
-          "name": "ForeXplore",
+          "name": "RECAST",
           "type": "tree"
         }
       ]
@@ -68,114 +57,61 @@
     "viewsWelcome": [
       {
         "view": "forexplore.launcher",
-        "contents": "[打开迁移面板](command:forexplore.showPanel)"
+        "contents": "RECAST 工作台在编辑器区域打开。\n[打开工作台](command:forexplore.showPanel)\n[重新索引参考工程](command:forexplore.reindex)"
       }
     ],
     "commands": [
       {
-        "command": "forexplore.startLegacyTranslation",
-        "title": "ForeXplore Legacy: 编辑器 V1 迁移入口（兼容）"
-      },
-      {
         "command": "forexplore.showPanel",
-        "title": "ForeXplore: 打开迁移面板"
+        "title": "RECAST: 打开智能开发工作台"
       },
       {
         "command": "forexplore.checkRepositories",
-        "title": "ForeXplore: 检查检索仓库"
+        "title": "RECAST: 检查参考工程"
       },
       {
         "command": "forexplore.reindex",
-        "title": "ForeXplore: 重新索引检索仓库"
+        "title": "RECAST: 重新索引参考工程"
       },
       {
         "command": "forexplore.refreshCodeIntelligence",
-        "title": "ForeXplore: 刷新代码智能索引"
+        "title": "RECAST: 刷新代码智能索引"
       },
       {
         "command": "forexplore.restoreLastCheckpoint",
-        "title": "ForeXplore: 恢复最近一次回填"
-      },
-      {
-        "command": "forexplore.initializeTargetWorkspace",
-        "title": "ForeXplore: 初始化 01B 目标工作区"
-      },
-      {
-        "command": "forexplore.reviewTargetWorkspaceModules",
-        "title": "ForeXplore: 审阅 01B 目标模块边界"
-      },
-      {
-        "command": "forexplore.openTargetWorkspace",
-        "title": "ForeXplore: 打开 01B 目标工作区"
-      },
-      {
-        "command": "forexplore.rebaseTargetWorkspaceBodyOnly",
-        "title": "ForeXplore: 重映射 01B 实现体兼容变更"
-      },
-      {
-        "command": "forexplore.retryTargetWorkspaceInventory",
-        "title": "ForeXplore: 重试 01B 实现状态检测"
+        "title": "RECAST: 恢复最近一次回填"
       },
       {
         "command": "forexplore.indexModuleMigrationRepository",
-        "title": "ForeXplore: 索引模块迁移仓库"
+        "title": "RECAST: 索引模块迁移仓库"
       },
       {
-        "command": "forexplore.reviewRepositoryModuleBoundaries",
-        "title": "ForeXplore: 审阅仓库模块边界"
+        "command": "forexplore.reviewModuleMigrationPlan",
+        "title": "RECAST: 审阅模块迁移计划"
       },
       {
-        "command": "forexplore.generateRepositoryModuleSummaries",
-        "title": "ForeXplore: 生成模块知识摘要提案"
+        "command": "forexplore.reviewModuleMigrationWave",
+        "title": "RECAST: 审阅下一迁移波次"
       },
       {
-        "command": "forexplore.reviewRepositoryModuleKnowledge",
-        "title": "ForeXplore: 审阅并发布模块知识"
+        "command": "forexplore.prepareModuleMigrationWave",
+        "title": "RECAST: 导入并准备下一迁移波次"
       },
       {
-        "command": "forexplore.withdrawRepositoryModuleKnowledge",
-        "title": "ForeXplore: 撤销当前模块知识发布"
+        "command": "forexplore.approveModuleMigrationWave",
+        "title": "RECAST: 审批并提交已准备迁移波次"
       },
       {
-        "command": "forexplore.proposeModuleMapping",
-        "title": "ForeXplore: 导入跨目录模块映射提案"
+        "command": "forexplore.recoverModuleMigrationReview",
+        "title": "RECAST: 恢复模块迁移审阅状态"
       },
       {
-        "command": "forexplore.reviewModuleMapping",
-        "title": "ForeXplore: 审阅模块映射并物化执行 Overlay"
-      },
-      {
-        "command": "forexplore.reviewLegacyModuleMigrationPlan",
-        "title": "ForeXplore Legacy: 审阅 FunctionalModule 兼容计划"
-      },
-      {
-        "command": "forexplore.reviewLegacyModuleMigrationWave",
-        "title": "ForeXplore Legacy: 审阅下一兼容迁移波次"
-      },
-      {
-        "command": "forexplore.prepareLegacyModuleMigrationWave",
-        "title": "ForeXplore Legacy: 导入并准备兼容迁移波次"
-      },
-      {
-        "command": "forexplore.approveLegacyModuleMigrationWave",
-        "title": "ForeXplore Legacy: 审批并提交兼容迁移波次"
-      },
-      {
-        "command": "forexplore.recoverLegacyModuleMigrationReview",
-        "title": "ForeXplore Legacy: 恢复兼容迁移审阅状态"
+        "command": "forexplore.savePanelSettings",
+        "title": "RECAST: 保存设置"
       }
     ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "forexplore.startLegacyTranslation",
-          "when": "editorHasSelection && resourceScheme == file",
-          "group": "forexplore@1"
-        }
-      ]
-    },
     "configuration": {
-      "title": "ForeXplore",
+      "title": "RECAST",
       "properties": {
         "forexplore.executionMode": {
           "type": "string",
@@ -183,7 +119,7 @@
             "real"
           ],
           "default": "real",
-          "description": "调用真实的检索和迁移适配服务；代码智能索引用于项目解析，不替代迁移能力校验。"
+          "description": "使用扩展内置的 SeekDB 模块检索和语言无关的适配服务。"
         },
         "forexplore.repositoryPaths": {
           "type": "array",
@@ -191,13 +127,15 @@
             "type": "string"
           },
           "default": [],
-          "description": "历史代码仓的本地目录。保存后建立版本化结构索引和项目模块 Summary；删除路径只修改本地注册，不会撤回已审发布的模块知识。"
+          "description": "参考工程的本地目录。保存后由扩展建立版本化结构索引、项目模块 Summary 和模块内候选索引。"
         },
         "forexplore.targetRepositoryPaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
-          "description": "通过目标项目选择器明确选择的目录。只有同时位于当前工作区中的目录会作为目标工程索引。"
+          "description": "通过目标工程选择器明确选择的目录。只有同时位于当前工作区中的目录会作为目标工程索引。"
         },
         "forexplore.topK": {
           "type": "number",
@@ -206,22 +144,10 @@
           "maximum": 10,
           "description": "每次检索返回的候选方案数量。"
         },
-        "forexplore.retrievalApiUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1:8787",
-          "description": "检索服务地址。"
-        },
         "forexplore.adaptationApiUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8788",
-          "description": "语言无关迁移适配服务地址。"
-        },
-        "forexplore.repositoryKnowledgeChannel": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "default": "branch:main",
-          "description": "模块知识激活范围中的分支/发布通道。发布前仍会要求人工确认。"
+          "description": "语言无关翻译服务地址。"
         },
         "forexplore.moduleWaveValidationCommands": {
           "type": "array",
@@ -263,9 +189,65 @@
             },
             "additionalProperties": false
           }
+        },
+        "forexplore.llm": {
+          "type": "object",
+          "scope": "machine",
+          "description": "AI 服务配置（仅使用用户设置）。API Key 通过 RECAST 设置面板加密保存。",
+          "default": {
+            "provider": "deepseek",
+            "apiBase": "https://api.deepseek.com/v1",
+            "model": "deepseek-v4-flash",
+            "maxOutputTokens": 8192
+          },
+          "required": [
+            "provider",
+            "apiBase",
+            "model",
+            "maxOutputTokens"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "deepseek",
+                "openai",
+                "anthropic",
+                "gemini",
+                "qwen",
+                "custom"
+              ]
+            },
+            "apiBase": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "maxOutputTokens": {
+              "type": "integer",
+              "enum": [
+                1024,
+                2048,
+                4096,
+                8192,
+                16384,
+                32768
+              ]
+            }
+          }
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "forexplore.savePanelSettings",
+        "key": "ctrl+s",
+        "mac": "cmd+s",
+        "when": "activeWebviewPanelId == forexplore.translation && forexplore.settingsOpen"
+      }
+    ]
   },
   "scripts": {
     "build": "npm run build:webview && npm run build:extension",
@@ -277,23 +259,20 @@
     "package": "vsce package --no-dependencies --allow-missing-repository"
   },
   "dependencies": {
-    "@forexplore/adaptation-http-adapter": "0.1.0",
     "@forexplore/adaptation-service": "0.1.0",
+    "@forexplore/adaptation-http-adapter": "0.1.0",
     "@forexplore/code-indexer": "0.1.0",
     "@forexplore/code-intelligence-service": "0.1.0",
     "@forexplore/contracts": "0.1.0",
-    "@forexplore/seekdb-adapter": "0.1.0",
     "@forexplore/workflow-core": "0.1.0",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "sql.js": "^1.14.2"
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.90.0",
     "@vitejs/plugin-react": "^6.0.3",
     "@vscode/test-electron": "^2.4.1",
@@ -303,5 +282,6 @@
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"
-  }
+  },
+  "icon": "media/recast-logo.png"
 }

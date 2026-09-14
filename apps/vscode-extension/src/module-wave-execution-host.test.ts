@@ -10,9 +10,16 @@ import {
   calculateModuleMigrationPlanHash,
   createMigrationRunManifest,
 } from '@forexplore/workflow-core';
-import type { ModuleWavePreparationRequest, PreparedModuleWave } from '@forexplore/adaptation-service/module-wave-execution';
+import type {
+  ModulePatchPreparer,
+  ModuleWaveAutomatedPreparationRequest,
+  ModuleWavePreparationRequest,
+  PreparedModulePatch,
+  PreparedModuleWave,
+} from '@forexplore/adaptation-service/module-wave-execution';
 import {
   approvePreparedLocalModuleWave,
+  prepareGeneratedModuleWave,
   prepareLocalModuleWave,
   restoreCommittedLocalModuleWave,
   rollbackPreparedLocalModuleWave,
@@ -134,8 +141,12 @@ function bundle(planValue = plan()) {
   });
 }
 
-function coordinator(): { port: ModuleWaveExecutionPort; prepare: ReturnType<typeof vi.fn> } {
-  const prepare = vi.fn(async (request: ModuleWavePreparationRequest): Promise<PreparedModuleWave> => {
+function coordinator(): {
+  port: ModuleWaveExecutionPort;
+  prepare: ReturnType<typeof vi.fn>;
+  prepareWithPreparer: ReturnType<typeof vi.fn>;
+} {
+  const assemble = async (request: ModuleWavePreparationRequest & { preparedModules: PreparedModulePatch[] }): Promise<PreparedModuleWave> => {
     const joint = await request.validate('C:/temporary/worktree');
     const transaction = {
       id: 'wave-transaction',
@@ -173,13 +184,36 @@ function coordinator(): { port: ModuleWaveExecutionPort; prepare: ReturnType<typ
       plan: preparedPlan,
       manifest,
     };
+  };
+  const prepare = vi.fn((request: ModuleWavePreparationRequest) => assemble(request));
+  const prepareWithPreparer = vi.fn(async (request: ModuleWaveAutomatedPreparationRequest): Promise<PreparedModuleWave> => {
+    // Mirrors the coordinator: the scheduler owns the worktree, the preparer
+    // only returns patch evidence for the modules in this wave.
+    const wave = request.plan.executionWaves.find((item) => item.id === request.waveId)!;
+    const group = request.plan.executionGroups.find((item) => wave.groupIds.includes(item.id))!;
+    const preparedModules: PreparedModulePatch[] = [];
+    for (const moduleId of wave.moduleIds) {
+      const module = request.plan.modules.find((item) => item.id === moduleId)!;
+      preparedModules.push(await request.preparer.prepareModule({
+        repositoryRoot: request.repositoryRoot,
+        worktreeRoot: `C:/temporary/module-worktree/${moduleId}`,
+        analysis: request.analysis,
+        plan: request.plan,
+        wave,
+        group,
+        module,
+      }));
+    }
+    return assemble({ ...request, preparedModules });
   });
   return {
     port: {
       prepare,
+      prepareWithPreparer,
       commit: vi.fn(),
     },
     prepare,
+    prepareWithPreparer,
   };
 }
 
@@ -453,5 +487,74 @@ describe('module wave execution host helpers', () => {
       commit,
       updatedAt: '2026-08-27T00:02:00.000Z',
     })).toThrow('未绑定到本地已准备波次');
+  });
+
+  it('prepares the next wave from a generator instead of an imported patch bundle', async () => {
+    const executor = coordinator();
+    const validator: ModuleWaveValidator = {
+      validate: vi.fn(async () => [{
+        id: 'joint-generated-check',
+        label: 'Joint generated check',
+        status: 'pass' as const,
+        required: true,
+        summary: 'joint validation passed in the combined staging worktree',
+      }]),
+    };
+    const worktrees: string[] = [];
+    const preparer: ModulePatchPreparer = {
+      prepareModule: vi.fn(async (context) => {
+        worktrees.push(context.worktreeRoot);
+        return {
+          moduleId: context.module.id,
+          files: [{
+            path: 'src/Service.cs',
+            status: 'modified' as const,
+            expectedOriginalSha256: digest,
+            additions: 1,
+            deletions: 1,
+            hunks: [{
+              header: '@@ -1,1 +1,1 @@',
+              lines: [
+                { type: 'remove' as const, content: 'old' },
+                { type: 'add' as const, content: 'generated' },
+              ],
+            }],
+          }],
+          validation: [{
+            id: 'module-compile',
+            label: 'In-module compilation (not authoritative)',
+            status: 'pass' as const,
+            required: false,
+            summary: 'compiled inside the module worktree',
+          }],
+        };
+      }),
+    };
+
+    const result = await prepareGeneratedModuleWave({
+      repositoryRoot: 'C:/repository',
+      analysis: analysis(),
+      plan: plan(),
+      preparer,
+      validator,
+      coordinator: executor.port,
+      runId: 'run-generated',
+      now,
+    });
+
+    // The preparer only ever saw the scheduler-owned worktree, never the checkout.
+    expect(worktrees).toEqual(['C:/temporary/module-worktree/service']);
+    const request = executor.prepareWithPreparer.mock.calls[0]?.[0] as ModuleWaveAutomatedPreparationRequest;
+    expect(request.maxPreparationParallelism).toBe(1);
+    expect(request.manifest).toEqual(createMigrationRunManifest(plan(), 'run-generated', now));
+    expect(result.prepared.preparedModules[0]?.moduleId).toBe('service');
+    expect(result.prepared.transaction.status).toBe('prepared');
+    expect(result.prepared.validation.map((record) => record.id)).toEqual(expect.arrayContaining([
+      'joint-generated-check',
+    ]));
+    expect(result.prepared.plan.executionWaves[0]?.status).toBe('awaiting-approval');
+    expect(result.storedPrepared.preparedHash).toBe(result.prepared.transaction.preparedHash);
+    // Generation must never claim an approval on the human's behalf.
+    expect(areWaveApprovalsCurrent(result.prepared.plan, result.prepared.transaction.waveId, result.prepared.transaction.preparedHash)).toBe(false);
   });
 });

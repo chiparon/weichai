@@ -4,13 +4,13 @@
   "version": "0.1.0",
   "workspaces": [
     "apps/*",
-    "web",
     "packages/*",
     "services/*"
   ],
   "scripts": {
     "dev": "npm run dev:extension",
-    "dev:web": "npm run dev --workspace @forexplore/workflow-web",
+    "dev:code-workbench": "tsx scripts/serve-code-workbench.mts",
+    "services:up": "node scripts/start-recast-services.mjs",
     "dev:retrieval": "npm run dev --workspace @forexplore/retrieval-service",
     "dev:adaptation": "npm run dev --workspace @forexplore/adaptation-service",
     "dev:mcp": "npm run dev --workspace @forexplore/adaptation-mcp-server",
@@ -21,7 +21,6 @@
     "claude:reranker": "bash scripts/run-claude-deepseek.sh --agent forexplore-reranker",
     "dev:extension": "powershell -ExecutionPolicy Bypass -File scripts/run-vscode-extension.ps1",
     "build": "npm run build:extension",
-    "build:web": "npm run build --workspace @forexplore/workflow-web",
     "build:extension": "npm run build --workspace forexplore-vscode",
     "package:extension": "npm run package --workspace forexplore-vscode",
     "build:retrieval": "npm run build --workspace @forexplore/retrieval-service",
@@ -32,7 +31,8 @@
     "test:code-intelligence": "npm run test --workspace @forexplore/code-intelligence-service",
     "test:project-analysis:live": "tsx scripts/verify-project-analysis.ts",
     "test:semantic-index-mcp": "npm run test --workspace @forexplore/semantic-index-mcp-server",
-    "test": "npm run test --workspace @forexplore/workspace-adapters && npm run test --workspace @forexplore/workflow-core && npm run test --workspace @forexplore/code-indexer && npm run test --workspace @forexplore/seekdb-adapter && npm run test --workspace @forexplore/adaptation-http-adapter && npm run test --workspace @forexplore/retrieval-service && npm run test --workspace @forexplore/code-intelligence-service && npm run test --workspace @forexplore/adaptation-service && npm run test --workspace @forexplore/adaptation-mcp-server && npm run test --workspace @forexplore/semantic-index-mcp-server && npm run test --workspace @forexplore/workflow-web && npm run test --workspace forexplore-vscode && npm run test --workspace @forexplore/translation-verifier",
-    "e2e": "npm run e2e --workspace @forexplore/translation-verifier"
+    "test": "npm run test --workspace @forexplore/workflow-core && npm run test --workspace @forexplore/code-indexer && npm run test --workspace @forexplore/adaptation-http-adapter && npm run test --workspace @forexplore/retrieval-service && npm run test --workspace @forexplore/code-intelligence-service && npm run test --workspace @forexplore/adaptation-service && npm run test --workspace @forexplore/adaptation-mcp-server && npm run test --workspace @forexplore/semantic-index-mcp-server && npm run test --workspace forexplore-vscode && npm run test:guochuang",
+    "evaluate:guochuang": "tsx scripts/evaluate-guochuang.mts",
+    "test:guochuang": "vitest run tests/integration/guochuang-handoff.test.ts --maxWorkers=2"
   }
 }

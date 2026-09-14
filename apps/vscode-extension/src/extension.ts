@@ -71,6 +71,8 @@ interface ExtensionHost {
   services: ServiceManager;
   health: RepositoryHealthCheck;
   codeIntelligence: CodeIntelligenceHost;
+  /** The RECAST channel; a panel action that leaves no line here is undiagnosable. */
+  output: vscode.OutputChannel;
 }
 
 interface ActiveMigrationRun {
@@ -211,7 +213,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
     }),
-    createWorkbenchLauncher({ context, services, health, codeIntelligence }, output),
+    createWorkbenchLauncher({ context, services, health, codeIntelligence, output }, output),
     { dispose: () => codeIntelligence.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(
       moduleMigrationPreviewScheme,
@@ -224,8 +226,8 @@ export function activate(context: vscode.ExtensionContext): void {
       deserializeWebviewPanel: async (panel) => {
         const revived = await TranslationPanel.restore(panel, context,
           panelInitPayload(services, loadSettings()),
-          panelHandlers({ context, services, health, codeIntelligence }));
-        primeWorkbench({ context, services, health, codeIntelligence }, revived, output);
+          panelHandlers({ context, services, health, codeIntelligence, output }));
+        primeWorkbench({ context, services, health, codeIntelligence, output }, revived, output);
       },
     }),
     vscode.commands.registerCommand('forexplore.showPanel', () =>
@@ -295,7 +297,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // A target import interrupted by the workspace change is finished here, on
   // the host that survived it.
   void resumeInterruptedTargetImport(
-    { context, services, health, codeIntelligence }, output,
+    { context, services, health, codeIntelligence, output }, output,
   ).catch((error) => output.appendLine(`[forexplore] resume failed: ${String(error)}`));
 }
 
@@ -479,7 +481,7 @@ async function showPanel(
   codeIntelligence: CodeIntelligenceHost,
   output: vscode.OutputChannel,
 ): Promise<void> {
-  const host: ExtensionHost = { context, services, health, codeIntelligence };
+  const host: ExtensionHost = { context, services, health, codeIntelligence, output };
   // Opening the workbench is the explicit use that starts the indexing chain.
   // Memoized, so reopening an existing panel costs nothing while a failed
   // startup is still retried on the next click.
@@ -900,9 +902,11 @@ function selectCandidate(candidateId: string): void {
 }
 
 async function startAdaptation(host: ExtensionHost, decisionNotes: string): Promise<void> {
+  const log = (line: string) => host.output.appendLine(`[forexplore] ${line}`);
   try {
     const run = requireActiveRun();
     const candidate = selectedRunCandidate(run);
+    log(`translation requested: target=${run.target.id} candidate=${candidate.id} kinds=${run.target.kind}/${candidate.kind}`);
     if (run.target.kind === 'module' || candidate.kind === 'module') {
       if (!vscode.workspace.isTrusted) throw new Error('请先信任工作区。');
       await assertTargetUnchanged(run);
@@ -910,14 +914,26 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
       const selectionVersion = moduleSelectionVersion;
       const scope = await prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
         target: run.target, candidate, requirement: run.requirement, decisionNotes });
-      if (activeRun !== run || selectionVersion !== moduleSelectionVersion) return;
+      if (activeRun !== run || selectionVersion !== moduleSelectionVersion) {
+        // A silent return here leaves the panel waiting for a reply that will
+        // never come, which is indistinguishable from a running translation.
+        log('module translation handoff dropped: the selection changed while preparing the scope.');
+        publishError('目标或候选在准备翻译作用域时发生了变化；请重新选择候选后再发起翻译。');
+        return;
+      }
       const moduleScopeId = workspaceTranslation.rememberModuleScope(scope);
+      log(`module translation scope prepared: ${moduleScopeId} writeFiles=${scope.profile.writeFiles.length} `
+        + `targetId=${run.target.id} candidateId=${candidate.id}`);
       publish({ type: 'MODULE_TRANSLATION_READY', targetId: run.target.id, candidateId: candidate.id, moduleScopeId });
+      log('module translation handoff published'
+        + `${TranslationPanel.current ? '' : ' (no panel is attached, so the reply was dropped)'}; `
+        + 'the workspace translation service is not called before this handoff succeeds.');
       return;
     }
     await assertTargetUnchanged(run);
     const status = await host.services.refresh();
     publish({ type: 'SERVICE_STATUS', status });
+    log(`requesting /v1/adapt for target=${run.target.id}.`);
     const rawResult = await host.services.getAdaptationPort().adapt({
       target: run.target,
       candidate,
@@ -929,6 +945,7 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
     run.adaptation = result;
     publish({ type: 'ADAPT_RESULT', result });
   } catch (error) {
+    log(`translation failed: ${errorMessage(error, '未知错误')}`);
     publishError(errorMessage(error, '翻译失败'));
   }
 }

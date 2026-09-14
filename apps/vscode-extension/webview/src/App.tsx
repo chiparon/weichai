@@ -106,7 +106,15 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           dispatch({ type: 'SEARCH_SUCCESS', candidates: message.candidates });
           break;
         case 'MODULE_TRANSLATION_READY':
-          if (message.targetId !== targetIdRef.current || message.candidateId !== candidateIdRef.current) break;
+          // Dropping a reply for another selection used to leave this panel
+          // waiting forever with no error, which reads as "translation is
+          // running" while nothing is. Report it and release the pending state.
+          if (message.targetId !== targetIdRef.current || message.candidateId !== candidateIdRef.current) {
+            const reason = '宿主返回的模块翻译作用域不属于当前选择的模块候选；请重新选择候选后再发起翻译。';
+            setError(reason);
+            dispatch({ type: 'ADAPT_FAILURE', message: reason });
+            break;
+          }
           setModuleTranslation({ moduleScopeId: message.moduleScopeId });
           dispatch({ type: 'MODULE_TRANSLATION_READY' });
           break;
@@ -195,6 +203,18 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   useEffect(() => {
     setVisibleStep(state.stage === 'complete' ? 'patch' : state.stage);
   }, [state.stage]);
+
+  // A reply that never arrives must not look like an eternal translation. The
+  // host is still free to finish: a late result still moves this panel on.
+  useEffect(() => {
+    if (state.pending !== 'adapt') return;
+    const timer = setTimeout(() => {
+      const reason = '宿主在 10 分钟内没有回复翻译请求；已复位本次等待。若宿主随后返回结果，面板会自动更新。';
+      setError(reason);
+      dispatch({ type: 'ADAPT_FAILURE', message: reason });
+    }, 600_000);
+    return () => clearTimeout(timer);
+  }, [state.pending]);
 
   function handleSearch(): void {
     if (!state.target) return;
@@ -447,7 +467,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
                 onFinished={(completed) => dispatch({ type: 'MODULE_TRANSLATION_FINISHED', completed })} />
             </div> : null}
             {visibleStep === 'adaptation' && !moduleTranslation ? (
-              <AdaptationStage state={state} candidate={candidate} />
+              <AdaptationStage state={state} candidate={candidate}
+                onBack={() => dispatch({ type: 'RETURN_TO_CANDIDATES' })}
+                onRetry={handleAdapt} />
             ) : null}
 
             {visibleStep === 'patch' && state.adaptation ? (

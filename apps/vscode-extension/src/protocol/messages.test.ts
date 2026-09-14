@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { isHostToWebviewMessage, isWebviewToHostMessage } from './messages';
+import { isHostToWebviewMessage, isWebviewToHostMessage, webviewMessageRejectionReason } from './messages';
+
+describe('Webview refusal reasons', () => {
+  it('names the field that stopped a translation request instead of dropping it', () => {
+    // A silent refusal left the workbench waiting for a reply nobody owed it.
+    expect(isWebviewToHostMessage({ type: 'START_ADAPT', decisionNotes: 'ok' })).toBe(true);
+    expect(webviewMessageRejectionReason({ type: 'START_ADAPT', decisionNotes: 'x'.repeat(8_001) }))
+      .toBe('START_ADAPT 的决策说明 8001 字，超过 8000 字上限。');
+    expect(webviewMessageRejectionReason({ type: 'START_ADAPT', decisionNotes: undefined }))
+      .toBe('START_ADAPT 的决策说明必须是字符串。');
+    expect(webviewMessageRejectionReason({ type: 'START_ADAPT', decisionNotes: 'ok', force: true }))
+      .toBe('START_ADAPT 含未知字段：force。');
+    expect(webviewMessageRejectionReason({ type: 'START_SEARCH', requirement: 'x' }))
+      .toBe('START_SEARCH 的需求或 topK 无效。');
+    expect(webviewMessageRejectionReason({ type: 'UNKNOWN_ACTION' }))
+      .toBe('宿主不接受该 UNKNOWN_ACTION 消息。');
+    expect(webviewMessageRejectionReason(null)).toBe('消息不是对象。');
+  });
+});
 
 describe('Host message boundary', () => {
   it('accepts only known target-selection phases and outcomes', () => {

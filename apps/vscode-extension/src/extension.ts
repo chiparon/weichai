@@ -118,6 +118,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   const output = vscode.window.createOutputChannel('RECAST');
+  activeOutput = output;
   const services = new ServiceManager(output);
   const health = new RepositoryHealthCheck();
   let codeIntelligence: CodeIntelligenceHost;
@@ -445,8 +446,22 @@ function panelHandlers(host: ExtensionHost): PanelHandlers {
       void handlePanelMessage(host, message)
         .catch((error) => publishError(errorMessage(error, '面板操作失败')));
     },
+    onInvalidMessage: (message, reason) => {
+      host.output.appendLine(`[forexplore] refused an invalid webview message: ${reason}`);
+      // Answer anything the panel is waiting on; a dropped request would leave
+      // the workbench spinning with nothing running behind it.
+      if (awaitedWebviewMessages.has((message as { type?: unknown })?.type)) {
+        publish({ type: 'ERROR', message: `面板请求未被宿主接受：${reason}` });
+      }
+    },
   };
 }
+
+/** Webview actions whose reply a user explicitly waits for. */
+const awaitedWebviewMessages = new Set<unknown>([
+  'START_ADAPT', 'START_SEARCH', 'APPLY_CURRENT_RUN', 'WORKSPACE_TRANSLATION',
+  'SELECT_WORKSPACE_TARGET', 'SELECT_CODE_INTELLIGENCE_PROJECT', 'SAVE_SETTINGS',
+]);
 
 /** Runs after a panel exists: starts the indexing chain and fills the panel. */
 function primeWorkbench(
@@ -1238,8 +1253,27 @@ async function synchronizeCodeIntelligence(
 }
 
 function publish(message: HostToWebviewMessage): void {
-  TranslationPanel.current?.post(message);
+  const panel = TranslationPanel.current;
+  if (!panel) {
+    // A reply a user is waiting for must not disappear because the panel that
+    // asked for it is gone (or was replaced); say so in the RECAST channel.
+    if (awaitedHostMessages.has(message.type)) {
+      activeOutput?.appendLine(`[forexplore] dropped ${message.type}: no panel is attached.`);
+    }
+    return;
+  }
+  panel.post(message);
 }
+
+/** Host replies a user explicitly waits for; dropping one of them stalls the panel. */
+const awaitedHostMessages = new Set<unknown>([
+  'SEARCH_RESULT', 'ADAPT_RESULT', 'APPLY_RESULT', 'ERROR', 'MODULE_TRANSLATION_READY',
+  'MODULE_CHILDREN', 'MODULE_CHILDREN_ERROR', 'TASK_SEARCH_RESULT', 'TASK_SEARCH_ERROR',
+  'WORKSPACE_TRANSLATION_RESULT', 'WORKSPACE_TRANSLATION_ERROR', 'TARGET_WORKSPACE_RESULT',
+]);
+
+/** The RECAST channel, reachable from module-level publishers. */
+let activeOutput: vscode.OutputChannel | undefined;
 
 function publishError(message: string): void {
   publish({ type: 'ERROR', message });

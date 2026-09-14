@@ -142,6 +142,7 @@ export function CandidatesStage({
           <input
             type="text"
             value={state.decisionNotes}
+            maxLength={8_000}
             onChange={(event) =>
               dispatch({ type: 'SET_DECISION_NOTES', value: event.target.value })
             }

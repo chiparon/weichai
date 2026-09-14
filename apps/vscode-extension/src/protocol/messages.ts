@@ -164,6 +164,28 @@ function isTargetWorkspaceResult(value: { outcome?: unknown; mode?: unknown; mes
     (value.message === undefined || (typeof value.message === 'string' && value.message.length <= 400));
 }
 
+/**
+ * Names the field that made `isWebviewToHostMessage` refuse a payload.  The
+ * host used to drop refused messages in silence, which left a panel waiting
+ * forever next to an empty log: a refused action a user is waiting on must
+ * come back with a reason instead.
+ */
+export function webviewMessageRejectionReason(value: unknown): string {
+  if (typeof value !== 'object' || value === null) return '消息不是对象。';
+  const message = value as Record<string, unknown>;
+  const type = typeof message.type === 'string' && message.type ? message.type : '<缺少 type>';
+  if (type === 'START_ADAPT') {
+    const unknown = Object.keys(message).filter((key) => key !== 'type' && key !== 'decisionNotes');
+    if (unknown.length > 0) return `START_ADAPT 含未知字段：${unknown.join('、')}。`;
+    if (typeof message.decisionNotes !== 'string') return 'START_ADAPT 的决策说明必须是字符串。';
+    return `START_ADAPT 的决策说明 ${message.decisionNotes.length} 字，超过 8000 字上限。`;
+  }
+  if (type === 'START_SEARCH') return 'START_SEARCH 的需求或 topK 无效。';
+  if (type === 'SELECT_CANDIDATE') return 'SELECT_CANDIDATE 的候选标识无效。';
+  if (type === 'WORKSPACE_TRANSLATION') return 'WORKSPACE_TRANSLATION 的请求字段无效。';
+  return `宿主不接受该 ${type} 消息。`;
+}
+
 /** Strictly validates every Webview payload before it enters the host. */
 export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
   if (typeof value !== 'object' || value === null) return false;

@@ -3,11 +3,16 @@ import type {
   HostToWebviewMessage,
   PanelInitPayload,
 } from './protocol/messages';
-import { isWebviewToHostMessage, type WebviewToHostMessage } from './protocol/messages';
+import { isWebviewToHostMessage, webviewMessageRejectionReason, type WebviewToHostMessage } from './protocol/messages';
 
 /** Handlers invoked when the Webview posts a message to the host. */
 export interface PanelHandlers {
   onMessage(message: WebviewToHostMessage): void;
+  /**
+   * A refused payload. Without this the message simply vanished: a panel could
+   * wait forever for an answer the host never knew it owed.
+   */
+  onInvalidMessage?(message: unknown, reason: string): void;
 }
 
 export const workbenchViewType = 'forexplore.translation';
@@ -91,7 +96,10 @@ export class TranslationPanel {
     // The Webview is not ready to receive messages until its scripts are
     // loaded, so hold the INIT payload until it announces itself with READY.
     panel.webview.onDidReceiveMessage((message: unknown) => {
-      if (!isWebviewToHostMessage(message)) return;
+      if (!isWebviewToHostMessage(message)) {
+        instance.handlers.onInvalidMessage?.(message, webviewMessageRejectionReason(message));
+        return;
+      }
       if (message.type === 'READY') {
         instance.post({ type: 'INIT', payload: instance.payload });
       }

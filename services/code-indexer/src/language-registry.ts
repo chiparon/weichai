@@ -148,7 +148,17 @@ function displayNameFor(languageId: TreeSitterLanguageId): string {
 }
 
 const defaultRegistrations: readonly TreeSitterLanguageRegistration[] = [
-  { languageId: 'c', fileExtensions: ['.c', '.h'], grammar: C as TreeSitterGrammar, capabilityLevel: 'structural' },
+  // A `.h` is the interface half of a C/C++ pair and is written in whatever the
+  // implementation is written in. Parsing it with the C grammar loses every C++
+  // construct — measured on fixtures/code-corpus/harmony-upload-native, whose header
+  // reported seven syntax errors, dropped the `ChunkWriter` class entirely and kept
+  // only two bogus function entries, while the matching .cpp indexed cleanly. Since
+  // that header is where the JNI export declarations live, C++ interfaces were
+  // reachable only through their definitions, which is the broken dependency chain
+  // the platform is meant to repair. The C++ grammar reads C headers fine, so the
+  // header extension takes it; `.c` keeps the C grammar.
+  { languageId: 'c', fileExtensions: ['.c', '.h'], grammar: C as TreeSitterGrammar,
+    grammarsByExtension: { '.h': Cpp as TreeSitterGrammar }, capabilityLevel: 'structural' },
   { languageId: 'cpp', fileExtensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'], grammar: Cpp as TreeSitterGrammar, capabilityLevel: 'structural' },
   { languageId: 'kotlin', fileExtensions: ['.kt', '.kts'], grammar: Kotlin as TreeSitterGrammar, capabilityLevel: 'structural' },
   // ArkUI-specific syntax remains diagnostic; do not advertise compiler-level ArkTS support.

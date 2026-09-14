@@ -13,6 +13,8 @@ recoverable from git history).
 
 The [guochuang implementation guide](docs/guochuang-implementation.zh-CN.md) covers
 evidence handoff, multi-file generation, behavioral verification, and labeled retrieval evaluation.
+The [module translation guide](docs/module-pipeline-repair.zh-CN.md) covers selecting a retrieved module,
+preparing its file scope, running translation and write-back, and reviewing or rolling back the changes.
 
 ## Repository layout
 

@@ -152,10 +152,10 @@ export function CandidatesStage({
           type="button"
           className="primary-action"
           onClick={onAdapt}
-          disabled={adapting || !candidate || candidate.kind === 'module' || state.target?.kind === 'module'}
+          disabled={adapting || !candidate}
         >
           {adapting ? <span className="spinner" /> : <Sparkles size={15} />}
-          {adapting ? '正在生成适配…' : candidate?.kind === 'module' || state.target?.kind === 'module' ? '多文件适配暂不可用' : !candidate ? '请选择一个具体实现' : '使用所选实现生成适配'}
+          {adapting ? '正在准备适配…' : candidate?.kind === 'module' || state.target?.kind === 'module' ? '准备模块翻译与回填' : !candidate ? '请选择一个具体实现' : '使用所选实现生成适配'}
         </button>
       </section>
     </div>

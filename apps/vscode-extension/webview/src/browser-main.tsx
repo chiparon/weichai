@@ -7,6 +7,8 @@ import './styles.css';
 const pending = new Map<string, AbortController>();
 const dispatch = (data: HostToWebviewMessage) => window.dispatchEvent(new MessageEvent('message', { data }));
 let state: unknown;
+// Candidate selection and preparation must reach the host in click order.
+let migrationMessages: Promise<unknown> = Promise.resolve();
 window.acquireVsCodeApi = () => ({
   getState: () => state,
   setState: (value) => { state = value; },
@@ -19,7 +21,7 @@ window.acquireVsCodeApi = () => ({
     }
     const controller = new AbortController();
     if (message.type === 'START_TASK_SEARCH') pending.set(message.requestId, controller);
-    void fetch('/v1/workbench/message', {
+    const send = () => fetch('/v1/workbench/message', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(message), signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) throw new Error('工作台请求失败。');
@@ -35,6 +37,9 @@ window.acquireVsCodeApi = () => ({
         ? { type: 'MODULE_CHILDREN_ERROR', requestId: message.requestId, message: error.message }
         : { type: 'ERROR', message: error.message });
     }).finally(() => { if (message.type === 'START_TASK_SEARCH') pending.delete(message.requestId); });
+    if (['SELECT_WORKSPACE_TARGET', 'SELECT_CANDIDATE', 'START_ADAPT', 'SELECT_CODE_INTELLIGENCE_PROJECT', 'SELECT_CODE_INTELLIGENCE_REVISION'].includes(message.type)) {
+      migrationMessages = migrationMessages.then(send, send);
+    } else void send();
   },
 });
 

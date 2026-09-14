@@ -41,6 +41,8 @@ export type WorkflowEvent =
   | { type: 'SET_STRATEGY'; value: AdaptationStrategy }
   | { type: 'ADAPT_START' }
   | { type: 'ADAPT_SUCCESS'; result: AdaptationResult }
+  | { type: 'MODULE_TRANSLATION_READY' }
+  | { type: 'MODULE_TRANSLATION_FINISHED'; completed: boolean }
   | { type: 'ADAPT_FAILURE'; message: string }
   | { type: 'APPLY_START' }
   | { type: 'APPLY_SUCCESS'; result: ApplyResult }
@@ -116,6 +118,10 @@ export function workflowReducer(
         stage: 'patch',
         adaptation: event.result,
       };
+    case 'MODULE_TRANSLATION_READY':
+      return { ...state, pending: null, stage: 'adaptation', error: null };
+    case 'MODULE_TRANSLATION_FINISHED':
+      return { ...state, pending: null, stage: event.completed ? 'complete' : 'patch' };
     case 'ADAPT_FAILURE':
       return {
         ...state,

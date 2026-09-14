@@ -13,12 +13,31 @@ import type { TaskRetrievalResult } from '@forexplore/contracts';
  * (`services/retrieval-service/src/reranker.ts`) and that 说明书 8.9.3 and the
  * progress deck both call for.
  *
- * Opt-in: `RECAST_RETRIEVAL_RERANK=on` enables it, and it needs a DeepSeek key.
+ * Opt-in via `RECAST_RETRIEVAL_RERANK`:
+ *   `llm`   — DeepSeek chat completions (needs DEEPSEEK_API_KEY, sends code excerpts
+ *             to a third party, ~1.2 s per request).
+ *   `local` — a cross-encoder served by scripts/serve-local-rerank.mjs. Fully local,
+ *             no key, deterministic; 58-66 ms of GPU time for 12 candidates on
+ *             DirectML and 1444 ms on CPU, so the provider is a per-deployment choice.
+ *
+ * Measured end to end over dev(12) + holdout(6) + new set(16), zero budget:
+ *
+ *   provider | recall | MRR dev / holdout / new | mean latency
+ *   llm      | 34/34  | 1.000 / 0.917 / 1.000   | 1.19-1.32 s
+ *   local    | 34/34  | 0.750 / 0.501 / 0.388   | 0.46-0.52 s
+ *
+ * Recall is identical because reranking only reorders a candidate set that already
+ * contains every annotated target; what differs is ranking quality. A general
+ * bilingual cross-encoder cannot judge *which code implements this requirement* the
+ * way a large model can, so `local` is the right default where the delivery is not
+ * truncated, and a cascade (local ordering, LLM on the head) is the better fit when
+ * a token budget decides what survives.
  * Anything else leaves retrieval exactly as it was.
  */
 export interface TaskRerankConfig {
+  readonly provider: 'llm' | 'local';
   readonly url: string;
-  readonly apiKey: string;
+  readonly apiKey?: string;
   readonly model: string;
   readonly timeoutMs: number;
   /** How many fused candidates are shown to the model. Bounded by prompt size and latency. */
@@ -40,15 +59,20 @@ export const RERANK_CANDIDATE_LIMIT = 12;
 
 export function taskRerankConfigFromEnvironment(environment: NodeJS.ProcessEnv = process.env): TaskRerankConfig | null {
   const raw = environment.RECAST_RETRIEVAL_RERANK?.trim().toLowerCase();
-  if (raw !== 'on' && raw !== '1' && raw !== 'true' && raw !== 'enabled') return null;
-  const apiKey = environment.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) throw new Error('RECAST_RETRIEVAL_RERANK requires DEEPSEEK_API_KEY.');
-  const base = (environment.DEEPSEEK_API_BASE?.trim() || 'https://api.deepseek.com/v1').replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+  if (raw !== 'on' && raw !== '1' && raw !== 'true' && raw !== 'enabled' && raw !== 'local' && raw !== 'llm') return null;
   const timeout = Number(environment.RECAST_RETRIEVAL_RERANK_TIMEOUT_MS);
   const limit = Number(environment.RECAST_RETRIEVAL_RERANK_LIMIT);
-  return { url: `${base}/chat/completions`, apiKey, model: environment.RECAST_RETRIEVAL_RERANK_MODEL?.trim() || 'deepseek-v4-flash',
-    timeoutMs: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 120000 ? timeout : 8000,
-    candidateLimit: Number.isInteger(limit) && limit >= 2 && limit <= 40 ? limit : RERANK_CANDIDATE_LIMIT };
+  const candidateLimit = Number.isInteger(limit) && limit >= 2 && limit <= 40 ? limit : RERANK_CANDIDATE_LIMIT;
+  if (raw === 'local') {
+    return { provider: 'local', url: environment.RECAST_RETRIEVAL_RERANK_URL?.trim() || 'http://127.0.0.1:4022/rerank',
+      model: environment.RECAST_RETRIEVAL_RERANK_MODEL?.trim() || 'Xenova/bge-reranker-base',
+      timeoutMs: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 120000 ? timeout : 5000, candidateLimit };
+  }
+  const apiKey = environment.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) throw new Error('RECAST_RETRIEVAL_RERANK=llm requires DEEPSEEK_API_KEY.');
+  const base = (environment.DEEPSEEK_API_BASE?.trim() || 'https://api.deepseek.com/v1').replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+  return { provider: 'llm', url: `${base}/chat/completions`, apiKey, model: environment.RECAST_RETRIEVAL_RERANK_MODEL?.trim() || 'deepseek-v4-flash',
+    timeoutMs: Number.isFinite(timeout) && timeout >= 1000 && timeout <= 120000 ? timeout : 8000, candidateLimit };
 }
 
 const SYSTEM_PROMPT = [
@@ -126,13 +150,47 @@ async function request(config: TaskRerankConfig, prompt: { system: string; user:
 }
 
 /**
- * Returns the candidates in the model's order, or `null` when the model could not
+ * Passage text handed to a cross-encoder. Deliberately the same fields the LLM
+ * prompt carries, so a provider comparison measures the reranker rather than a
+ * difference in what each one is shown.
+ */
+export function candidatePassage(candidate: TaskRerankCandidate): string {
+  return [
+    `符号: ${candidate.name} (${candidate.granularity})`,
+    `位置: ${candidate.relativePath}`,
+    ...(candidate.signature ? [`签名: ${candidate.signature}`] : []),
+    (candidate.preview?.trim() || '').slice(0, RERANK_PREVIEW_CHARS),
+  ].filter(Boolean).join('\n');
+}
+
+/** One score per candidate, in the order the passages were sent. */
+async function requestLocalScores(config: TaskRerankConfig, requirement: string,
+  candidates: readonly TaskRerankCandidate[], signal: AbortSignal | undefined): Promise<number[]> {
+  const timeout = AbortSignal.timeout(config.timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const response = await fetch(config.url, { method: 'POST', signal: combined, headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query: requirement, passages: candidates.map(candidatePassage) }) });
+  if (!response.ok) throw new Error(`Local rerank failed: HTTP ${response.status}`);
+  const payload = await response.json() as { scores?: unknown };
+  if (!Array.isArray(payload.scores) || payload.scores.length !== candidates.length || payload.scores.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+    throw new Error('Local rerank returned an unusable score vector.');
+  }
+  return payload.scores as number[];
+}
+
+/**
+ * Returns the candidates in the reranker's order, or `null` when it could not
  * produce a usable answer. A null result leaves the caller's own order untouched:
  * reranking must never make a request fail.
  */
 export async function rerankTaskCandidates(config: TaskRerankConfig, requirement: string,
   candidates: readonly TaskRerankCandidate[], signal?: AbortSignal): Promise<TaskRerankCandidate[] | null> {
   if (candidates.length < 2) return null;
+  if (config.provider === 'local') {
+    const scores = await requestLocalScores(config, requirement, candidates, signal);
+    return [...candidates].sort((left, right) =>
+      scores[candidates.indexOf(right)]! - scores[candidates.indexOf(left)]! || left.id.localeCompare(right.id));
+  }
   const ids = new Set(candidates.map((candidate) => candidate.id));
   const prompt = buildTaskRerankPrompt(requirement, candidates);
   let order: string[] | null = null;

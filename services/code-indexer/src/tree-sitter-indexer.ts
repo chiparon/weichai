@@ -88,6 +88,29 @@ const declarationKinds: Readonly<Record<string, StructuralSymbolKind>> = {
   namespace_definition: 'namespace',
   object_declaration: 'class',
   package_header: 'package',
+  // TypeScript and ArkTS spell an abstract class with its own node type, not
+  // `class_declaration`. Measured on
+  // fixtures/code-corpus/commons-fileupload-ts/src/file-upload.ts:
+  // `abstract class FileUploadBase` was neither a declaration nor a container,
+  // so its ten `public_field_definition` members and its seven
+  // `method_definition`s carried bare qualified names (`sizeMax`,
+  // `parseRequest`) with no `containerSymbolKey` at all, while the class itself
+  // was absent from the index. An abstract class is where a contract lives and
+  // the platform promotes a member to its declaring class by that container, so
+  // both halves were unreachable. The node names itself through a `name` field
+  // and owns a `class_body`, exactly like `class_declaration`, so `class` is the
+  // only mapping this needs (measured corpus-wide on the scanner's own file set:
+  // one `abstract_class_declaration`, in that file).
+  abstract_class_declaration: 'class',
+  // The abstract members of such a class are `abstract_method_signature`, a
+  // node type distinct from the `method_definition` beside them and from the
+  // `method_signature` an interface uses. Left unmapped they were invisible:
+  // `FileUploadBase.getFileItemFactory` and `setFileItemFactory` — the two
+  // operations a concrete subclass is obliged to provide — produced no symbol
+  // at all, while non-abstract and interface methods both index. Only an
+  // abstract declaration spells this node type, so the node type alone settles
+  // the kind; `name` is a `property_identifier` and there is no body.
+  abstract_method_signature: 'method',
   annotation_type_declaration: 'interface',
   class_declaration: 'class',
   class_definition: 'class',
@@ -286,6 +309,7 @@ const typeBodyNodeTypes = new Set([
 
 /** Declarations that own a type body, so a function inside it is a method. */
 const typeDeclarationNodeTypes = new Set([
+  'abstract_class_declaration',
   'annotation_type_declaration',
   'class_declaration',
   'class_definition',

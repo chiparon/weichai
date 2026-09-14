@@ -21,6 +21,17 @@ import { indexTreeSitterFile } from './tree-sitter-indexer.js';
  * declarations before, 143 after; the 26 new ones are all `field`s of this shape,
  * and every function-local binding in the file is still absent.
  *
+ * The third gap was the container rather than the member, and it is closed in the
+ * same file: `FileUploadBase` is spelled `abstract_class_declaration`, so it was
+ * no declaration and could not be a container, and the 17 members the walk did
+ * find carried bare names (`sizeMax`, `parseRequest`) with no
+ * `containerSymbolKey` for retrieval to promote them by. The class and its
+ * members are pinned in the tests below; corpus-wide the same mapping adds
+ * nothing else (measured over the scanner's own file set: 391 files, 7911
+ * declarations before, 7914 after — one abstract class and the two
+ * `abstract_method_signature` members that were the fourth, smaller gap, with
+ * 17 members re-keyed onto the class name and no other declaration touched).
+ *
  * Left alone deliberately, each measured:
  *   - an interface property is a `property_signature`, a different node type, and
  *     stays unmapped: it declares a contract member rather than state, and the
@@ -30,13 +41,6 @@ import { indexTreeSitterFile } from './tree-sitter-indexer.js';
  *     766 interface members and 324 type-literal members.
  *   - an index signature (`[key: string]: unknown`) declares no name to key on and
  *     is skipped for the same reason: its node type is unmapped.
- *   - `FileUploadBase`'s ten members extract, because they are properties of a
- *     `class_body` like any other, but without their class: TypeScript spells an
- *     abstract class `abstract_class_declaration`, which the walk does not map, so
- *     the class is not a declaration and cannot be a container. The seven methods
- *     of that class already carried the same bare qualified names. Unifying it
- *     means mapping one more node type, and the resulting `class` symbol would not
- *     be a property, so it is a separate change rather than part of this one.
  */
 const fixture = new URL('../../../fixtures/code-corpus/commons-fileupload-ts/src/file-upload.ts', import.meta.url);
 
@@ -126,5 +130,81 @@ describe('TypeScript fixture through the real indexer', () => {
     // node type leaked into the `field` kind while the map was open.
     expect(result.declarations.filter((declaration) => declaration.kind === 'field'
       && declaration.declarationNodeType !== 'public_field_definition')).toEqual([]);
+  });
+
+  it('extracts an abstract class as a class, with its members qualified by it', async () => {
+    const result = await index();
+    const base = result.declarations.find((declaration) => declaration.name === 'FileUploadBase')!;
+    expect(base.kind).toBe('class');
+    expect(base.declarationNodeType).toBe('abstract_class_declaration');
+    expect(base.signature).toBe('abstract class FileUploadBase');
+    expect(base.qualifiedName).toBe('FileUploadBase');
+    expect(base.isExported).toBe(true);
+    expect(base.sourceRange.startLine).toBe(378);
+    // The class hangs off the file, so nothing may claim it as a member.
+    expect(base.containerSymbolKey).toBeUndefined();
+
+    // The field the size check in `parseRequest` reads, under the class that
+    // declares it: retrieval promotes a recalled member by this container.
+    const sizeMax = result.declarations.find((declaration) => declaration.qualifiedName === 'FileUploadBase.sizeMax')!;
+    expect(sizeMax.kind).toBe('field');
+    expect(sizeMax.containerSymbolKey).toBe(base.symbolKey);
+
+    // An abstract member is `abstract_method_signature`, a different node type
+    // from the methods beside it, and it is the contract a subclass must meet.
+    const factory = result.declarations.find((declaration) => declaration.qualifiedName === 'FileUploadBase.getFileItemFactory')!;
+    expect(factory.kind).toBe('method');
+    expect(factory.declarationNodeType).toBe('abstract_method_signature');
+    expect(factory.signature).toBe('abstract getFileItemFactory(): FileItemFactory | undefined');
+    expect(factory.containerSymbolKey).toBe(base.symbolKey);
+    // A concrete class declaring the same member name is a separate symbol.
+    expect(result.declarations.find((declaration) => declaration.qualifiedName === 'FileUpload.getFileItemFactory')?.symbolKey)
+      .not.toBe(factory.symbolKey);
+  });
+
+  it('gives every member of the abstract class that container and no other owner', async () => {
+    const result = await index();
+    const content = await readFile(fixture, 'utf8');
+    const base = result.declarations.find((declaration) => declaration.name === 'FileUploadBase')!;
+    const members = result.declarations.filter((declaration) =>
+      declaration.sourceRange.startLine >= base.sourceRange.startLine
+      && declaration.sourceRange.endLine <= base.sourceRange.endLine
+      && declaration.symbolKey !== base.symbolKey);
+    // Ten fields, seven methods and the two abstract signatures between them.
+    expect(members.map((member) => `${member.kind} ${member.qualifiedName}`)).toEqual([
+      'field FileUploadBase.MULTIPART',
+      'field FileUploadBase.MULTIPART_FORM_DATA',
+      'field FileUploadBase.MULTIPART_MIXED',
+      'field FileUploadBase.CONTENT_TYPE',
+      'field FileUploadBase.CONTENT_DISPOSITION',
+      'field FileUploadBase.sizeMax',
+      'field FileUploadBase.fileSizeMax',
+      'field FileUploadBase.fileCountMax',
+      'field FileUploadBase.headerEncoding',
+      'field FileUploadBase.progressListener',
+      'method FileUploadBase.isMultipartContent',
+      'method FileUploadBase.getFileItemFactory',
+      'method FileUploadBase.setFileItemFactory',
+      'method FileUploadBase.parseRequest',
+      'method FileUploadBase.parseParameterMap',
+      'method FileUploadBase.getItemIterator',
+      'method FileUploadBase.getBoundary',
+      'method FileUploadBase.getParsedHeaders',
+      'method FileUploadBase.parseDisposition',
+    ]);
+    for (const member of members) {
+      expect(member.containerSymbolKey).toBe(base.symbolKey);
+      // Position-exactly: the range the member reports starts on the member's own
+      // declaration text in the original file, so a container can only be claimed
+      // for a real declaration and never for an expression the walk passed
+      // through. A method's signature stops at its body, which the whole-range
+      // equality in the field test above pins for the fields.
+      const lineStarts = [0];
+      for (let index = 0; index < content.length; index += 1) {
+        if (content[index] === '\n') lineStarts.push(index + 1);
+      }
+      const start = lineStarts[member.sourceRange.startLine - 1]! + member.sourceRange.startColumn - 1;
+      expect(content.slice(start, start + member.signature.length)).toBe(member.signature);
+    }
   });
 });

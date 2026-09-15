@@ -475,11 +475,6 @@ function validateTranslationResult(
 ): TranslationResult {
   const generatedCode = cleanGeneratedCode(result.generatedCode);
   const unresolved = result.unresolved.map((item) => item.trim()).filter(Boolean);
-  if (unresolved.length > 0) {
-    throw new Error(
-      `Translator returned unresolved items and cannot complete translation: ${unresolved.join("; ")}`,
-    );
-  }
   assertTargetScope(generatedCode, request.targetContext.targetKind);
   assertTargetContract(
     generatedCode,

@@ -12,6 +12,7 @@ coverage/
 .vscode-test-user/
 *.vsix
 .forexplore/
+fixtures/target-system/.forexplore-java-integrated-*/
 
 # Local environment files
 .env
@@ -69,3 +70,11 @@ logs/
 
 # Git worktrees
 .worktrees/
+
+.scratch/
+docs/superpowers/
+e2e-runs/
+
+# IDE and build artifacts
+.github/
+obj/

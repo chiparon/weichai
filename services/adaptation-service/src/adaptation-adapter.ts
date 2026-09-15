@@ -1,3 +1,10 @@
+import { captureProjectBaseline, redactTestEvidence } from '@forexplore/translation-verifier/workspace-test-verifier';
+import { resolveModelApiKey } from './model-credential';
+import { applyHunksStrict } from '@forexplore/workflow-core';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { WorkspaceTestResult, WorkspaceTestSuite, WorkspaceTestVerifier } from '@forexplore/contracts';
 import type { ModelApiKey } from './model-credential';
 /**
  * CodeAdaptationPort orchestration:
@@ -38,6 +45,7 @@ import {
   isCompilerUnavailable,
   resolveProjectTargetFile,
   type CompileResult,
+  type IntegratedCompileOptions,
 } from "./compiler";
 
 const MAX_RETRIES = 3;
@@ -54,6 +62,10 @@ export interface AdaptationAdapterOptions {
   contextCollector?: AdaptationContextCollector;
   translatorRequest?: typeof globalThis.fetch;
   validator?: AdaptationValidator;
+  testAgentEnabled?: boolean;
+  maxTestRepairAttempts?: number;
+  testAgent?: WorkspaceTestVerifier;
+  onTestEvent?: (event: Record<string, unknown>) => void;
 }
 
 export interface AdaptationAnalyzer {
@@ -71,6 +83,7 @@ export interface AdaptationValidator {
     code: string,
     skeletonProjectPath: string,
     targetFilePath: string,
+    options?: IntegratedCompileOptions,
   ): CompileResult;
   isUnavailable(result: CompileResult): boolean;
 }
@@ -88,6 +101,10 @@ export class AdaptationAdapter implements CodeAdaptationPort {
   #contextCollector: AdaptationContextCollector;
   #translatorOptions: TranslatorModelOptions;
   #validator: AdaptationValidator;
+  #testAgentEnabled: boolean;
+  #maxTestRepairAttempts: number;
+  #testAgent?: WorkspaceTestVerifier;
+  #onTestEvent?: (event: Record<string, unknown>) => void;
 
   constructor(options: AdaptationAdapterOptions) {
     this.#skeletonProjectPath = options.skeletonProjectPath;
@@ -98,6 +115,10 @@ export class AdaptationAdapter implements CodeAdaptationPort {
       ? { apiKey: options.apiKey, request: options.translatorRequest }
       : { apiKey: options.apiKey };
     this.#validator = options.validator ?? defaultValidator;
+    this.#testAgentEnabled = options.testAgentEnabled ?? false;
+    this.#maxTestRepairAttempts = options.maxTestRepairAttempts ?? 2;
+    this.#testAgent = options.testAgent;
+    this.#onTestEvent = options.onTestEvent;
   }
 
   async adapt(
@@ -150,48 +171,76 @@ export class AdaptationAdapter implements CodeAdaptationPort {
     );
     let generatedCode = translationResult.generatedCode;
 
-    let standaloneResult = this.#validator.compileStandalone(
-      request.target.language,
-      generatedCode,
-      STANDALONE_CLASS_NAME,
-    );
-    let integratedResult = this.#skeletonProjectPath
-      ? this.#validator.compileIntegrated(
-          request.target.language,
-          generatedCode,
-          this.#skeletonProjectPath,
-          request.target.path,
-        )
-      : null;
-    let retries = 0;
-    let repairResult = integratedResult ?? standaloneResult;
-    while (!repairResult.success) {
-      if (this.#validator.isUnavailable(repairResult) || retries >= MAX_RETRIES) break;
-      translationResult = await repairTranslation(
-        {
-          ...translationInput,
-          previousResult: translationResult,
-          validationFeedback: compilerFeedback(repairResult.errors),
-        },
-        this.#translatorOptions,
-        signal,
-      );
-      generatedCode = translationResult.generatedCode;
-      standaloneResult = this.#validator.compileStandalone(
-        request.target.language,
-        generatedCode,
-        STANDALONE_CLASS_NAME,
-      );
-      integratedResult = this.#skeletonProjectPath
-        ? this.#validator.compileIntegrated(
-            request.target.language,
-            generatedCode,
-            this.#skeletonProjectPath,
-            request.target.path,
-          )
-        : null;
-      repairResult = integratedResult ?? standaloneResult;
-      retries++;
+    const original = readOriginalIfAvailable(projectRoot, request.target.path);
+    let workspaceRoot: string | undefined;
+    let testRuns: WorkspaceTestResult[] = [];
+    let testDurationMs = 0;
+    const runId = randomUUID();
+    const events: Record<string, unknown>[] = [];
+    const emit = (event: Record<string, unknown>) => { const value = JSON.parse(redactTestEvidence(JSON.stringify({ at: new Date().toISOString(), ...event }), resolveModelApiKey(this.#translatorOptions.apiKey))) as Record<string, unknown>; events.push(value); this.#onTestEvent?.(value); };
+    let artifactPath: string | undefined;
+    let standaloneResult: CompileResult = { success: false, errors: [], output: "" };
+    let integratedResult: CompileResult | null = null;
+    try {
+      let compileRepairs = 0, testRepairs = 0;
+      let suite: WorkspaceTestSuite | undefined;
+      for (;;) {
+        signal?.throwIfAborted();
+        standaloneResult = this.#validator.compileStandalone(request.target.language, generatedCode, STANDALONE_CLASS_NAME);
+        let targetContent: string | undefined;
+        if (this.#testAgentEnabled && original.content !== null && request.target.line != null) {
+          const preview = buildFilePatch(request.target.path, generatedCode, original.content, request.target.line, request.target.language, request.target.kind);
+          if (!preview) throw new Error("Cannot build the exact target patch for testing.");
+          targetContent = applyHunksStrict(original.content, preview.hunks);
+        }
+        integratedResult = this.#skeletonProjectPath || this.#testAgentEnabled
+          ? this.#validator.compileIntegrated(request.target.language, generatedCode, this.#skeletonProjectPath ?? projectRoot, request.target.path,
+            this.#testAgentEnabled ? { retainWorkspace: true, workspaceRoot, targetContent } : undefined) : null;
+        workspaceRoot = integratedResult?.workspaceRoot ?? workspaceRoot;
+        const compiled = integratedResult ?? standaloneResult;
+        if (!compiled.success) {
+          if (this.#validator.isUnavailable(compiled) || compileRepairs++ >= MAX_RETRIES) break;
+          translationResult = await repairTranslation({ ...translationInput, previousResult: translationResult, validationFeedback: compilerFeedback(compiled.errors) }, this.#translatorOptions, signal);
+          generatedCode = translationResult.generatedCode;
+          continue;
+        }
+        if (!this.#testAgentEnabled || !workspaceRoot || !this.#testAgent) break;
+        const baseline = captureProjectBaseline(workspaceRoot);
+        const started = Date.now();
+        emit({ type: "test.started", target: request.target.name });
+        const test = await this.#testAgent({
+          translationRunId: runId, workspaceRoot,
+          request: { spec: requirement, sourceLanguage: request.candidate.language, targetLanguage: request.target.language,
+            workspaceFiles: [request.target.path], writeFiles: [request.target.path],
+            context: [{ id: 'target-context', kind: 'summary', content: JSON.stringify(collectedContext) },
+              { id: 'reference', kind: 'source', content: translationInput.candidateSource }] },
+          compilation: { command: { executable: compilerCommand(request.target.language), args: [], timeoutMs: 120000 },
+            success: compiled.success, exitCode: compiled.success ? 0 : 1, startedAt: '', durationMs: 0, output: compiled.output, diagnostics: compiled.errors },
+          suite,
+        }, signal ?? new AbortController().signal);
+        const durationMs = Date.now() - started;
+        testDurationMs += durationMs;
+        testRuns.push(test);
+        emit({ type: "test.completed", durationMs, status: test.status, testRunId: test.id });
+        suite ??= test.suite;
+        const valid = test.translationRunId === runId && test.sourceSnapshot === baseline.hash && captureProjectBaseline(workspaceRoot).hash === baseline.hash && test.reportConsistent && test.commands.length > 0 && test.commands.every(command => command.sourceSnapshot === baseline.hash && command.cwd === workspaceRoot && command.filesUnchanged && !command.timedOut);
+        if (!valid) { test.status = 'inconclusive'; test.reportConsistent = false; test.summary = 'Test evidence does not match the compiled preview.'; }
+        if (valid && test.status === "passed" && test.commands.at(-1)?.exitCode === 0) break;
+        if (!valid || test.status !== "failed" || !suite || !test.report?.bugs.length || testRepairs++ >= this.#maxTestRepairAttempts) break;
+        emit({ type: "repair.started", testRunId: test.id, attempt: testRepairs });
+        translationResult = await repairTranslation({ ...translationInput, previousResult: translationResult,
+          validationFeedback: compilerFeedback([JSON.stringify({ instruction: "Repair only the target implementation. The host will rerun the SAME immutable tests after recompiling. Do not change assertions.", bugs: test.report.bugs, commandEvidence: test.commands })]) }, this.#translatorOptions, signal);
+        generatedCode = translationResult.generatedCode;
+      }
+    } finally {
+      // The workflow retains the compiled workspace for test reruns and inspection.
+      if (this.#testAgentEnabled) {
+        const dir = join(projectRoot, '.forexplore', 'adaptation-tests', runId);
+        mkdirSync(dir, { recursive: true });
+        artifactPath = join(dir, 'result.json');
+        writeFileSync(artifactPath, redactTestEvidence(JSON.stringify({ testRuns, testDurationMs, workspaceRoot, compilation: integratedResult }, null, 2), resolveModelApiKey(this.#translatorOptions.apiKey)));
+        writeFileSync(join(dir, 'events.json'), JSON.stringify(events, null, 2));
+      }
     }
 
     const targetSnapshot = readOriginalIfAvailable(
@@ -277,12 +326,15 @@ export class AdaptationAdapter implements CodeAdaptationPort {
         {
           id: "behavioral-semantics",
           label: "Behavioral validation",
-          status: "unverified",
-          required: false,
-          summary: "Compilation validates syntax only; behavioral semantics still require target-project tests.",
+          status: this.#testAgentEnabled ? (testRuns.at(-1)?.status === "passed" && testRuns.at(-1)?.reportConsistent && integratedResult?.success ? "pass" : testRuns.length ? "fail" : "unverified") : "unverified",
+          required: this.#testAgentEnabled,
+          summary: testRuns.at(-1)?.summary ?? (this.#testAgentEnabled ? (!integratedResult?.success ? "Tests not run: target project compilation did not pass." : "Tests not run: no test verifier or retained compiled workspace is available.") : "Behavioral test agent is disabled."),
+          failureReason: testRuns.length ? undefined : this.#testAgentEnabled ? (!integratedResult?.success ? "test-skipped-compilation-failed" : "test-runner-unsupported") : "test-agent-disabled",
+          artifactPath,
         },
       ],
       files: patch ? [patch] : [],
+      ...(this.#testAgentEnabled ? { testRuns, testDurationMs } : {}),
     };
   }
 }

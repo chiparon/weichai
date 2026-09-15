@@ -243,17 +243,17 @@ describe("Translator Agent", () => {
     );
   });
 
-  it("stops when the Translator reports unresolved blockers", async () => {
+  it("keeps unresolved questions as review metadata when code is otherwise valid", async () => {
     const request = fixture("translator-direct");
-    const blocked = resultFor(request);
-    blocked.unresolved = ["missing target dependency"];
+    const result = resultFor(request);
+    result.unresolved = ["missing target dependency"];
 
     await expect(
       translateWithAnalysis(request, {
         apiKey: "test-key",
-        request: modelRequest(blocked),
+        request: modelRequest(result),
       }),
-    ).rejects.toThrow("returned unresolved items");
+    ).resolves.toMatchObject({ unresolved: ["missing target dependency"] });
   });
 
   it("rejects a member appended after the requested target method", async () => {

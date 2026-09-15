@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -305,4 +305,32 @@ describe("WorkspaceModulePatchPreparer", () => {
       waveId: plan.executionWaves[0]!.id,
     })).rejects.toThrow(/ended as failed|exhausted its \d+-turn budget/);
   }, 300_000);
+});
+
+
+it('keeps the compiled full worktree through testing and preserves failed evidence outside it', async () => {
+  const root = await repository();
+  const { analysis, plan } = await planFor(root, limitModule());
+  let observedRoot = '';
+  const runner = new ModuleWavePreparationRunner(new WorkspaceModulePatchPreparer({
+    client: scripted([call('submit_plan', singleStepPlan), call('read_file', { path: 'src/Limit.cs' }),
+      call('write_file', { path: 'src/Limit.cs', expectedHash: hash(stub), content: good }),
+      call('complete_step', { stepId: 'limit' }), call('compile'), call('finish')]),
+    compileCommand,
+    testVerifier: async input => {
+      observedRoot = input.workspaceRoot;
+      expect(input.compilation.success).toBe(true);
+      expect(await readFile(path.join(observedRoot, 'src/Limit.cs'), 'utf8')).toBe(good);
+      expect((await readFile(path.join(observedRoot, 'bin/Debug/net8.0/Fixture.dll'))).length).toBeGreaterThan(0);
+      return { id: 'failed-tests', translationRunId: input.translationRunId, status: 'inconclusive', summary: 'fixture test environment unavailable',
+        sourceSnapshot: '', reportConsistent: false, commands: [], cleanup: 'not-needed' };
+    },
+  }));
+  await expect(runner.prepare({ repositoryRoot: root, analysis, plan, waveId: plan.executionWaves[0]!.id })).rejects.toThrow('fixture test environment unavailable');
+  await expect(readFile(path.join(observedRoot, 'src/Limit.cs'))).rejects.toMatchObject({ code: 'ENOENT' });
+  const directory = path.join(root, '.git', '.forexplore', 'workspace-translations');
+  const records = await readdir(directory);
+  expect(records).toHaveLength(1);
+  expect(JSON.parse(await readFile(path.join(directory, records[0]!), 'utf8')).testRuns[0].summary).toBe('fixture test environment unavailable');
+  expect(git(root, ['status', '--porcelain'])).toBe('');
 });

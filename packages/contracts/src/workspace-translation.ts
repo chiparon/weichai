@@ -1,3 +1,81 @@
+/** A reproducible suite generated for a translation; repair attempts reuse it. */
+export interface WorkspaceTestSuite {
+  files: Array<{ path: string; content: string }>;
+  command: Pick<WorkspaceCompileCommand, "executable" | "args">;
+}
+
+export interface WorkspaceTestCommandEvidence {
+  id: string;
+  command: Pick<WorkspaceCompileCommand, "executable" | "args">;
+  cwd: string;
+  startedAt: string;
+  durationMs: number;
+  exitCode: number | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  /** Hash of the production files tested, computed by the host. */
+  sourceSnapshot: string;
+  filesUnchanged: boolean;
+  /** Translated files whose functions actually executed, from host-collected V8 coverage. */
+  executedProductionFiles?: string[];
+  /** Present only when the host parsed actual test-runner results. */
+  tests?: { total: number; passed: number; failed: number; skipped: number };
+}
+
+export interface WorkspaceTestBug {
+  summary: string;
+  expected: string;
+  actual: string;
+  /** References to this attempt's host-owned command evidence. */
+  commandIds: string[];
+  testPaths: string[];
+}
+
+/** Untrusted agent claims; the host must compare them with command evidence. */
+export interface WorkspaceTestReport {
+  outcome: "passed" | "failed" | "inconclusive";
+  summary: string;
+  commandIds: string[];
+  bugs: WorkspaceTestBug[];
+}
+
+export interface WorkspaceTestResult {
+  id: string;
+  translationRunId: string;
+  status: "passed" | "failed" | "inconclusive" | "cancelled";
+  summary: string;
+  sourceSnapshot: string;
+  suite?: WorkspaceTestSuite;
+  report?: WorkspaceTestReport;
+  reportConsistent: boolean;
+  commands: WorkspaceTestCommandEvidence[];
+  cleanup: "not-needed" | "retained" | "removed" | "conflict";
+}
+
+export interface WorkspaceTestFeedback {
+  testRunId: string;
+  attempt: number;
+  summary: string;
+  bugs: WorkspaceTestBug[];
+  status: "pending" | "repairing" | "resolved" | "exhausted";
+}
+
+/** Trusted in-process handoff; workspaceRoot never comes from the test model. */
+export interface WorkspaceTestInput {
+  translationRunId: string;
+  workspaceRoot: string;
+  request: WorkspaceTranslationRequest;
+  compilation: WorkspaceCompilation;
+  /** Re-run these exact tests after a translator repair; do not regenerate them. */
+  suite?: WorkspaceTestSuite;
+}
+
+export type WorkspaceTestVerifier = (
+  input: WorkspaceTestInput,
+  signal: AbortSignal,
+) => Promise<WorkspaceTestResult>;
+
 /** Retrieval evidence is immutable; workspaceFiles are read live by the agents. */
 export interface WorkspaceTranslationContext {
   id: string;
@@ -99,6 +177,12 @@ export interface WorkspaceTranslationRun {
   /** Every on-demand history query this run performed, in order. */
   evidenceQueries?: WorkspaceEvidenceQuery[];
   modelTurns: number;
+  /** Persist the acceptance requirement so restart cannot silently disable it. */
+  testVerificationRequired?: boolean;
+  /** Host-checked test attempts, retained across translator repairs. */
+  testRuns?: WorkspaceTestResult[];
+  /** Only the host creates feedback and controls the repair budget. */
+  testFeedback?: WorkspaceTestFeedback[];
   error?: string;
   /** A passing fixed test suite is evidence, not a proof of all behaviors. */
   acceptance: "compilation-only" | "behavior-verified";

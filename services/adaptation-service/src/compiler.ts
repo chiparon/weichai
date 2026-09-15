@@ -4,6 +4,8 @@
 
 import { execFileSync } from "node:child_process";
 import {
+  lstatSync,
+  realpathSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -21,6 +23,14 @@ export interface CompileResult {
   success: boolean;
   errors: string[];
   output: string;
+  /** Retained compiled checkout, owned by the calling workflow. */
+  workspaceRoot?: string;
+}
+
+export interface IntegratedCompileOptions {
+  retainWorkspace?: boolean;
+  workspaceRoot?: string;
+  targetContent?: string;
 }
 
 /**
@@ -47,9 +57,10 @@ export function compileTargetIntegrated(
   code: string,
   projectPath: string,
   targetFilePath: string,
+  options?: IntegratedCompileOptions,
 ): CompileResult {
   switch (language) {
-    case "Java": return compileJavaIntegrated(code, projectPath, targetFilePath);
+    case "Java": return compileJavaIntegrated(code, projectPath, targetFilePath, options);
     case "C#": return compileIntegrated(code, projectPath, targetFilePath);
     case "TypeScript": return compileTypeScriptIntegrated(code, projectPath, targetFilePath);
     case "Python": return compilePythonIntegrated(code, projectPath, targetFilePath);
@@ -596,6 +607,7 @@ export function compileJavaIntegrated(
   javaCode: string,
   skeletonProjectPath: string,
   targetFilePath: string,
+  options?: IntegratedCompileOptions,
 ): CompileResult {
   const javac = findJavac();
   if (!javac) {
@@ -633,17 +645,24 @@ export function compileJavaIntegrated(
     };
   }
 
-  const temporaryProject = mkdtempSync(
+  const temporaryProject = options?.workspaceRoot ?? realpathSync(mkdtempSync(
     join(dirname(projectRoot), ".forexplore-java-integrated-"),
-  );
+  ));
+  if (realpathSync(temporaryProject) === realpathSync(projectRoot)) throw new Error("Compilation workspace must be isolated from the original project.");
+  const retained = options?.retainWorkspace ? { workspaceRoot: temporaryProject } : {};
   try {
-    cpSync(projectRoot, temporaryProject, {
+    if (!options?.workspaceRoot) cpSync(projectRoot, temporaryProject, {
       recursive: true,
-      filter: (source) => !["bin", "build", "target", "out"].includes(source.split(/[\\/]/).at(-1) ?? ""),
+      filter: (source) => {
+        if (["bin", "build", "target", "out", ".git", ".forexplore", ".forexplore-tests"].includes(basename(source)) || basename(source).startsWith(".env")) return false;
+        const stat = lstatSync(source);
+        if (stat.isSymbolicLink() || (stat.isFile() && stat.nlink !== 1)) throw new Error("Linked project files cannot be copied for testing.");
+        return true;
+      },
     });
     const temporaryTarget = join(temporaryProject, relativeTarget);
     const original = readFileSync(temporaryTarget, "utf8");
-    writeFileSync(temporaryTarget, replaceTargetCode(original, javaCode), "utf8");
+    writeFileSync(temporaryTarget, options?.targetContent ?? replaceTargetCode(original, javaCode), "utf8");
 
     const maven = existsSync(join(temporaryProject, "pom.xml")) ? findMaven() : null;
     if (maven) {
@@ -655,10 +674,10 @@ export function compileJavaIntegrated(
           timeout: 90_000,
           stdio: "pipe",
         });
-        return { success: true, errors: [], output: stdout };
+        return { ...retained, success: true, errors: [], output: stdout };
       } catch (error: unknown) {
         const errOutput = collectErrorOutput(error);
-        return { success: false, errors: parseJavaErrors(errOutput), output: errOutput };
+        return { ...retained, success: false, errors: parseJavaErrors(errOutput), output: errOutput };
       }
     }
 
@@ -670,17 +689,17 @@ export function compileJavaIntegrated(
         timeout: 60_000,
         stdio: "pipe",
       });
-      return { success: true, errors: [], output: stdout };
+      return { ...retained, success: true, errors: [], output: stdout };
     } catch (e: unknown) {
       const errOutput = collectErrorOutput(e);
       const errors = parseJavaErrors(errOutput);
-      return { success: false, errors, output: errOutput };
+      return { ...retained, success: false, errors, output: errOutput };
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, errors: [message], output: message };
+    return { ...retained, success: false, errors: [message], output: message };
   } finally {
-    rmSync(temporaryProject, { recursive: true, force: true });
+    if (!options?.retainWorkspace) rmSync(temporaryProject, { recursive: true, force: true });
   }
 }
 

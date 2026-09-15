@@ -67,6 +67,7 @@ const ModuleWaveExecutionCoordinator = require('@forexplore/adaptation-service/m
 };
 
 interface ExtensionHost {
+  output: vscode.OutputChannel;
   context: vscode.ExtensionContext;
   services: ServiceManager;
   health: RepositoryHealthCheck;
@@ -211,7 +212,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
     }),
-    createWorkbenchLauncher({ context, services, health, codeIntelligence }, output),
+    createWorkbenchLauncher({ context, services, health, codeIntelligence, output }, output),
     { dispose: () => codeIntelligence.dispose() },
     vscode.workspace.registerTextDocumentContentProvider(
       moduleMigrationPreviewScheme,
@@ -224,8 +225,8 @@ export function activate(context: vscode.ExtensionContext): void {
       deserializeWebviewPanel: async (panel) => {
         const revived = await TranslationPanel.restore(panel, context,
           panelInitPayload(services, loadSettings()),
-          panelHandlers({ context, services, health, codeIntelligence }));
-        primeWorkbench({ context, services, health, codeIntelligence }, revived, output);
+          panelHandlers({ context, services, health, codeIntelligence, output }));
+        primeWorkbench({ context, services, health, codeIntelligence, output }, revived, output);
       },
     }),
     vscode.commands.registerCommand('forexplore.showPanel', () =>
@@ -295,7 +296,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // A target import interrupted by the workspace change is finished here, on
   // the host that survived it.
   void resumeInterruptedTargetImport(
-    { context, services, health, codeIntelligence }, output,
+    { context, services, health, codeIntelligence, output }, output,
   ).catch((error) => output.appendLine(`[forexplore] resume failed: ${String(error)}`));
 }
 
@@ -479,7 +480,7 @@ async function showPanel(
   codeIntelligence: CodeIntelligenceHost,
   output: vscode.OutputChannel,
 ): Promise<void> {
-  const host: ExtensionHost = { context, services, health, codeIntelligence };
+  const host: ExtensionHost = { context, services, health, codeIntelligence, output };
   // Opening the workbench is the explicit use that starts the indexing chain.
   // Memoized, so reopening an existing panel costs nothing while a failed
   // startup is still retried on the next click.
@@ -918,6 +919,7 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
     await assertTargetUnchanged(run);
     const status = await host.services.refresh();
     publish({ type: 'SERVICE_STATUS', status });
+    host.output.appendLine(`[adaptation] 开始生成与校验：${run.target.name}（${run.target.language}）`);
     const rawResult = await host.services.getAdaptationPort().adapt({
       target: run.target,
       candidate,
@@ -926,6 +928,15 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
       decisionNotes,
     });
     const result = validateHostOwnedResult(run, rawResult);
+    for (const check of result.validation.filter(item => item.id === 'behavioral-semantics')) {
+      host.output.appendLine(`[test-agent] ${check.status}${check.failureReason ? ` · ${check.failureReason}` : ''}`);
+      if (check.artifactPath) host.output.appendLine(`[test-agent] 运行记录：${check.artifactPath}`);
+    }
+    if (result.testDurationMs !== undefined) host.output.appendLine(`[test-agent] 测试阶段总耗时：${(result.testDurationMs / 1000).toFixed(2)} 秒`);
+    for (const attempt of result.testRuns ?? []) {
+      host.output.appendLine(`[test-agent] ${attempt.id} · ${attempt.status} · 报告核验：${attempt.reportConsistent}`);
+      for (const command of attempt.commands) host.output.appendLine(`[test-agent] 命令 ${command.id} · ${command.durationMs} ms · exit=${command.exitCode} · tests=${command.tests?.total ?? 'unknown'} · failed=${command.tests?.failed ?? 'unknown'}`);
+    }
     run.adaptation = result;
     publish({ type: 'ADAPT_RESULT', result });
   } catch (error) {

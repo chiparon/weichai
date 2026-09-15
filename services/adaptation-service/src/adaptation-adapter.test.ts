@@ -1,3 +1,8 @@
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { captureProjectBaseline } from '@forexplore/translation-verifier/workspace-test-verifier';
+import { applyHunksStrict } from '@forexplore/workflow-core';
 import { fileURLToPath } from "node:url";
 import type {
   AnalysisReport,
@@ -8,7 +13,7 @@ import type {
 } from "@forexplore/contracts";
 import { describe, expect, it } from "vitest";
 import { AdaptationAdapter, _buildFilePatch } from "./adaptation-adapter";
-import type { CompileResult } from "./compiler";
+import { compileTargetIntegrated, type CompileResult } from "./compiler";
 
 const javaCandidate: SearchCandidate = {
   id: "java-candidate",
@@ -509,3 +514,42 @@ describe("buildFilePatch", () => {
     )).toThrow("safe patch");
   });
 });
+
+it("actual adapter previews the exact Java bytes tested, repairs with the same suite and persists evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), 'adaptation-java-flow-'));
+  const source = "public class X {\n    public int value() { return 0; }\n}\n";
+  mkdirSync(join(root, 'src/main/java'), { recursive: true });
+  writeFileSync(join(root, 'src/main/java/X.java'), source);
+  writeFileSync(join(root, 'pom.xml'), '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>1</version><properties><maven.compiler.source>8</maven.compiler.source><maven.compiler.target>8</maven.compiler.target></properties></project>');
+  let calls = 0; const roots: string[] = []; const tested: string[] = []; const feedback: string[] = [];
+  const suite = { files: [{ path: '.forexplore-tests/XTest.java', content: 'import org.junit.Test;import static org.junit.Assert.*;public class XTest { @Test public void value(){assertEquals(2,new X().value());}}' }], command: { executable: 'mvn', args: ['test'] } };
+  try {
+    const adapter = new AdaptationAdapter({ apiKey: 'test-only', projectRoot: root, testAgentEnabled: true,
+      contextCollector: () => ({ ...targetContext, target: { ...request.target, name: 'value', signature: 'public int value()', path: 'src/main/java/X.java', line: 2 } }), analyzer: { async analyze() { return analysisReport; } },
+      translatorRequest: async (_url, init) => { feedback.push(String(init?.body)); return Response.json({ choices: [{ message: { content: JSON.stringify({ schemaVersion: '1.0', generatedCode: `public int value() { return ${++calls}; }`, interfaceMappings: [], completedSteps: analysisReport.implementationPlan, unresolved: [] }) } }] }); },
+      validator: { compileStandalone: () => ({ success: true, errors: [], output: '' }), compileIntegrated: compileTargetIntegrated, isUnavailable: () => false },
+      testAgent: async input => {
+        roots.push(input.workspaceRoot); tested.push(readFileSync(join(input.workspaceRoot, 'src/main/java/X.java'), 'utf8'));
+        if (roots.length === 2) expect(input.suite).toEqual(suite);
+        const failed = roots.length === 1;
+        const hash = captureProjectBaseline(input.workspaceRoot).hash;
+        const bug = { summary: 'wrong number', expected: '2', actual: 'expected 2 got 1', commandIds: ['command'], testPaths: [suite.files[0]!.path] };
+        return { id: String(roots.length), translationRunId: input.translationRunId, status: failed ? 'failed' : 'passed', summary: 'host observed',
+          sourceSnapshot: hash, cleanup: 'retained', reportConsistent: true, suite,
+          report: { outcome: failed ? 'failed' : 'passed', summary: 'host observed', commandIds: ['command'], bugs: failed ? [bug] : [] },
+          commands: [{ id: 'command', command: suite.command, cwd: input.workspaceRoot, startedAt: '', durationMs: 1, exitCode: failed ? 1 : 0,
+            timedOut: false, stdout: failed ? bug.actual : 'passed', stderr: '', filesUnchanged: true, sourceSnapshot: hash,
+            executedProductionFiles: ['src/main/java/X.java'], tests: { total: 1, passed: failed ? 0 : 1, failed: failed ? 1 : 0, skipped: 0 } }] };
+
+      },
+    });
+    const result = await adapter.adapt({ ...request, target: { ...request.target, name: 'value', signature: 'public int value()', path: 'src/main/java/X.java', line: 2 } });
+    expect(result.testRuns?.map(t => t.status), JSON.stringify(result)).toEqual(['failed', 'passed']);
+    expect(new Set(roots).size).toBe(1); expect(existsSync(roots[0]!)).toBe(true);
+    expect(readFileSync(join(root, 'src/main/java/X.java'), 'utf8')).toBe(source);
+    expect(applyHunksStrict(source, result.files[0]!.hunks)).toBe(tested.at(-1));
+    expect(feedback[1]).toContain('expected 2 got 1');
+    const check = result.validation.find(v => v.id === 'behavioral-semantics')!;
+    expect(check.status).toBe('pass'); expect(check.required).toBe(true); expect(existsSync(check.artifactPath!)).toBe(true);
+  } finally { for (const path of new Set(roots)) rmSync(path, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+}, 240000);

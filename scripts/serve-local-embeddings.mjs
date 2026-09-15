@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -7,13 +9,42 @@ import { pathToFileURL } from 'node:url';
 const requireRuntime = createRequire(path.resolve(process.env.FOREXPLORE_EMBEDDING_TOOLS ?? process.cwd(), 'package.json'));
 const runtime = await import(pathToFileURL(requireRuntime.resolve('@huggingface/transformers')).href);
 const { pipeline, env } = runtime.default ?? runtime;
-env.cacheDir = process.env.FOREXPLORE_MODEL_CACHE ?? '/tmp/forexplore-model-cache';
+// A POSIX default is wrong on Windows: the cache then never matches the one the
+// services script fills, so every start tried to download from huggingface.co.
+env.cacheDir = process.env.FOREXPLORE_MODEL_CACHE ?? path.join(homedir(), '.cache', 'forexplore-model-cache');
 if (process.env.FOREXPLORE_MODEL_HOST) env.remoteHost = process.env.FOREXPLORE_MODEL_HOST;
 const model = process.env.FOREXPLORE_EMBEDDING_MODEL ?? 'Xenova/multilingual-e5-small';
 const revision = process.env.FOREXPLORE_EMBEDDING_REVISION ?? '761b726dd34fb83930e26aab4e9ac3899aa1fa78';
 const modelId = `${model}@${revision}`;
 const port = Number(process.env.FOREXPLORE_EMBEDDING_PORT ?? 4021);
-console.log(JSON.stringify({ stage: 'loading-model', model, revision }));
+
+// The library caches downloads under <model>/<revision>/ but resolves an offline
+// load from <model>/. Promote a completed download once, then load without any
+// network call: a metadata fetch to huggingface.co fails on this machine (the
+// proxy is not used by fetch) and that failure killed the whole service, which
+// surfaced as a bare "检索失败：fetch failed" in the workbench.
+const modelDirectory = path.join(env.cacheDir, ...model.split('/'));
+const revisionDirectory = path.join(modelDirectory, revision);
+const cached = (name) => path.join(modelDirectory, name);
+const promote = (name) => {
+  const source = path.join(revisionDirectory, name);
+  if (existsSync(cached(name)) || !existsSync(source)) return;
+  mkdirSync(path.dirname(cached(name)), { recursive: true });
+  copyFileSync(source, cached(name));
+};
+for (const name of ['config.json', 'tokenizer.json', 'tokenizer_config.json']) promote(name);
+try {
+  const variants = existsSync(path.join(revisionDirectory, 'onnx'))
+    ? readdirSync(path.join(revisionDirectory, 'onnx')).filter((name) => name.endsWith('.onnx')) : [];
+  for (const name of variants) promote(path.join('onnx', name));
+} catch { /* a missing onnx directory is reported by the pipeline call below */ }
+const complete = ['config.json', 'tokenizer.json', 'tokenizer_config.json']
+  .every((name) => existsSync(cached(name)))
+  && existsSync(path.join(modelDirectory, 'onnx'))
+  && readdirSync(path.join(modelDirectory, 'onnx')).some((name) => name.endsWith('.onnx'));
+if (complete) env.allowRemoteModels = false;
+
+console.log(JSON.stringify({ stage: 'loading-model', model, revision, offline: env.allowRemoteModels === false }));
 const extractor = await pipeline('feature-extraction', model, { dtype: 'q8', revision });
 await extractor(['query: warmup'], { pooling: 'mean', normalize: true });
 let pending = 0;

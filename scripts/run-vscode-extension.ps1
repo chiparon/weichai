@@ -78,6 +78,13 @@ $env:ADAPTATION_SEMANTIC_INDEX_ENABLED = 'true'
 $env:SEMANTIC_QUERY_PORT_URL = 'http://127.0.0.1:8790'
 
 if (-not $SkipServices) {
+  # Retrieval needs the local embedding (4021) and rerank (4022) servers, which
+  # used to be started by hand: a restart without them made every search fail
+  # with a bare "fetch failed". Idempotent, so anything already listening stays.
+  npm run services:up
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "依赖服务未全部就绪（embedding 4021 / rerank 4022 / SeekDB）：检索会以 'fetch failed' 失败。"
+  }
   Start-DevWindow -Command 'npm run dev:retrieval'
   # `npm run dev:adaptation` alone registers no translation endpoint, so the
   # panel's translation always failed. Start the service through the one script

@@ -35,6 +35,7 @@ import type { ModuleWaveExecutionPort } from './module-wave-execution-host';
 import type { ModuleMigrationWaveRecoveryPort } from './module-migration-recovery';
 import { TranslationPanel, workbenchViewType, type PanelHandlers } from './panel';
 import { createPanelHandlers, publishPanelMessage } from './panel-handlers';
+import { errorMessage } from './error-message';
 import { buildProjectExplorer, readExplorerChildren, type ExplorerChildrenIndex } from './project-explorer';
 import type {
   HostToWebviewMessage,
@@ -1269,10 +1270,6 @@ function summarizeCodeIntelligence(presentation: CodeIntelligencePresentation): 
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? `${fallback}：${error.message}` : fallback;
 }
 
 function positiveEnvironmentPort(value: string | undefined, fallback: number): number {

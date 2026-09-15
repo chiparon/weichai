@@ -1,6 +1,7 @@
 import { indexModuleHierarchy, type ModuleTarget, type ProjectModule } from '@forexplore/contracts';
 import type { CodeIntelligenceHost } from './code-intelligence-host';
 import { folderTree, workspacePresentationFromStructuralIndex, type ModuleExplorerBuildResult } from './module-explorer';
+import { orderModulesByDependency } from './module-order';
 import type { ModuleChildrenPage, ModuleChildrenRequest, ModuleExplorerNode, ModuleWorkspacePresentation } from './ui-types';
 import { projectAnalysisDetailLimit as detailLimit, projectAnalysisPresentation } from './project-analysis-presentation';
 
@@ -74,6 +75,10 @@ export async function buildProjectExplorer(host: Pick<CodeIntelligenceHost, 'exp
       const targetByPath = new Map<string, ModuleTarget>();
       for (const item of result.targets.values()) if (!targetByPath.has(item.path)) targetByPath.set(item.path, item);
       const hierarchy = indexModuleHierarchy(analysis.proposal.modules);
+      // Siblings are ordered by dependency, so the tree reads top-down as what
+      // must exist first instead of however the plan happened to list modules.
+      const siblings = (parentId: string | null) => orderModulesByDependency(
+        parentId === null ? hierarchy.roots : hierarchy.childrenById.get(parentId)!);
       const moduleNode = (module: ProjectModule): ModuleExplorerNode => {
         const sourceFiles = hierarchy.sourceFiles(module.id).files;
         const representativePath = sourceFiles.find((file) => targetByPath.has(file));
@@ -94,11 +99,11 @@ export async function buildProjectExplorer(host: Pick<CodeIntelligenceHost, 'exp
           depth: hierarchy.depthById.get(module.id), refinement: module.refinement,
           ...(targetId ? { targetId } : {}),
           children: hierarchy.childrenById.get(module.id)!.length
-            ? hierarchy.childrenById.get(module.id)!.map(moduleNode)
+            ? siblings(module.id).map(moduleNode)
             : folderTree(module.sourceFiles.flatMap((path) => byPath.get(path) ? [byPath.get(path)!] : []), module.id),
         };
       };
-      workspace.tree = hierarchy.roots.map(moduleNode);
+      workspace.tree = siblings(null).map(moduleNode);
       const assigned = new Set(analysis.proposal.modules.flatMap((module) => module.sourceFiles));
       const unassigned = [...byPath].filter(([path]) => !assigned.has(path)).map(([, node]) => node);
       if (unassigned.length) workspace.tree.push({ id: 'unassigned', kind: 'folder', name: '未归属文件', children: folderTree(unassigned, '$unassigned') });

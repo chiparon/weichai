@@ -10,6 +10,7 @@ import type {
   StructuralIndex,
 } from '@forexplore/contracts';
 import { extractSymbols } from '@forexplore/code-indexer';
+import { orderModulesByDependency } from './module-order';
 import type {
   ModuleExplorerNode,
   ModuleExplorerPresentation,
@@ -495,7 +496,7 @@ export function workspacePresentationFromAnalysis(
     ));
   }
 
-  const moduleDefinitions = moduleDefinitionsFor(input.analysis.files, input.summary);
+  const moduleDefinitions = orderModulesByDependency(moduleDefinitionsFor(input.analysis.files, input.summary));
   const tree = moduleDefinitions.map((definition) => ({
     id: `module:${definition.id}`,
     name: definition.name,
@@ -686,6 +687,10 @@ interface ModuleDefinition {
   language?: string;
   domain?: string;
   files: string[];
+  /** Declared module dependencies; the tree orders siblings by these. */
+  dependsOn: string[];
+  /** The bucket holding files no module claims. */
+  unassigned?: boolean;
 }
 
 function moduleDefinitionsFor(
@@ -711,11 +716,12 @@ function moduleDefinitionsFor(
         language: module.language,
         domain: module.domain,
         files: moduleFiles,
+        dependsOn: [...(module.dependsOn ?? [])],
       };
     });
     const unassigned = files.map((file) => file.path).filter((file) => !assigned.has(file));
     if (unassigned.length) {
-      definitions.push({ id: 'unassigned', name: '未划分文件', files: unassigned });
+      definitions.push({ id: 'unassigned', name: '未划分文件', files: unassigned, dependsOn: [], unassigned: true });
     }
     return definitions;
   }
@@ -731,6 +737,7 @@ function moduleDefinitionsFor(
     id: project,
     name: projectLabel(project),
     files: projectFiles,
+    dependsOn: [],
   }));
 }
 

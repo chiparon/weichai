@@ -102,6 +102,66 @@ describe('module explorer host transform', () => {
     expect(result.presentation.stats.methods).toBe(1);
   });
 
+  it('orders sibling modules by dependency instead of the order the plan listed them', () => {
+    // The java-fileupload plan lists the core engine first although it depends
+    // on modules listed after it, so the tree used to read in an order that
+    // only looked like a dependency order.
+    const summary = {
+      generated: {
+        snapshotId: 'snapshot', planId: 'plan', status: 'approved', executionWaves: [],
+        modules: [
+          { id: 'core', name: '核心引擎', description: '', sourceFiles: ['src/main/Core.java'],
+            symbolKeys: [], dependsOn: ['multipart', 'util'], evidenceIds: [] },
+          { id: 'multipart', name: 'Multipart 解析器', description: '', sourceFiles: ['src/main/Multipart.java'],
+            symbolKeys: [], dependsOn: ['util'], evidenceIds: [] },
+          { id: 'util', name: '工具', description: '', sourceFiles: ['src/main/Util.java'],
+            symbolKeys: [], dependsOn: [], evidenceIds: [] },
+          { id: 'tests', name: '测试套件', description: '', sourceFiles: ['src/test/java/UploadTest.java'],
+            symbolKeys: [], dependsOn: ['core'], evidenceIds: [] },
+        ],
+      },
+      human: { approvalsCurrent: true },
+    } as unknown as ModuleSummary;
+    const files = ['src/main/Core.java', 'src/main/Multipart.java', 'src/main/Util.java',
+      'src/test/java/UploadTest.java', 'tools/helper.mjs'];
+
+    const result = workspacePresentationFromAnalysis({
+      analysis: { ...analysis, files: files.map((filePath, index) => ({
+        path: filePath, sha256: String(index), role: 'source' as const, language: 'Java' as const })), symbols: [] },
+      summary, mode: 'target', name: 'Target', rootLabel: '.',
+    });
+
+    // util before multipart before core, the test module and the unassigned
+    // bucket last; the plan's own order (core first) is not preserved.
+    expect(result.presentation.tree.map((node) => node.name))
+      .toEqual(['工具', 'Multipart 解析器', '核心引擎', '测试套件', '未划分文件']);
+  });
+
+  it('keeps a dependency cycle side by side within one tier', () => {
+    const summary = {
+      generated: {
+        snapshotId: 'snapshot', planId: 'plan', status: 'approved', executionWaves: [],
+        modules: [
+          { id: 'adapter', name: '适配器', description: '', sourceFiles: ['src/main/Adapter.java'],
+            symbolKeys: [], dependsOn: ['left', 'right'], evidenceIds: [] },
+          { id: 'left', name: '左', description: '', sourceFiles: ['src/main/Left.java'],
+            symbolKeys: [], dependsOn: ['right'], evidenceIds: [] },
+          { id: 'right', name: '右', description: '', sourceFiles: ['src/main/Right.java'],
+            symbolKeys: [], dependsOn: ['left'], evidenceIds: [] },
+        ],
+      },
+      human: { approvalsCurrent: true },
+    } as unknown as ModuleSummary;
+
+    const result = workspacePresentationFromAnalysis({
+      analysis: { ...analysis, files: ['src/main/Adapter.java', 'src/main/Left.java', 'src/main/Right.java']
+        .map((filePath, index) => ({ path: filePath, sha256: String(index), role: 'source' as const, language: 'Java' as const })), symbols: [] },
+      summary, mode: 'target', name: 'Target', rootLabel: '.',
+    });
+
+    expect(result.presentation.tree.map((node) => node.name)).toEqual(['左', '右', '适配器']);
+  });
+
   it('builds module/file/type/method hierarchy and a host-owned target catalog', () => {
     const result = workspacePresentationFromAnalysis({
       analysis,

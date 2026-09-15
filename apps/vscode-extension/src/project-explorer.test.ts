@@ -23,6 +23,30 @@ function entry(): Awaited<ReturnType<CodeIntelligenceHost['explorerData']>>[numb
 }
 
 describe('live project explorer module selection', () => {
+  it('orders the target tree by dependency, not by the order the plan listed modules', async () => {
+    // This is the path the workbench tree actually uses: the plan's own module
+    // order used to be rendered as-is, which read like a dependency order
+    // without being one.
+    const data = entry();
+    const paths = ['src/core.ts', 'src/multipart.ts', 'src/util.ts', 'src/upload.test.ts'];
+    const templateFile = data.index.files[0]!;
+    data.index.files = paths.map((relativePath) => ({ ...templateFile, relativePath, fileId: relativePath }));
+    const template = data.analysis!.proposal!.modules[0]!;
+    const node = (id: string, name: string, sourceFiles: string[], dependsOn: string[]) =>
+      ({ ...template, id, name, parentId: null, nodeKind: 'module' as const, sourceFiles, symbolKeys: [], dependsOn });
+    data.analysis!.proposal!.modules = [
+      node('core', '核心引擎', [paths[0]!], ['multipart', 'util']),
+      node('multipart', 'Multipart 解析器', [paths[1]!], ['util']),
+      node('tests', '测试套件', [paths[3]!], ['core']),
+      node('util', '工具', [paths[2]!], []),
+    ];
+
+    const result = await buildProjectExplorer({ explorerData: async () => [data] });
+
+    expect(result.presentation.target.tree.map((item) => item.name))
+      .toEqual(['工具', 'Multipart 解析器', '核心引擎', '测试套件']);
+  });
+
   it('preserves adaptive module branches, scoped directories and unique ancestor counts', async () => {
     const data = entry();
     const paths = ['src/payment.ts', 'src/receipt.ts', 'src/audit.ts', 'tools/config.ts'];

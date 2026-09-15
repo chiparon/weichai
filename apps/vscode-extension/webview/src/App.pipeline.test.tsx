@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createCodeIntelligenceRuntime, InMemoryIndexStore, ProjectAnalysisCoordinator, projectPlanHash } from '@forexplore/code-intelligence-service';
-import type { ProjectAnalysisScope } from '@forexplore/contracts';
+import type { ProjectAnalysisScope, ModuleTarget, SearchCandidate, WorkspaceTranslationRun } from '@forexplore/contracts';
 import { CodeIntelligenceHost } from '../../src/code-intelligence-host';
 import { buildProjectExplorer, readExplorerChildren, type ExplorerChildrenIndex } from '../../src/project-explorer';
 import type { HostToWebviewMessage, WebviewToHostMessage } from '../../src/protocol/messages';
@@ -20,6 +20,69 @@ afterEach(async () => {
   if (reactRoot) await act(async () => reactRoot!.unmount());
   document.body.innerHTML = '';
   if (directory) await rm(directory, { recursive: true, force: true });
+});
+
+it('takes an explicitly selected module through preparation, scoped start, diff review and rollback', async () => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const target: ModuleTarget = { id: 'target-module', name: 'Limit module', kind: 'module', language: 'TypeScript', path: 'target.ts', signature: '',
+    module: { sourceFiles: ['target.ts', 'policy.ts'], coreApis: ['limit'], dependsOn: [] } };
+  const candidate: SearchCandidate = { id: 'history-module', title: 'Java limit module', kind: 'module', language: 'Java', repository: 'History', path: 'Limit.java',
+    signature: 'limit(int)', summary: 'Boundary policy', preview: 'class Limit {}', license: 'MIT', dependencies: [], compatibility: [], risks: [],
+    score: { overall: 0.9, semantic: 0.9, symbol: 1, contract: 1 },
+    sourceModule: { repositoryId: 'history', analysisRevision: 'r1', projectId: 'history-project', projectPath: '', moduleId: 'limit', name: 'Limit', sourceFiles: ['Limit.java'], coreApis: ['limit'] } };
+  const explorer: ModuleExplorerPresentation = { generatedAt: '', history: [], target: {
+    id: 'target', repositoryId: 'target', projectId: 'project', revision: 'revision', mode: 'target', name: 'Target', rootLabel: '.', tree: [],
+    stats: { modules: 1, files: 2, types: 0, methods: 0, implemented: 0, unimplemented: 1, unknown: 0, dependencies: 0 },
+    summary: { exists: false, path: '.forexplore/module-summary.json' },
+  } };
+  const scopeId = 'a'.repeat(64);
+  const run: WorkspaceTranslationRun = { id: '11111111-2222-3333-4444-555555555555', workspaceRoot: '/target', status: 'completed', acceptance: 'behavior-verified',
+    request: { spec: 'Limit', sourceLanguage: 'Java', targetLanguage: 'TypeScript', context: [], workspaceFiles: ['target.ts', 'policy.ts'], writeFiles: ['target.ts', 'policy.ts'] },
+    createdAt: '', updatedAt: '', completedSteps: [], changes: ['target.ts', 'policy.ts'].map(file => ({ path: file, before: '// original', after: '// translated', applied: true })),
+    compilations: [], modelTurns: 8 };
+  const post = (message: HostToWebviewMessage) => window.dispatchEvent(new MessageEvent('message', { data: message }));
+  const sent: WebviewToHostMessage[] = [];
+  window.acquireVsCodeApi = () => ({ getState: () => null, setState: () => {}, postMessage: (raw) => {
+    const message = raw as WebviewToHostMessage; sent.push(message);
+    expect(isWebviewToHostMessage(message)).toBe(true);
+    if (message.type === 'START_SEARCH') post({ type: 'SEARCH_RESULT', candidates: [candidate] });
+    if (message.type === 'START_ADAPT') post({ type: 'MODULE_TRANSLATION_READY', targetId: target.id, candidateId: candidate.id, moduleScopeId: scopeId });
+    if (message.type === 'WORKSPACE_TRANSLATION') post({ type: 'WORKSPACE_TRANSLATION_RESULT', requestId: message.requestId,
+      ...(message.action === 'describe' ? { profile: { profileId: 'profile', moduleScopeId: scopeId, workspaceRoot: '/target', sourceLanguage: 'Java', targetLanguage: 'TypeScript',
+        workspaceFiles: ['target.ts', 'policy.ts'], writeFiles: ['target.ts', 'policy.ts'], behavioralVerification: true } }
+        : { run: message.action === 'rollback' ? { ...run, status: 'rolled-back' } : run }) });
+  } });
+  const container = document.createElement('div'); document.body.append(container); reactRoot = createRoot(container);
+  await act(async () => reactRoot!.render(<App initialMode="migration" />));
+  await act(async () => post({ type: 'INIT', payload: { target, workspaceRoot: '/target',
+    settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [], moduleExplorer: explorer,
+    codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
+    serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' }, searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
+  const button = (text: string) => [...container.querySelectorAll('button')].find(item => item.textContent?.includes(text))!;
+  await act(async () => button('任务检索').click());
+  await act(async () => button('选择历史模块候选').click());
+  expect(container.querySelector('.workspace-translation')).toBeNull();
+  await act(async () => button('查找 4 个候选方案').click());
+  expect(sent.some(item => item.type === 'START_ADAPT')).toBe(false);
+  await act(async () => button('Java limit module').click());
+  expect(sent).toContainEqual({ type: 'SELECT_CANDIDATE', candidateId: candidate.id });
+  await act(async () => button('准备模块翻译与回填').click());
+  expect(sent).toContainEqual(expect.objectContaining({ type: 'WORKSPACE_TRANSLATION', action: 'describe', moduleScopeId: scopeId }));
+  expect(container.textContent).toContain('target.ts、policy.ts');
+  expect(sent.some(item => item.type === 'WORKSPACE_TRANSLATION' && item.action === 'start')).toBe(false);
+  await act(async () => button('开始模块翻译并回填').click());
+  expect(sent).toContainEqual(expect.objectContaining({ type: 'WORKSPACE_TRANSLATION', action: 'start', profileId: 'profile', moduleScopeId: scopeId }));
+  expect(container.textContent).toContain('行为测试通过');
+  expect(container.textContent).toContain('// translated');
+  expect(container.querySelector('.workspace-translation')!.parentElement!.hidden).toBe(false);
+  await act(async () => button('回滚本次修改').click());
+  expect(sent).toContainEqual(expect.objectContaining({ type: 'WORKSPACE_TRANSLATION', action: 'rollback', runId: run.id }));
+  expect(container.textContent).toContain('已回滚');
+  await act(async () => post({ type: 'TARGET_SELECTED', target }));
+  expect(container.querySelector('.workspace-translation')).toBeNull();
+  expect(button('查找 4 个候选方案')).toBeDefined();
+  await act(async () => post({ type: 'TARGET_CLEARED' }));
+  expect(container.querySelector('.workspace-translation')).toBeNull();
 });
 
 it('enables subsystem search from complete projected metadata beyond the first tree page', async () => {

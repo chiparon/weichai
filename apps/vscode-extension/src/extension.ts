@@ -1,6 +1,8 @@
 import { createModelCredentialProvider, modelCredentialId, modelKeyRefusalReason, validateModelKey, saveWithModelCredential } from './model-credential';
 import { setModelCredentialProvider } from './local-fetch';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
+import { prepareModuleTranslationScope } from './module-translation-handoff';
+import { localFetch } from './local-fetch';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import * as vscode from 'vscode';
@@ -92,7 +94,10 @@ interface LastCheckpoint {
 }
 
 const workspaceTranslation = new WorkspaceTranslationHost(() => ({ url: loadSettings().adaptationApiUrl,
-  token: process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }));
+  token: process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }),
+  (url, init) => localFetch(String(url), init));
+let moduleSelectionVersion = 0;
+function invalidateModuleTranslation(): void { moduleSelectionVersion++; workspaceTranslation.clearModuleScope(); }
 let activeRun: ActiveMigrationRun | null = null;
 let moduleExplorerTargets = new Map<string, ModuleTarget>();
 let moduleExplorerChildren: ExplorerChildrenIndex = new Map();
@@ -340,6 +345,7 @@ export function deactivate(): void {
   activeTaskSearch?.controller.abort();
   activeTaskSearch = null;
   activeRun = null;
+  invalidateModuleTranslation();
   moduleExplorerTargets = new Map();
   moduleExplorerChildren = new Map();
   activeCodeIntelligenceHost?.dispose();
@@ -495,6 +501,10 @@ async function handlePanelMessage(
     case 'WORKSPACE_TRANSLATION': {
       const panel = TranslationPanel.current;
       if (!vscode.workspace.isTrusted) { panel?.post({ type: 'WORKSPACE_TRANSLATION_ERROR', requestId: message.requestId, message: '请先信任工作区。' }); return; }
+      if (message.action === 'start' && message.moduleScopeId) {
+        try { assertModuleDocumentsSaved(requireActiveRun()); }
+        catch (error) { panel?.post({ type: 'WORKSPACE_TRANSLATION_ERROR', requestId: message.requestId, message: errorMessage(error, '请先保存模块文件。') }); return; }
+      }
       const result = await workspaceTranslation.handle(message);
       if (TranslationPanel.current === panel) panel?.post(result);
       return;
@@ -625,6 +635,9 @@ async function selectCodeIntelligenceRevision(
       repositoryId: selection.repositoryId,
       analysisRevision: selection.analysisRevision,
     });
+    if (presentation.repositories.some(r => r.repositoryId === selection.repositoryId && r.role === 'target')) {
+      activeRun = null; invalidateModuleTranslation(); publish({ type: 'TARGET_CLEARED' });
+    }
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
     await publishProjectView(codeIntelligence);
   } catch (error) {
@@ -640,6 +653,7 @@ async function selectCodeIntelligenceProject(
     const presentation = await codeIntelligence.selectProjectForDisplay(selection);
     if (presentation.repositories.some((r) => r.repositoryId === selection.repositoryId && r.role === 'target')) {
       activeRun = null;
+      invalidateModuleTranslation();
       publish({ type: 'TARGET_CLEARED' });
     }
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
@@ -808,6 +822,7 @@ async function resumeInterruptedTargetImport(
 
 async function selectWorkspaceTarget(targetId: string): Promise<void> {
   try {
+    invalidateModuleTranslation();
     const target = moduleExplorerTargets.get(targetId);
     if (!target) throw new Error('该目标不属于当前 Host 静态分析快照。');
     if (!activeCodeIntelligenceHost) throw new Error('索引尚未初始化。');
@@ -846,7 +861,9 @@ async function startSearch(
   message: Extract<WebviewToHostMessage, { type: 'START_SEARCH' }>,
 ): Promise<void> {
   try {
+    invalidateModuleTranslation();
     const run = requireActiveRun();
+    const selectionVersion = moduleSelectionVersion;
     await assertTargetUnchanged(run);
     await host.codeIntelligence.waitForProjects();
     const candidates = await host.codeIntelligence.searchHistoricalImplementations({
@@ -854,6 +871,7 @@ async function startSearch(
       requirement: message.requirement.trim(),
       topK: message.topK,
     });
+    if (activeRun !== run || selectionVersion !== moduleSelectionVersion) return;
     run.requirement = message.requirement.trim();
     run.candidates = candidates;
     run.selectedCandidateId = null;
@@ -871,6 +889,7 @@ function selectCandidate(candidateId: string): void {
     if (!candidate) {
       throw new Error('该候选不属于当前检索结果。');
     }
+    invalidateModuleTranslation();
     // This is deliberately the only operation that changes this field. A
     // retrieval ranking never becomes consent by itself.
     run.selectedCandidateId = candidateId;
@@ -885,7 +904,16 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
     const run = requireActiveRun();
     const candidate = selectedRunCandidate(run);
     if (run.target.kind === 'module' || candidate.kind === 'module') {
-      throw new Error('当前模块检索尚未接通多文件适配。');
+      if (!vscode.workspace.isTrusted) throw new Error('请先信任工作区。');
+      await assertTargetUnchanged(run);
+      assertModuleDocumentsSaved(run);
+      const selectionVersion = moduleSelectionVersion;
+      const scope = await prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
+        target: run.target, candidate, requirement: run.requirement, decisionNotes });
+      if (activeRun !== run || selectionVersion !== moduleSelectionVersion) return;
+      const moduleScopeId = workspaceTranslation.rememberModuleScope(scope);
+      publish({ type: 'MODULE_TRANSLATION_READY', targetId: run.target.id, candidateId: candidate.id, moduleScopeId });
+      return;
     }
     await assertTargetUnchanged(run);
     const status = await host.services.refresh();
@@ -1137,6 +1165,14 @@ async function assertTargetUnchanged(run: ActiveMigrationRun): Promise<void> {
   const current = await vscode.workspace.fs.readFile(run.targetUri);
   if (sha256(current) !== run.originalSha256) {
     throw new Error('目标文件已在本次迁移开始后发生变化；请重新启动迁移以生成新快照。');
+  }
+}
+
+function assertModuleDocumentsSaved(run: ActiveMigrationRun): void {
+  const files = new Set((run.target.module?.sourceFiles ?? []).map(file =>
+    vscode.Uri.joinPath(run.workspaceFolder.uri, ...file.replaceAll('\\', '/').split('/')).toString()));
+  if (vscode.workspace.textDocuments.some(document => document.isDirty && files.has(document.uri.toString()))) {
+    throw new Error('目标模块有未保存的文件；请保存后重新准备翻译。');
   }
 }
 

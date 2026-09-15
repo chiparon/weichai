@@ -1,10 +1,11 @@
 import { WorkspaceTranslationHost } from '../apps/vscode-extension/src/workspace-translation-host.js';
+import { prepareModuleTranslationScope } from '../apps/vscode-extension/src/module-translation-handoff.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
-import type { ModuleTarget, RepositoryRole, TaskRetrievalRequest } from '@forexplore/contracts';
+import type { ModuleTarget, SearchCandidate, RepositoryRole, TaskRetrievalRequest } from '@forexplore/contracts';
 import { createCodeIntelligenceRuntime, createSemanticQueryHttpServer, validateTaskRetrievalRequest } from '../services/code-intelligence-service/src/index.js';
 import { CodeIntelligenceHost, codeIntelligenceRuntimeOptionsFromEnvironment } from '../apps/vscode-extension/src/code-intelligence-host.js';
 import { buildProjectExplorer, readExplorerChildren, type ExplorerChildrenIndex } from '../apps/vscode-extension/src/project-explorer.js';
@@ -60,6 +61,11 @@ const host = new CodeIntelligenceHost({
 const registration = await host.synchronize({ repositories: inputs, scan: false });
 const registrationFailed = registration.presentation.status === 'error' || registration.presentation.repositories.length !== new Set(inputs.map((input) => input.localPath)).size;
 let currentTarget: ModuleTarget | undefined;
+let candidates: SearchCandidate[] = [];
+let selectedCandidateId: string | undefined;
+let requirement = '';
+let selectionVersion = 0;
+function invalidateTranslation(): void { selectionVersion++; workspaceTranslation.clearModuleScope(); }
 let currentTargets = new Map<string, ModuleTarget>();
 let currentChildren: ExplorerChildrenIndex = new Map();
 let topK = 4;
@@ -180,9 +186,11 @@ async function message(value: WebviewToHostMessage, signal: AbortSignal): Promis
     }
     case 'REFRESH_MODULE_EXPLORER': changed(); return updates();
     case 'SELECT_CODE_INTELLIGENCE_PROJECT':
+      invalidateTranslation(); candidates = []; selectedCandidateId = undefined;
       await host.selectProjectForDisplay(value); currentTarget = undefined; changed();
       return [{ type: 'TARGET_CLEARED' }, ...await updates()];
     case 'SELECT_CODE_INTELLIGENCE_REVISION':
+      invalidateTranslation(); candidates = []; selectedCandidateId = undefined;
       await host.selectRevisionForDisplay(value); currentTarget = undefined; changed();
       return [{ type: 'TARGET_CLEARED' }, ...await updates()];
     case 'RETRY_PROJECT_ANALYSIS': await host.retryProject(value, value.force); changed(); return updates();
@@ -190,11 +198,34 @@ async function message(value: WebviewToHostMessage, signal: AbortSignal): Promis
       await payload();
       const target = currentTargets.get(value.targetId);
       if (!target) throw new Error('目标不属于当前显示的工程版本。');
+      invalidateTranslation(); candidates = []; selectedCandidateId = undefined;
       currentTarget = target; changed(); return [{ type: 'TARGET_SELECTED', target }];
     }
-    case 'START_SEARCH':
+    case 'START_SEARCH': {
       if (!currentTarget) throw new Error('请先选择目标模块、类或函数。');
-      return [{ type: 'SEARCH_RESULT', candidates: await host.searchHistoricalImplementations({ target: currentTarget, requirement: value.requirement, topK: value.topK }, signal) }];
+      invalidateTranslation(); candidates = []; selectedCandidateId = undefined;
+      const version = selectionVersion;
+      const found = await host.searchHistoricalImplementations({ target: currentTarget, requirement: value.requirement, topK: value.topK }, signal);
+      if (version !== selectionVersion) return [];
+      candidates = found; requirement = value.requirement;
+      return [{ type: 'SEARCH_RESULT', candidates }];
+    }
+    case 'SELECT_CANDIDATE':
+      if (!candidates.some(candidate => candidate.id === value.candidateId)) throw new Error('该候选不属于当前检索结果。');
+      invalidateTranslation(); selectedCandidateId = value.candidateId; return [];
+    case 'START_ADAPT': {
+      const target = currentTarget;
+      const candidate = candidates.find(item => item.id === selectedCandidateId);
+      if (!target || !candidate) throw new Error('请先明确选择一个模块候选。');
+      const version = selectionVersion;
+      const selected = (await host.explorerData()).find(item => item.selectedTarget);
+      if (!selected || !visiblePaths.has(selected.repository.localPath)) throw new Error('目标不属于当前工作台。');
+      const scope = await prepareModuleTranslationScope({ workspaceRoot: selected.repository.localPath,
+        target, candidate, requirement, decisionNotes: value.decisionNotes });
+      if (version !== selectionVersion) return [];
+      return [{ type: 'MODULE_TRANSLATION_READY', targetId: target.id, candidateId: candidate.id,
+        moduleScopeId: workspaceTranslation.rememberModuleScope(scope) }];
+    }
     case 'CHECK_REPOSITORIES': return [{ type: 'REPOSITORY_STATUS', statuses: (await payload()).repositoryStatuses }];
     case 'SAVE_SETTINGS': {
       const current = await payload();

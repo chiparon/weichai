@@ -4,6 +4,7 @@ import { RecastLogo } from './components/RecastLogo';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { GitBranch, Search, Settings2 } from 'lucide-react';
 import { createTranslationProvider } from './workspace-translation-provider';
+import { WorkspaceTranslation } from './components/WorkspaceTranslation';
 import { TaskSearch, type TaskSearchProvider } from './components/TaskSearch';
 import type { CodeIntelligencePresentation, RepositoryStatus, ServiceStatus } from '../../src/ui-types';
 import type { ModuleExplorerMode, ModuleExplorerNode } from '../../src/ui-types';
@@ -57,6 +58,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [refreshingExplorer, setRefreshingExplorer] = useState(false);
   const [targetAdd, setTargetAdd] = useState<TargetAddUiState>(idleTargetAdd);
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
+  const [moduleTranslation, setModuleTranslation] = useState<{ moduleScopeId: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
@@ -68,12 +70,14 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef<WorkflowState['pending']>(null);
   const targetIdRef = useRef<string | null>(null);
+  const candidateIdRef = useRef<string | null>(null);
   const settingsRef = useRef<PanelSettingsPresentation>({ repositoryPaths: [], topK: 4 });
   // The host reports phases, not the entry point that was used, so the mode is
   // remembered here to make the retry button replay the same action.
   const targetAddModeRef = useRef<TargetAddUiState['mode']>(undefined);
   pendingRef.current = state.pending;
   targetIdRef.current = state.target?.id ?? null;
+  candidateIdRef.current = state.selectedCandidateId;
 
   useEffect(() => {
     bus.post({ type: 'READY' });
@@ -98,7 +102,13 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           dispatch({ type: 'SET_TOP_K', value: message.payload.settings.topK });
           break;
         case 'SEARCH_RESULT':
+          setModuleTranslation(null);
           dispatch({ type: 'SEARCH_SUCCESS', candidates: message.candidates });
+          break;
+        case 'MODULE_TRANSLATION_READY':
+          if (message.targetId !== targetIdRef.current || message.candidateId !== candidateIdRef.current) break;
+          setModuleTranslation({ moduleScopeId: message.moduleScopeId });
+          dispatch({ type: 'MODULE_TRANSLATION_READY' });
           break;
         case 'ADAPT_RESULT':
           dispatch({ type: 'ADAPT_SUCCESS', result: message.result });
@@ -144,17 +154,17 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           }
           break;
         case 'TARGET_SELECTED':
+          setModuleTranslation(null);
           setPayload((current) => current ? { ...current, target: message.target } : current);
-          if (targetIdRef.current !== message.target.id) {
-            dispatch({ type: 'SELECT_TARGET', target: message.target });
-            dispatch({ type: 'SET_TOP_K', value: settingsRef.current.topK });
-            setVisibleStep('requirement');
-          }
+          dispatch({ type: 'SELECT_TARGET', target: message.target });
+          dispatch({ type: 'SET_TOP_K', value: settingsRef.current.topK });
+          setVisibleStep('requirement');
           setExplorerMode('target');
           setSelectedNodeId(null);
           setSettingsOpen(false);
           break;
         case 'TARGET_CLEARED':
+          setModuleTranslation(null);
           dispatch({ type: 'RESET' });
           setPayload((current) => current ? { ...current, target: null } : current);
           setSelectedNodeId(null);
@@ -188,6 +198,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
 
   function handleSearch(): void {
     if (!state.target) return;
+    setModuleTranslation(null);
     setError(null);
     dispatch({ type: 'SEARCH_START' });
     bus.post({
@@ -221,6 +232,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   }
 
   function handleSelectCandidate(candidateId: string): void {
+    setModuleTranslation(null);
     dispatch({ type: 'SELECT_CANDIDATE', candidateId });
     bus.post({ type: 'SELECT_CANDIDATE', candidateId });
   }
@@ -430,7 +442,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
               />
             ) : null}
 
-            {visibleStep === 'adaptation' ? (
+            {moduleTranslation ? <div hidden={visibleStep !== 'adaptation' && visibleStep !== 'patch'}>
+              <WorkspaceTranslation key={moduleTranslation.moduleScopeId} provider={translation} moduleScopeId={moduleTranslation.moduleScopeId}
+                onFinished={(completed) => dispatch({ type: 'MODULE_TRANSLATION_FINISHED', completed })} />
+            </div> : null}
+            {visibleStep === 'adaptation' && !moduleTranslation ? (
               <AdaptationStage state={state} candidate={candidate} />
             ) : null}
 

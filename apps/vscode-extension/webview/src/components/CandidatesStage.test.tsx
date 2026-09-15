@@ -2,76 +2,49 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import type { SearchCandidateV2 } from '@forexplore/contracts';
-import {
-  initialWorkflowStateV2,
-  type WorkflowStateV2,
-} from '../v2-workflow';
+import type { ModuleTarget, SearchCandidate } from '@forexplore/contracts';
+import { initialWorkflowState } from '@forexplore/workflow-core';
 import { CandidatesStage } from './CandidatesStage';
 
-const artifactHash = `sha256:${'a'.repeat(64)}`;
+const target: ModuleTarget = {
+  id: 'function:pay',
+  name: 'Pay',
+  kind: 'function',
+  path: 'src/Payments/PaymentService.cs',
+  language: 'C#',
+  signature: 'public void Pay(Payment request)',
+};
 
-function candidate(id: string, title: string, path: string): SearchCandidateV2 {
+function candidate(id: string, title: string, path: string): SearchCandidate {
   return {
-    schemaVersion: '2.0',
     id,
-    requestId: 'search:payments',
-    requestHash: artifactHash,
-    targetId: 'target:pay',
-    targetHash: artifactHash,
-    route: {
-      sourceLanguageId: 'java',
-      targetLanguageId: 'csharp',
-      strategy: 'translate',
-      routeId: 'route:java-csharp',
-      routeVersion: '1',
-      routeContentHash: artifactHash,
-      runtimeCapabilitySnapshotId: 'runtime:one',
-      runtimeCapabilitySnapshotHash: artifactHash,
-      validationPolicyId: 'policy:one',
-      validationPolicyHash: artifactHash,
-    },
-    indexGeneration: {
-      repositoryId: 'fixture/payments',
-      id: 'generation:one',
-      generation: 1,
-      contentHash: artifactHash,
-      sourceCatalogId: 'catalog:payments',
-      sourceCatalogHash: artifactHash,
-    },
-    indexedDocumentId: `document:${id}`,
-    indexedDocumentHash: artifactHash,
-    candidate: {
-      schemaVersion: '2.0',
-      id: `implementation:${id}`,
-      lineage: {
-        repositoryId: 'fixture/payments',
-        repositoryContentHash: artifactHash,
-        unifiedRepositoryIrId: 'ir:payments',
-        unifiedRepositoryIrHash: artifactHash,
-      },
-      entity: {
-        entityId: `entity:${id}`,
-        languageId: 'java',
-        kind: 'function',
-        name: title,
-        path,
-        signature: `void ${title}()`,
-      },
-      sourceBundleId: `bundle:${id}`,
-      sourceBundleHash: artifactHash,
-      license: 'MIT',
-      contentHash: artifactHash,
-    },
-    sourceBundle: { id: `bundle:${id}`, contentHash: artifactHash },
     title,
+    repository: 'fixture/payments',
+    license: 'MIT',
+    language: 'Java',
+    kind: 'function',
+    path,
+    signature: `void ${title}()`,
     summary: `${title} summary`,
     score: { overall: 0.92, semantic: 0.9, symbol: 0.88, contract: 0.86 },
     preview: `void ${title}() {}`,
+    dependencies: [],
     compatibility: ['接口可映射'],
     risks: [],
-    createdAt: '2026-09-03T00:00:00.000Z',
-    contentHash: artifactHash,
+  };
+}
+
+function moduleCandidate(id: string, title: string, moduleId: string, moduleName: string): SearchCandidate {
+  return {
+    ...candidate(id, title, `src/shared/${title}.java`),
+    sourceModule: {
+      repositoryId: 'history-one',
+      analysisRevision: 'revision-one',
+      projectId: 'project-one',
+      moduleId,
+      name: moduleName,
+      projectPath: 'services/orders',
+    },
   };
 }
 
@@ -81,9 +54,10 @@ const candidates = [
   candidate('order', 'createOrder', 'src/orders/OrderService.java'),
 ];
 
-const state: WorkflowStateV2 = {
-  ...initialWorkflowStateV2,
-  stage: 'candidates',
+const state = {
+  ...initialWorkflowState,
+  stage: 'candidates' as const,
+  target,
   candidates,
 };
 
@@ -92,13 +66,12 @@ const reactTestEnvironment = globalThis as typeof globalThis & {
 };
 
 describe('CandidatesStage', () => {
-  it('groups V2 candidates by repository module path', () => {
+  it('groups concrete candidates by repository module path', () => {
     const markup = renderToStaticMarkup(
       <CandidatesStage
         state={state}
         dispatch={vi.fn()}
         adaptationProvider="DeepSeek"
-        migrationSelection={null}
         onSelectCandidate={vi.fn()}
         onAdapt={vi.fn()}
       />,
@@ -109,10 +82,11 @@ describe('CandidatesStage', () => {
     expect(markup).toContain('src/payments');
     expect(markup).toContain('src/orders');
     expect(markup).toContain('2 个实现');
+    expect(markup).toContain('任意候选语言 → C#');
     expect(markup).toContain('请选择一个具体实现');
   });
 
-  it('asks the Host to resolve the selected implementation', () => {
+  it('selects a concrete implementation inside a module group', () => {
     reactTestEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
     const onSelectCandidate = vi.fn();
     const container = document.createElement('div');
@@ -124,7 +98,6 @@ describe('CandidatesStage', () => {
           state={state}
           dispatch={vi.fn()}
           adaptationProvider="DeepSeek"
-          migrationSelection={null}
           onSelectCandidate={onSelectCandidate}
           onAdapt={vi.fn()}
         />,
@@ -140,23 +113,24 @@ describe('CandidatesStage', () => {
     reactTestEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   });
 
-  it('keeps candidates from different repositories in separate groups', () => {
-    const first = candidate('create', 'createOrder', 'src/shared/Order.java');
-    const second = candidate('cancel', 'cancelOrder', 'src/shared/Order.java');
-    second.candidate.lineage.repositoryId = 'fixture/other-orders';
+  it('groups candidates by the reviewed module identity instead of their directory', () => {
+    const moduleCandidates = [
+      moduleCandidate('create', 'createOrder', 'orders', '订单模块'),
+      moduleCandidate('cancel', 'cancelOrder', 'orders', '订单模块'),
+      moduleCandidate('refund', 'refundOrder', 'refunds', '退款模块'),
+    ];
     const markup = renderToStaticMarkup(
       <CandidatesStage
-        state={{ ...state, candidates: [first, second] }}
+        state={{ ...state, candidates: moduleCandidates }}
         dispatch={vi.fn()}
         adaptationProvider="DeepSeek"
-        migrationSelection={null}
         onSelectCandidate={vi.fn()}
         onAdapt={vi.fn()}
       />,
     );
 
-    expect(markup).toContain('fixture/payments');
-    expect(markup).toContain('fixture/other-orders');
+    expect(markup).toContain('订单模块');
+    expect(markup).toContain('退款模块');
     expect(markup).toContain('<strong>2</strong> 模块');
   });
 
@@ -166,7 +140,6 @@ describe('CandidatesStage', () => {
         state={{ ...state, candidates: [] }}
         dispatch={vi.fn()}
         adaptationProvider="DeepSeek"
-        migrationSelection={null}
         onSelectCandidate={vi.fn()}
         onAdapt={vi.fn()}
       />,
@@ -176,19 +149,16 @@ describe('CandidatesStage', () => {
     expect(markup).toContain('返回“定义任务”调整目标或需求后重新检索');
   });
 
-  it('blocks adaptation when a selection has no reviewed route or resolved source bundle', () => {
-    const markup = renderToStaticMarkup(
-      <CandidatesStage
-        state={{ ...state, selectedCandidateId: candidates[0]!.id }}
-        dispatch={vi.fn()}
-        adaptationProvider="DeepSeek"
-        migrationSelection={null}
-        onSelectCandidate={vi.fn()}
-        onAdapt={vi.fn()}
-      />,
-    );
-    expect(markup).toContain('没有与当前源/目标语言精确匹配的可执行路线');
-    expect(markup).toContain('完整来源尚未复验');
-    expect(markup).toContain('disabled=""');
+  it('shows complete module files and enables the module translation handoff', () => {
+    const module: SearchCandidate = { ...moduleCandidate('module', 'Payments', 'payments', 'Payments'), kind: 'module',
+      sourceModule: { ...moduleCandidate('module', 'Payments', 'payments', 'Payments').sourceModule!, sourceFiles: ['Payment.java', 'Receipt.java'] },
+      moduleMatch: { requiredApis: ['pay', 'refund'], matchedApis: ['pay'], missingApis: ['refund'], verification: 'interface-only', previewFiles: ['Payment.java'], previewTruncated: true } };
+    const markup = renderToStaticMarkup(<CandidatesStage state={{ ...state, target: { ...target, kind: 'module' },
+      candidates: [module], selectedCandidateId: module.id }} dispatch={vi.fn()} adaptationProvider="DeepSeek" onSelectCandidate={vi.fn()} onAdapt={vi.fn()} />);
+    expect(markup).toContain('Receipt.java');
+    expect(markup).toContain('refund');
+    expect(markup).toContain('行为待验证');
+    expect(markup).not.toContain('disabled=""');
+    expect(markup).toContain('准备模块翻译与回填');
   });
 });

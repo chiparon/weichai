@@ -175,7 +175,7 @@ const staticProfile = JSON.stringify({ workspaceRoot: repositoryRoot, sourceLang
 const host = new WorkspaceTranslationHost(() => ({ url: values.service!, token, profile: staticProfile }));
 const scopeId = host.rememberModuleScope({ label: scope.label, spec: scope.spec, profile: scope.profile, context: scope.context,
   evidenceScopes: scope.evidenceScopes, warnings: scope.warnings });
-const described = await host.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe', action: 'describe' });
+const described = await host.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe', action: 'describe', moduleScopeId: scopeId });
 assert.equal(described.type, 'WORKSPACE_TRANSLATION_RESULT', JSON.stringify(described).slice(0, 300));
 if (described.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
 assert.equal(described.profile?.moduleScopeId, scopeId);

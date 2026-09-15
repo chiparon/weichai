@@ -137,14 +137,14 @@ export function isProjectTestPath(path: string): boolean {
 }
 
 /** Existing code and tests stay immutable; only new test files and build outputs are allowed. */
-export function assertProjectBaseline(baseline: BehaviorProjectBaseline): void {
+export function assertProjectBaseline(baseline: BehaviorProjectBaseline, submittedPaths: readonly string[] = []): void {
   const current = projectFiles(baseline.root);
   for (const [path, hash] of Object.entries(baseline.files)) {
     if (current[path] !== hash)
       throw new Error(`Project baseline changed: ${path}`);
   }
   for (const path of Object.keys(current)) {
-    if (!Object.hasOwn(baseline.files, path) && !isProjectTestPath(path))
+    if (!Object.hasOwn(baseline.files, path) && !isProjectTestPath(path) && !submittedPaths.includes(path))
       throw new Error(`New file outside project test directories: ${path}`);
   }
 }

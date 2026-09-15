@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import { calculatePatchHashV2 } from "../../schemas/legacy-input.js";
 import { hashContent } from "../multi-agent-write-box/behavior-workspace.js";
 import type { FilePatch } from "@forexplore/contracts";
 import type {
@@ -19,7 +19,7 @@ import type {
 } from "../../schemas/verification-types.js";
 import type { BehaviorRuntime } from "../multi-agent-write-box/behavior-types.js";
 import { createVerificationArtifactStore } from "../../run-output/verification-artifact-store.js";
-import { runManagedProcess } from "../smoke-differential/manage-test-process.js";
+import { runManagedProcess } from "../manage-test-process.js";
 import {
   MultiAgentBlackBoxStrategy,
   MULTI_AGENT_BLACK_BOX_STRATEGY,

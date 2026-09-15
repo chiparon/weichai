@@ -15,7 +15,6 @@ describe("translation-verifier entry", () => {
     expect(
       createDefaultVerificationService().listStrategies().map(({ id }) => id),
     ).toEqual([
-      "differential-smoke",
       "multi-agent-differential",
       "multi-agent-black-box",
       "single-agent-differential",
@@ -57,11 +56,10 @@ describe("translation-verifier entry", () => {
     expectTypeOf(packageVerifier.resolveVerificationPolicy).toBeFunction();
     expectTypeOf(packageVerifier.failureAssessment).toBeFunction();
   });
-  it("preserves every runtime package export after internal moves", () => {
+  it("exports the supported runtime package API after removing smoke", () => {
     expect(Object.keys(packageVerifier).sort()).toEqual(
       [
         "DEFAULT_VERIFICATION_STRATEGY",
-        "DIFFERENTIAL_SMOKE_STRATEGY",
         "MULTI_AGENT_DIFFERENTIAL_STRATEGY",
         "MULTI_AGENT_BLACK_BOX_STRATEGY",
         "MultiAgentDifferentialStrategy",

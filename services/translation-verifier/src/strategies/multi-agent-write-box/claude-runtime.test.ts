@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as processes from "../smoke-differential/manage-test-process.js";
+import * as processes from "../manage-test-process.js";
 import { createBehaviorRuntime } from "./claude-runtime.js";
 import {
   captureProjectBaseline,

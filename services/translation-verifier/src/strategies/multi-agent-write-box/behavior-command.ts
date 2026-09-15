@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import {
   runManagedProcess,
   sanitizedBuildEnvironment,
-} from "../smoke-differential/manage-test-process.js";
+} from "../manage-test-process.js";
 import {
   assertProjectBaseline,
   hashContent,

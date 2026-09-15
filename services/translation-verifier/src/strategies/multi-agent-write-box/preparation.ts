@@ -1,7 +1,7 @@
 import { closeSync, fchmodSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { canonicalJson } from "@forexplore/workflow-core";
-import type { RepositoryIngestionJsonValue } from "@forexplore/contracts";
+import type { RepositoryIngestionJsonValue } from "../../schemas/legacy-input.js";
 import type {
   VerificationPreparation,
   VerificationPreparationInput,

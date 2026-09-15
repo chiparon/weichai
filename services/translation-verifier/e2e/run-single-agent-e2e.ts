@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { appendFileSync, constants } from "node:fs";
 import {
   cp,
   lstat,
@@ -21,13 +21,12 @@ import type {
 import {
   runManagedProcess,
   sanitizedBuildEnvironment,
-} from "../src/strategies/smoke-differential/manage-test-process.js";
+} from "../src/strategies/manage-test-process.js";
 import { projectHash } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
 import {
   protectedSecrets,
   redact,
 } from "../src/strategies/multi-agent-write-box/behavior-command.js";
-import { createBehaviorRuntime } from "../src/strategies/multi-agent-write-box/claude-runtime.js";
 import {
   SingleAgentDifferentialStrategy,
   SINGLE_AGENT_DIFFERENTIAL_STRATEGY,
@@ -153,12 +152,12 @@ export interface ProjectPreparationEvidence {
   stderr: string;
 }
 export interface SingleAgentE2EDeps {
-  runtime?: SingleAgentDifferentialOptions["runtime"];
+  client?: SingleAgentDifferentialOptions["client"];
   artifactRoot?: string;
   workspaceRoot?: string;
   input?: VerificationInput;
   now?: () => string;
-  /** Mandatory for injected runtimes: tests never implicitly restore dependencies. */
+  /** Mandatory for injected clients: tests never implicitly restore dependencies. */
   prepareProjects?: (context: {
     sourceRoot: string;
     targetRoot: string;
@@ -288,15 +287,15 @@ export async function executeSingleAgentE2E(
 ): Promise<SingleAgentE2EResult> {
   if (options.offlineOnly)
     throw new Error("offline-only skips execution; use runSingleAgentE2E.");
-  if (!options.live && !deps.runtime)
+  if (!options.live && !deps.client)
     throw new Error(
-      "Use --live for real Claude execution; no mock fallback is installed.",
+      "Use --live for real model execution; no mock fallback is installed.",
     );
-  if (deps.runtime && !deps.prepareProjects)
+  if (deps.client && !deps.prepareProjects)
     throw new Error(
-      "Injected runtimes require explicit prepareProjects; tests never implicitly restore dependencies.",
+      "Injected clients require explicit prepareProjects; tests never implicitly restore dependencies.",
     );
-  if (!deps.runtime && deps.prepareProjects)
+  if (!deps.client && deps.prepareProjects)
     throw new Error(
       "Live execution requires real project preparation, not an injected preflight.",
     );
@@ -328,7 +327,7 @@ export async function executeSingleAgentE2E(
   const maxTurns = Math.min(options.maxTurns ?? 50, 50);
   const model =
     options.model ?? process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
-  const executionMode = deps.runtime
+  const executionMode = deps.client
     ? ("injected-test" as const)
     : ("live" as const);
   const descriptor = SINGLE_AGENT_DIFFERENTIAL_STRATEGY;
@@ -419,7 +418,7 @@ export async function executeSingleAgentE2E(
       await overlay(sourceRoot, input.request.sourceBundle.files);
       await overlay(
         targetRoot,
-        input.request.targetContext.sourceFiles.flatMap((file) =>
+        input.request.targetContext.sourceFiles.flatMap((file: { path?: unknown; content?: unknown }) =>
           typeof file.path === "string" && typeof file.content === "string"
             ? [{ path: file.path, content: file.content }]
             : [],
@@ -464,24 +463,21 @@ export async function executeSingleAgentE2E(
           targetRoot,
           signal: controller.signal,
           deadlineAt: Date.now() + timeoutMs,
+          sides: ["target"],
+          compileTests: false,
         });
         controller.signal.throwIfAborted();
         if (
-          evidence.length !== 2 ||
-          !["source", "target"].every(
-            (side) =>
-              evidence.filter((item) => item.side === side).length === 1,
-          ) ||
+          evidence.length !== 1 ||
+          evidence[0]?.side !== "target" ||
           evidence.some(
             (item) =>
               item.exitCode !== 0 ||
               item.timedOut ||
-              item.cwd !== (item.side === "source" ? sourceRoot : targetRoot),
+              item.cwd !== targetRoot,
           )
         )
-          throw new Error(
-            "Both source and target project preparation must succeed.",
-          );
+          throw new Error("Target project preparation must succeed.");
       });
     } catch (error) {
       preparationError = redact(
@@ -507,15 +503,20 @@ export async function executeSingleAgentE2E(
         timeoutMs,
         maxTurns,
       };
-      const runtime = observer.wrapRuntime(
-        deps.runtime ?? createBehaviorRuntime(runtimeOptions),
-      );
+      const agentEventsPath = join(root, "agent-events.jsonl");
+      await writeFile(agentEventsPath, "", { flag: "wx" });
       const agentStartedAt = Date.now();
       try {
         output = await observer.measureStep("single-agent-validation", () =>
           new SingleAgentDifferentialStrategy({
             ...runtimeOptions,
-            runtime,
+            client: deps.client,
+            onEvent: (event) => {
+              appendFileSync(
+                agentEventsPath,
+                `${redact(JSON.stringify(event), secrets)}\n`,
+              );
+            },
           }).verify(input, {
             workspace: {
               root,
@@ -622,7 +623,7 @@ export async function executeSingleAgentE2E(
   // Preserve the legacy API timings field without replacing unified timing.json.
   await writeFile(
     benchmarkPath,
-    `${JSON.stringify({ dataset, strategy: descriptor.id, strategyVersion: descriptor.version, model, effort: options.effort ?? "low", task: options.task, variant: options.variant, executionMode, budget: { timeoutMs, maxTurns, scope: "per-preflight-and-phase", nativeSessionTimeoutMs: timeoutMs, nativeSessionMaxTurns: maxTurns }, originals, originalsUnchanged, preparationEvidencePath, resultPath, timings, ...telemetry }, null, 2)}\n`,
+    `${JSON.stringify({ dataset, strategy: descriptor.id, strategyVersion: descriptor.version, model, effort: options.effort ?? "low", task: options.task, variant: options.variant, executionMode, budget: { timeoutMs, maxTurns, scope: "per-preflight-and-phase", modelTimeoutMs: timeoutMs, modelMaxTurns: maxTurns }, originals, originalsUnchanged, preparationEvidencePath, resultPath, timings, ...telemetry }, null, 2)}\n`,
     { flag: "wx" },
   );
   return {

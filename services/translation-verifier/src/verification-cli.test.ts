@@ -1,5 +1,6 @@
-import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "./schemas/legacy-input.js";
+import { calculatePatchHashV2 } from "./schemas/legacy-input.js";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -259,8 +260,8 @@ describe("runVerificationCli", () => {
   });
 });
 
-describe("smoke E2E strategy parser", () => {
-  it("runs offline with the default strategy and accepts an explicit strategy", () => {
+describe("single-agent E2E command parser", () => {
+  it("runs offline with the default model and accepts an explicit model", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
     const base = "npm run e2e -- --offline-only";
 
@@ -269,22 +270,22 @@ describe("smoke E2E strategy parser", () => {
       encoding: "utf8",
     });
     const explicitOutput = execSync(
-      `${base} --strategy differential-smoke`,
+      `${base} --model deepseek-v4-flash`,
       {
         cwd: packageRoot,
         encoding: "utf8",
       },
     );
 
-    expect(defaultOutput).toContain("跳过 smoke E2E");
-    expect(explicitOutput).toContain("跳过 smoke E2E");
+    expect(defaultOutput).toContain("Skipped: offline-only");
+    expect(explicitOutput).toContain("Skipped: offline-only");
   }, 30000);
 
-  it("rejects a strategy flag without a value", () => {
+  it("rejects a model flag without a value", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
     try {
-      execSync("npm run e2e -- --strategy --offline-only", {
+      execSync("npm run e2e -- --model --offline-only", {
         cwd: packageRoot,
         encoding: "utf8",
         stdio: "pipe",
@@ -293,11 +294,11 @@ describe("smoke E2E strategy parser", () => {
     } catch (error) {
       const failure = error as { status?: number; stderr?: string };
       expect(failure.status).toBe(2);
-      expect(failure.stderr ?? "").toContain("Missing value for --strategy");
+      expect(failure.stderr ?? "").toContain("Missing value for --model");
     }
   }, 15000);
 
-  it("reports unknown strategy explicitly", () => {
+  it("rejects the removed smoke strategy selector explicitly", () => {
     const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
     try {
@@ -311,7 +312,7 @@ describe("smoke E2E strategy parser", () => {
       const failure = error as { status?: number; stderr?: string };
       expect(failure.status).toBe(2);
       expect(failure.stderr ?? "").toContain(
-        "unknown smoke E2E strategy: missing",
+        "Unknown option: --strategy",
       );
     }
   }, 15000);

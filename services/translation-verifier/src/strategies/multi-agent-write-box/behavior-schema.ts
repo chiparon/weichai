@@ -1,5 +1,5 @@
 import { Ajv } from "ajv";
-import type { RepositoryIngestionJsonValue as JsonValue } from "@forexplore/contracts";
+import type { RepositoryIngestionJsonValue as JsonValue } from "../../schemas/legacy-input.js";
 import type {
   BehaviorCollectionManifest,
   BehaviorCaseInput,

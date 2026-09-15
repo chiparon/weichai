@@ -1,5 +1,7 @@
+import { resolveModelApiKey } from './model-credential.js';
 import 'dotenv/config';
 import { ModelModuleHierarchyPlanner } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
+import { createWorkspaceTestVerifier } from '@forexplore/translation-verifier/workspace-test-verifier';
 import { loadConfig } from './config.js';
 import { completeWithDeepSeek, completeWithDeepSeekTools } from './deepseek-client.js';
 import { deepSeekModelConfig } from './model-config.js';
@@ -23,6 +25,13 @@ const adapter = new AdaptationAdapter({
   apiKey: () => config.apiKey,
   skeletonProjectPath: config.skeletonProjectPath,
   projectRoot: config.projectRoot,
+  testAgentEnabled: config.testAgentEnabled,
+  testAgent: (input, signal) => createWorkspaceTestVerifier({
+    apiKey: resolveModelApiKey(() => config.apiKey),
+    onEvent: (event) => console.log(JSON.stringify({ scope: 'adaptation-tests', ...event })),
+  })(input, signal),
+  maxTestRepairAttempts: config.maxTestRepairAttempts,
+  onTestEvent: (event) => console.log(JSON.stringify({ scope: 'adaptation-tests', ...event })),
 });
 
 let server: ReturnType<typeof createHttpServer> | undefined;
@@ -34,6 +43,10 @@ async function main(): Promise<void> {
       workspaceRoot: config.projectRoot,
       compileCommand: config.workspaceTranslation.compileCommand,
       verification: config.workspaceTranslation.verification,
+      ...(config.workspaceTranslation.testAgent ? {
+        testVerifier: createWorkspaceTestVerifier({ apiKey: config.apiKey }),
+        maxTestRepairAttempts: config.workspaceTranslation.maxTestRepairAttempts,
+      } : {}),
       maxModelTurns: config.workspaceTranslation.maxModelTurns,
       timeoutMs: config.workspaceTranslation.timeoutMs,
       // The Analyzer and Translator may query the host's read-only index
@@ -96,6 +109,7 @@ async function main(): Promise<void> {
   httpServer.listen(config.port, config.host, () => {
     console.log(`Adaptation service listening on http://${config.host}:${config.port}`);
     console.log(`Target project: ${config.projectRoot}`);
+    console.log(`Patch-preview test agent: ${config.testAgentEnabled ? 'enabled (Java/Maven)' : 'disabled'}`);
     console.log(`Static analysis snapshots: ${config.analysisRoot}`);
     if (semanticArchitecturePort) {
       console.log('Revision-scoped semantic module planning is enabled.');

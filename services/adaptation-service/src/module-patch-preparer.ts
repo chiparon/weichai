@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, rmdirSync, rmSync } from "node:fs";
-import { dirname, join, posix } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import type {
   FilePatch,
   PatchHunk,
@@ -9,6 +10,7 @@ import type {
   WorkspaceTranslationContext,
   WorkspaceTranslationRequest,
   WorkspaceTranslationRun,
+  WorkspaceTestVerifier,
 } from "@forexplore/contracts";
 import type {
   ModulePatchPreparationContext,
@@ -16,6 +18,7 @@ import type {
 } from "./module-wave-preparation-runner";
 import type { PreparedModulePatch } from "./module-wave-execution";
 import type { WorkspaceTranslationModelClient } from "./workspace-translation-agent";
+import { TranslationWorkspaceFiles } from "./workspace-translation-files";
 import { WorkspaceTranslationRuntime } from "./workspace-translation-runtime";
 
 export type { WorkspaceTranslationModelClient } from "./workspace-translation-agent";
@@ -42,6 +45,8 @@ export interface ModuleWaveGenerationOptions {
   compileCommand: WorkspaceCompileCommand;
   /** Optional host-owned immutable criteria for this module's behavior tests. */
   verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
+  testVerifier?: WorkspaceTestVerifier;
+  maxTestRepairAttempts?: number;
   /** Model turns allowed per module, including repair turns. */
   maxModelTurns?: number;
   /** Wall-clock budget for one module run. */
@@ -103,13 +108,17 @@ export class WorkspaceModulePatchPreparer implements ModulePatchPreparer {
       workspaceRoot: context.worktreeRoot,
       compileCommand: structuredClone(this.options.compileCommand),
       ...(this.options.verification ? { verification: structuredClone(this.options.verification) } : {}),
+      ...(this.options.testVerifier ? { testVerifier: this.options.testVerifier } : {}),
+      maxTestRepairAttempts: this.options.maxTestRepairAttempts,
       client: this.options.client,
       maxModelTurns: this.options.maxModelTurns ?? moduleGenerationDefaults.maxModelTurns,
       timeoutMs: this.options.timeoutMs ?? moduleGenerationDefaults.timeoutMs,
     });
 
+    let runId: string | undefined;
     try {
       const started = runtime.start(request);
+      runId = started.id;
       const finished = await awaitCompletion(
         runtime,
         started.id,
@@ -140,6 +149,11 @@ export class WorkspaceModulePatchPreparer implements ModulePatchPreparer {
       throw error;
     } finally {
       await runtime.shutdown();
+      // Persist evidence outside the disposable worktree before the runner releases it.
+      if (runId && this.options.testVerifier) {
+        const common = execFileSync("git", ["-C", context.repositoryRoot, "rev-parse", "--git-common-dir"], { encoding: "utf8" }).trim();
+        new TranslationWorkspaceFiles(resolve(context.repositoryRoot, common)).save(runId, runtime.get(runId));
+      }
       // The run journal is created inside the disposable worktree; remove it so
       // the checkout is byte-identical to the wave baseline.
       removeTranslationRecords(context.worktreeRoot);
@@ -267,6 +281,10 @@ function moduleLocalValidation(run: WorkspaceTranslationRun): ValidationRecord[]
         : "Host-owned behavioral criteria did not produce usable evidence.",
     });
   }
+  for (const test of run.testRuns ?? []) records.push({
+    id: `module-generated-tests:${test.id}`, label: "Generated module tests (host checked)", required: false,
+    status: test.status === "passed" && test.reportConsistent ? "pass" : "fail", summary: test.summary,
+  });
   records.push({
     id: "module-evidence-scope",
     label: "In-module evidence is not the wave acceptance",

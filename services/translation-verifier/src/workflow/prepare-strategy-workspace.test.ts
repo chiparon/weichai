@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import { calculatePatchHashV2 } from "../schemas/legacy-input.js";
 import {
   existsSync,
   mkdirSync,
@@ -15,11 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, basename } from "node:path";
 import * as fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  AdaptationRequestV2,
-  FilePatch,
-  ModifiedFilePatch,
-} from "@forexplore/contracts";
+import type { FilePatch, ModifiedFilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "../schemas/legacy-input.js";
 import type {
   VerificationArtifact,
   VerificationInput,

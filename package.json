@@ -20,6 +20,7 @@
     "claude:translator": "bash scripts/run-claude-deepseek.sh --agent forexplore-translator",
     "claude:reranker": "bash scripts/run-claude-deepseek.sh --agent forexplore-reranker",
     "dev:extension": "powershell -ExecutionPolicy Bypass -File scripts/run-vscode-extension.ps1",
+    "dev:extension:unix": "bash scripts/run-vscode-extension.sh",
     "build": "npm run build:extension",
     "build:extension": "npm run build --workspace forexplore-vscode",
     "package:extension": "npm run package --workspace forexplore-vscode",

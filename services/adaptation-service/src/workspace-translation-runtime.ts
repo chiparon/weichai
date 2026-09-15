@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
-  WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceEvidenceQuery, WorkspaceTranslationRequest, WorkspaceTranslationRun,
+  WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceEvidenceQuery, WorkspaceTranslationRequest, WorkspaceTranslationRun, WorkspaceTestVerifier,
 } from "@forexplore/contracts";
 import type { DeepSeekToolMessage } from "./deepseek-client";
 import { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";
 import { TranslationWorkspaceFiles, maxWorkspaceFileChars } from "./workspace-translation-files";
 import type { WorkspaceEvidencePort } from "./workspace-evidence-port";
+
 import {
   object, parseWorkspaceTranslationPlan, validateWorkspaceTranslationRequest,
   workspaceAnalyzerPrompt, workspaceAnalyzerTools, workspaceTranslatorPrompt, workspaceTranslatorTools,
@@ -17,7 +18,11 @@ export interface WorkspaceTranslationRuntimeOptions {
   compileCommand: WorkspaceCompileCommand;
   /** Host-owned immutable test harness and all its criteria/configuration files. */
   verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
+  /** Host-owned verifier that may generate and execute a suite in this same worktree. */
+  testVerifier?: WorkspaceTestVerifier;
+  maxTestRepairAttempts?: number;
   client: WorkspaceTranslationModelClient;
+
   /**
    * Optional read-only history index. When present and the run carries
    * evidenceScopes, the agents may query it themselves with a bounded budget.
@@ -65,6 +70,7 @@ export class WorkspaceTranslationRuntime {
       !Number.isInteger(this.timeoutMs) || this.timeoutMs < 1000 || this.timeoutMs > 7_200_000) {
       throw new Error("Invalid workspace translation execution budget.");
     }
+    if (!Number.isInteger(options.maxTestRepairAttempts ?? 2) || (options.maxTestRepairAttempts ?? 2) < 0 || (options.maxTestRepairAttempts ?? 2) > 10) throw new Error("Invalid test repair budget.");
     this.files = new TranslationWorkspaceFiles(options.workspaceRoot);
     if (options.evidence) {
       const { maxQueries, maxExcerptsPerQuery, maxTotalChars } = { ...evidenceDefaults, ...options.evidence };
@@ -83,7 +89,7 @@ export class WorkspaceTranslationRuntime {
   }
 
   configuration(): { workspaceRoot: string; behavioralVerification: boolean } {
-    return { workspaceRoot: this.files.root, behavioralVerification: Boolean(this.options.verification) };
+    return { workspaceRoot: this.files.root, behavioralVerification: Boolean(this.options.verification || this.options.testVerifier) };
   }
 
   start(input: unknown): WorkspaceTranslationRun {
@@ -91,7 +97,10 @@ export class WorkspaceTranslationRuntime {
     try { validateWorkspaceTranslationRequest(input); }
     catch (error) { throw new WorkspaceTranslationError(400, message(error)); }
     const request = structuredClone(input);
-    for (const path of new Set([...request.workspaceFiles, ...request.writeFiles])) this.files.read(path);
+    for (const path of new Set([...request.workspaceFiles, ...request.writeFiles])) {
+      if (this.options.testVerifier && path.startsWith(".forexplore-tests/")) throw new WorkspaceTranslationError(400, "Generated tests are owned by the test host.");
+      this.files.read(path);
+    }
     const verification = this.options.verification;
     if (verification && request.writeFiles.some(path => verification.protectedFiles.some(protectedPath => path.toLowerCase() === protectedPath.toLowerCase()))) {
       throw new WorkspaceTranslationError(400, "Verification criteria cannot be included in writeFiles.");
@@ -101,6 +110,7 @@ export class WorkspaceTranslationRuntime {
       id: randomUUID(), workspaceRoot: this.files.root, request, status: "analyzing",
       createdAt: now, updatedAt: now, completedSteps: [], changes: [], compilations: [], evidenceQueries: [],
       modelTurns: 0, acceptance: "compilation-only",
+      ...(this.options.testVerifier ? { testVerificationRequired: true } : {}),
       ...(verification ? { verification: { command: structuredClone(verification.command),
         criteria: verification.protectedFiles.map(path => {
           const value = hash(this.files.read(path));
@@ -156,10 +166,17 @@ export class WorkspaceTranslationRuntime {
     if (run.status === "rolled-back") return run;
     // Preflight every file before restoring any of them. Later user edits are never overwritten.
     this.reconcile(run, true);
+    const generatedTests = new Map((run.testRuns ?? []).filter(test => test.cleanup === "retained").flatMap(test => test.suite?.files ?? []).map(file => [file.path, file.content]));
+    for (const [path, content] of generatedTests) {
+      if (!path.startsWith(".forexplore-tests/")) throw new Error("Invalid generated test path in run record.");
+      const current = this.files.read(path);
+      if (current !== null && current !== content) throw new Error(`Generated test changed outside this run: ${path}`);
+    }
     run.acceptance = "compilation-only";
     run.status = "rolling-back";
     this.save(run);
     try {
+      for (const [path, content] of generatedTests) if (this.files.read(path) !== null) this.files.write(path, content, null);
       for (const change of [...run.changes].reverse()) {
         if (change.rolledBack) continue;
         const current = this.files.read(change.path);
@@ -281,6 +298,7 @@ export class WorkspaceTranslationRuntime {
       ![...runningStatuses, "completed", "failed", "cancelled", "interrupted", "rolling-back", "rolled-back"].includes(run.status) ||
       !Array.isArray(run.changes) || !Array.isArray(run.compilations) || !Array.isArray(run.completedSteps) ||
       !Number.isInteger(run.modelTurns) || run.modelTurns < 0) throw new Error("Invalid translation record.");
+    if ((run.testRuns !== undefined && !Array.isArray(run.testRuns)) || (run.testFeedback !== undefined && !Array.isArray(run.testFeedback))) throw new Error("Invalid test history.");
     if (run.verification && (!Array.isArray(run.verification.criteria) || !run.verification.criteria.length || !Array.isArray(run.verification.runs))) throw new Error("Invalid verification record.");
     if (run.evidenceQueries !== undefined && (!Array.isArray(run.evidenceQueries) || run.evidenceQueries.some((item) =>
       !item || typeof item.at !== "string" || typeof item.requirement !== "string" || !Array.isArray(item.repositoryIds) ||
@@ -344,6 +362,7 @@ export class WorkspaceTranslationRuntime {
   }
 
   private assertVerification(run: WorkspaceTranslationRun): void {
+    if (Boolean(run.testVerificationRequired) !== Boolean(this.options.testVerifier)) throw new Error("Test agent policy changed; start a new translation run.");
     const current = this.options.verification;
     if (Boolean(current) !== Boolean(run.verification) || current && run.verification &&
       (JSON.stringify(current.command) !== JSON.stringify(run.verification.command) ||
@@ -381,7 +400,7 @@ export class WorkspaceTranslationRuntime {
       { role: "user", content: JSON.stringify({
         request: run.request, plan: run.plan, completedSteps: run.completedSteps,
         changes: run.changes.map(({ path, applied }) => ({ path, applied })),
-        latestCompilation: run.compilations.at(-1), verificationRequired: Boolean(run.verification), latestVerification: run.verification?.runs.at(-1), revisionReason,
+        latestCompilation: run.compilations.at(-1), verificationRequired: Boolean(run.verification), latestVerification: run.verification?.runs.at(-1), testFeedback: run.testFeedback, revisionReason,
         evidenceQueriesUsed: run.evidenceQueries?.length ?? 0,
         evidenceQueriesRemaining: this.evidenceBudget ? Math.max(0, this.evidenceBudget.maxQueries - (run.evidenceQueries?.length ?? 0)) : 0,
       }) },
@@ -554,8 +573,42 @@ export class WorkspaceTranslationRuntime {
                 successfulSnapshot === undefined || successfulSnapshot !== this.snapshot(run)) {
                 throw new Error("Finish requires all plan steps and a passing compilation after the latest file changes.");
               }
+              if (this.options.testVerifier) {
+                run.status = "testing";
+                this.save(run);
+                const before = this.snapshot(run);
+                const test = await this.options.testVerifier({ translationRunId: run.id, workspaceRoot: this.files.root,
+                  request: structuredClone(run.request), compilation: structuredClone(run.compilations.at(-1)!),
+                  suite: run.testRuns?.find(item => item.suite)?.suite }, signal);
+                run.testRuns = [...(run.testRuns ?? []), structuredClone(test)];
+                this.save(run);
+                signal.throwIfAborted();
+                const evidenceValid = test.translationRunId === run.id && test.reportConsistent && test.commands.length > 0 &&
+                  test.commands.every(command => command.filesUnchanged && command.sourceSnapshot === test.sourceSnapshot && command.cwd === this.files.root && !command.timedOut) && before === this.snapshot(run);
+                if (!(evidenceValid && test.status === "passed" && test.commands.at(-1)?.exitCode === 0)) {
+                  const feedback = run.testFeedback ?? (run.testFeedback = []);
+                  const repairable = evidenceValid && test.status === "failed" && test.suite && test.report?.bugs.length && test.commands.some(command => command.tests && command.tests.failed > 0 && command.exitCode !== 0);
+                  if (repairable) {
+                    const exhausted = feedback.length >= (this.options.maxTestRepairAttempts ?? 2);
+                    feedback.push({ testRunId: test.id, attempt: feedback.length + 1, summary: test.summary,
+                      bugs: structuredClone(test.report!.bugs), status: exhausted ? "exhausted" : "repairing" });
+                    if (!exhausted) {
+                      successfulSnapshot = undefined; verifiedSnapshot = undefined;
+                      run.status = "translating";
+                      result = { hostFeedback: feedback.at(-1), commandEvidence: test.commands,
+                        instruction: "Repair the production implementation within the existing write scope. Do not modify tests or criteria. Compile again, complete affected steps, then finish; the host will rerun the exact suite." };
+                      break;
+                    }
+                  }
+                  run.status = "failed";
+                  run.error = repairable ? "Behavioral repair budget exhausted." : test.summary;
+                  this.save(run);
+                  return;
+                }
+                for (const feedback of run.testFeedback ?? []) if (feedback.status !== "exhausted") feedback.status = "resolved";
+              }
               signal.throwIfAborted();
-              run.acceptance = run.verification ? "behavior-verified" : "compilation-only";
+              run.acceptance = run.verification || this.options.testVerifier ? "behavior-verified" : "compilation-only";
               run.status = "completed";
               this.save(run);
               return;

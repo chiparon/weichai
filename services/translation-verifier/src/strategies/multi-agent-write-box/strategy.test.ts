@@ -27,7 +27,7 @@ import type {
 } from "../../schemas/verification-types.js";
 import { normalizeVerificationStrategyOutput } from "../../schemas/materialize-verification-result.js";
 import { createVerificationArtifactStore } from "../../run-output/verification-artifact-store.js";
-import { runManagedProcess } from "../smoke-differential/manage-test-process.js";
+import { runManagedProcess } from "../manage-test-process.js";
 
 const directories: string[] = [];
 afterEach(() => {

@@ -1,6 +1,5 @@
 /**
- * 受控子进程共享原语(translation-verifier 包内,命令代理 verifier-command.ts
- * verifier-command 与 smoke 会话统一使用):
+ * 受控子进程共享原语(translation-verifier 包内,由命令执行与 agent 会话共用):
  * - sanitizedBuildEnvironment:构建子进程的最小化环境——保留工具链/缓存变量,
  *   移除模型与服务凭据类变量(凭据最小化,不是针对可信代码逃逸的安全沙箱)。
  * - runManagedProcess:参数数组 spawn(不经 shell),统一负责整体 deadline、AbortSignal、

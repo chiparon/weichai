@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { runManagedProcess } from "../smoke-differential/manage-test-process.js";
+import { runManagedProcess } from "../manage-test-process.js";
 import {
   captureProjectBaseline,
   type BehaviorProjectBaseline,

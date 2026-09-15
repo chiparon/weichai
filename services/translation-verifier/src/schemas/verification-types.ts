@@ -1,8 +1,5 @@
-import type {
-  AdaptationRequestV2,
-  FilePatch,
-  RepositoryIngestionJsonValue,
-} from "@forexplore/contracts";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2, RepositoryIngestionJsonValue } from "./legacy-input.js";
 import type * as Schema from "./verification-schema-types.js";
 
 export type {

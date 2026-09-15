@@ -10,11 +10,13 @@
     "generate:schema-types": "tsx scripts/generate-schema-types.ts",
     "check:schema-types": "tsx scripts/generate-schema-types.ts --check",
     "verify": "tsx src/verification-cli.ts",
-    "e2e": "tsx e2e/run-smoke-e2e.ts",
+    "e2e": "tsx e2e/run-single-agent-e2e.ts",
+    "e2e:workspace-tests": "tsx e2e/run-workspace-tests-live.ts",
     "e2e:single-agent": "tsx e2e/run-single-agent-e2e.ts"
   },
   "exports": {
     ".": "./src/index.ts",
+    "./workspace-test-verifier": "./src/workspace-test-verifier.ts",
     "./schemas/verification-input.schema.json": "./src/schemas/verification-input.schema.json",
     "./schemas/verification-output.schema.json": "./src/schemas/verification-output.schema.json",
     "./schemas/verification-run.schema.json": "./src/schemas/verification-run.schema.json"

@@ -69,3 +69,11 @@ logs/
 
 # Git worktrees
 .worktrees/
+
+.scratch/
+docs/superpowers/
+e2e-runs/
+
+# IDE and build artifacts
+.github/
+obj/

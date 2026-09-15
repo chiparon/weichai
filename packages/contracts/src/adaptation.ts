@@ -2,6 +2,7 @@ import type { FilePatch } from './backfill';
 import type { Language, ModuleTarget } from './module';
 import type { SearchCandidate } from './retrieval';
 import type { ValidationRecord } from './validation';
+import type { WorkspaceTestResult } from './workspace-translation';
 
 export type AdaptationStrategy = 'translate' | 'bridge' | 'wrap' | 'reuse';
 
@@ -28,6 +29,10 @@ export interface AdaptationResult {
   /** Behavior-level repair instructions produced by post-compile verification. */
   modificationPlan?: string[];
   validation: ValidationRecord[];
+  /** Host-checked behavioral attempts from the actual patch-preview workflow. */
+  testRuns?: WorkspaceTestResult[];
+  /** Total test-agent time, including model calls and test execution across attempts. */
+  testDurationMs?: number;
   files: FilePatch[];
 }
 

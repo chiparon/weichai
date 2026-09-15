@@ -9,8 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "./schemas/legacy-input.js";
+import { calculatePatchHashV2 } from "./schemas/legacy-input.js";
 import { createDefaultVerificationService } from "./create-default-verifier.js";
 import { assertVerificationReceipt } from "./schemas/validate-verification-receipt.js";
 import type { VerificationInput } from "./schemas/verification-types.js";
@@ -118,7 +119,7 @@ describe("default service strategy integration", () => {
     },
   );
 
-  it("defaults to the single session runtime and persists a bound failure when it supplies no evidence", async () => {
+  it("defaults to the direct model client and persists a bound failure when it supplies no tests", async () => {
     const root = mkdtempSync(join(tmpdir(), "verifier-registration-"));
     roots.push(root);
     const sessions: string[] = [];
@@ -126,32 +127,26 @@ describe("default service strategy integration", () => {
       workspaceRoot: join(root, "workspaces"),
       artifactRoot: join(root, "artifacts"),
       singleAgent: {
-        runtime: {
-          async runAgent(task) {
-            sessions.push(task.sessionRole ?? "legacy");
-            return {
-              exitCode: 0,
-              timedOut: false,
-              durationMs: 1,
-              stdout: "No tests supplied",
-              stderr: "",
-            };
-          },
-          async runCommand() {
-            throw new Error("Unexpected separate replay");
+        maxTurns: 1,
+        client: {
+          async complete(messages, tools) {
+            sessions.push(messages[0]!.role);
+            expect(tools.map((tool) => tool.name)).toContain("submit_tests");
+            expect(tools.map((tool) => tool.name)).not.toContain("run_command");
+            return { content: "No tests supplied" };
           },
         },
       },
     });
     const request = input();
     const receipt = await service.verifyWithReceipt(request);
-    expect(sessions).toEqual(["single-agent"]);
+    expect(sessions).toEqual(["system"]);
     expect(receipt.result).toMatchObject({
       strategyId: SINGLE_AGENT_DIFFERENTIAL_STRATEGY.id,
       subjectHash: request.translation.patchHash,
       executionStatus: "failed",
       targetAssessment: "inconclusive",
-      problems: [{ code: "insufficient_test_basis" }],
+      problems: [{ code: "agent_error" }],
     });
     expect(receipt.resultArtifact).toBeDefined();
     expect(() =>

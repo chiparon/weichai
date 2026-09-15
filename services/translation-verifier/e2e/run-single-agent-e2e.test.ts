@@ -18,23 +18,25 @@ import {
 import { projectHash } from "../src/strategies/multi-agent-write-box/behavior-workspace.js";
 
 const prepared: NonNullable<SingleAgentE2EDeps["prepareProjects"]> = async ({
-  sourceRoot,
   targetRoot,
-}) =>
-  (["source", "target"] as const).map((side) => ({
-    side,
-    cwd: side === "source" ? sourceRoot : targetRoot,
-    command: "injected fixture preparation",
-    exitCode: 0,
-    timedOut: false,
-    durationMs: 1,
-    stdout: "ready",
-    stderr: "",
-  }));
-const noReplay = async () => {
-  throw new Error("No separate command replay is expected");
+  sides,
+  compileTests,
+}) => {
+  expect(sides).toEqual(["target"]);
+  expect(compileTests).toBe(false);
+  return [
+    {
+      side: "target",
+      cwd: targetRoot,
+      command: "injected target compilation",
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 1,
+      stdout: "ready",
+      stderr: "",
+    },
+  ];
 };
-
 const options = {
   task: "multipart-read-body" as const,
   variant: "correct" as const,
@@ -43,16 +45,44 @@ const options = {
   json: false,
   offlineOnly: false,
 };
-
 const roots: string[] = [];
+async function temporaryRoot() {
+  const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
+  roots.push(root);
+  return root;
+}
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
 });
+const mustNotStart = () =>
+  vi.fn(async () => {
+    throw new Error("Model must not start");
+  });
+const testPath = ".forexplore-tests/generated.cjs";
+function submission(pass: boolean) {
+  return {
+    toolCalls: [
+      {
+        id: "submit-1",
+        name: "submit_tests",
+        arguments: JSON.stringify({
+          files: [
+            {
+              path: testPath,
+              content: `const assert = require('node:assert/strict');\nassert.equal(require('node:path').basename(process.cwd()), 'target');\nassert.equal(${pass ? "1, 1" : "1, 2"});\nconsole.log('generated test executed');\n`,
+            },
+          ],
+          command: { executable: process.execPath, args: [testPath] },
+        }),
+      },
+    ],
+  };
+}
 
 describe("single-agent E2E execution boundary", () => {
-  it("accepts a common output root and native session turn limit", () => {
+  it("accepts a common output root and model turn limit", () => {
     expect(
       parseSingleAgentArgs(["--output-root", "/tmp/e2e", "--max-turns", "12"]),
     ).toMatchObject({
@@ -60,13 +90,13 @@ describe("single-agent E2E execution boundary", () => {
       maxTurns: 12,
       timeoutMs: 600_000,
     });
-    expect(parseSingleAgentArgs(["--max-turns", "0"])).toHaveProperty("error");
   });
   it.each([
     ["--live", "--offline-only"],
     ["--timeout-ms", "0"],
     ["--timeout-ms", "NaN"],
     ["--timeout-ms", "2147483648"],
+    ["--max-turns", "0"],
     ["--task", "unknown"],
     ["--variant", "unknown"],
     ["--effort", "invalid"],
@@ -81,14 +111,13 @@ describe("single-agent E2E execution boundary", () => {
   });
 
   it("keeps separate runs and unified failure artifacts under the common project root", async () => {
-    const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-    roots.push(root);
-    const runAgent = vi.fn(noReplay);
+    const root = await temporaryRoot();
+    const complete = mustNotStart();
     const run = () =>
       executeSingleAgentE2E(
         { ...options, outputRoot: root },
         {
-          runtime: { runAgent, runCommand: noReplay },
+          client: { complete },
           prepareProjects: async () => {
             throw new Error("environment unavailable");
           },
@@ -102,23 +131,21 @@ describe("single-agent E2E execution boundary", () => {
       "/single-agent-differential/commons-fileupload-java-skeleton/",
     );
     expect(await readFile(first.resultPath, "utf8")).toBe(originalReport);
-    const benchmark = JSON.parse(
-      await readFile(join(second.workspaceRoot, "benchmark.json"), "utf8"),
-    );
-    expect(benchmark).toMatchObject({
+    expect(
+      JSON.parse(await readFile(second.benchmarkPath, "utf8")),
+    ).toMatchObject({
       executionMode: "injected-test",
       originalsUnchanged: true,
       dataset: { standardDatasetMatch: true },
       effort: "low",
       budget: { maxTurns: 50 },
     });
+    expect(JSON.parse(await readFile(second.resultPath, "utf8"))).toEqual(
+      second.result,
+    );
     expect(
-      JSON.parse(
-        await readFile(join(second.workspaceRoot, "report.json"), "utf8"),
-      ),
-    ).toEqual(second.result);
-    const timing = JSON.parse(await readFile(second.timingPath, "utf8"));
-    expect(timing.hostSpans).toEqual(
+      JSON.parse(await readFile(second.timingPath, "utf8")).hostSpans,
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           name: "single-agent-validation",
@@ -126,20 +153,19 @@ describe("single-agent E2E execution boundary", () => {
         }),
       ]),
     );
-    expect(await stat(join(second.workspaceRoot, "events.jsonl"))).toBeTruthy();
-    expect(runAgent).not.toHaveBeenCalled();
+    expect(await stat(second.eventsPath)).toBeTruthy();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("retains a failed report when the durable artifact destination is unavailable", async () => {
-    const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-    roots.push(root);
+    const root = await temporaryRoot();
     const artifactRoot = join(root, "blocked-artifacts");
     await writeFile(artifactRoot, "not a directory\n");
     const output = await executeSingleAgentE2E(
       { ...options, outputRoot: root },
       {
         artifactRoot,
-        runtime: { runAgent: vi.fn(noReplay), runCommand: noReplay },
+        client: { complete: mustNotStart() },
         prepareProjects: async () => {
           throw new Error("preflight unavailable");
         },
@@ -155,72 +181,16 @@ describe("single-agent E2E execution boundary", () => {
     expect(await stat(output.timingPath)).toBeTruthy();
   });
 
-  it("requires explicit preparation for an injected runtime and records environment failure before any Agent", async () => {
-    const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-    roots.push(root);
-    const runAgent = vi.fn(() => {
-      throw new Error("Agent must not start");
-    });
-    const deps = {
-      workspaceRoot: root,
-      runtime: { runAgent, runCommand: noReplay },
-    };
-    await expect(executeSingleAgentE2E(options, deps)).rejects.toThrow(
-      "prepareProjects",
-    );
-    const result = await executeSingleAgentE2E(options, {
-      ...deps,
-      prepareProjects: async ({ sourceRoot, targetRoot }) => [
-        {
-          side: "source",
-          cwd: sourceRoot,
-          command: "python fixture preflight",
-          exitCode: 0,
-          timedOut: false,
-          durationMs: 1,
-          stdout: "imported",
-          stderr: "",
-        },
-        {
-          side: "target",
-          cwd: targetRoot,
-          command: "java fixture preflight",
-          exitCode: 1,
-          timedOut: false,
-          durationMs: 2,
-          stdout: "",
-          stderr: "missing JDK",
-        },
-      ],
-    });
-    expect(runAgent).not.toHaveBeenCalled();
-    expect(result.result.executionStatus).toBe("failed");
-    expect(result.result.problems[0].code).toBe("environment_unavailable");
-    expect(result.result.targetAssessment).toBe("not_checked");
-    expect(result.result.artifacts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: expect.stringMatching(/:e2e-preparation$/),
-          kind: "environment-preparation",
-        }),
-      ]),
-    );
-    expect(result.timings.agentMs).toBe(0);
-    expect(
-      JSON.parse(await readFile(result.preparationEvidencePath, "utf8")),
-    ).toMatchObject({
-      status: "failed",
-      evidence: [{ side: "source" }, { side: "target", stderr: "missing JDK" }],
-    });
-    expect(JSON.parse(await readFile(result.resultPath, "utf8"))).toEqual(
-      result.result,
-    );
+  it("requires explicit preparation for an injected client", async () => {
+    await expect(
+      executeSingleAgentE2E(options, { client: { complete: mustNotStart() } }),
+    ).rejects.toThrow("prepareProjects");
   });
-  it.each(["target_only", "differential"] as const)(
-    "runs one session after complete project preparation (%s), without leaking Host labels",
-    async (mode) => {
-      const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-      roots.push(root);
+
+  it.each([true, false])(
+    "executes submitted tests only in target and cleans up failures (pass=%s)",
+    async (pass) => {
+      const root = await temporaryRoot();
       const sourceHash = projectHash(sourceProjectRoot);
       const targetHash = projectHash(targetProjectRoot);
       const input = fileUploadInput("both-count-plus-one");
@@ -232,155 +202,67 @@ describe("single-agent E2E execution boundary", () => {
       ];
       const originalInput = structuredClone(input);
       const events: string[] = [];
-      const runAgent: NonNullable<
-        SingleAgentE2EDeps["runtime"]
-      >["runAgent"] = async (task) => {
-        events.push("agent");
-        expect(task.sessionRole).toBe("single-agent");
-        expect(task.additionalProjects?.source).toBeDefined();
-        const target = task.sandbox.cwd;
-        const source = task.additionalProjects!.source!.cwd;
-        expect(await readFile(join(source, "manifest.json"), "utf8")).toBe(
-          await readFile(join(sourceProjectRoot, "manifest.json"), "utf8"),
-        );
-        expect(
-          input.request.sourceBundle.files.some(
-            (file) => file.path === "manifest.json",
-          ),
-        ).toBe(false);
-        expect(
-          await readFile(join(source, "pyproject.toml"), "utf8"),
-        ).toContain("setuptools");
-        expect(await readFile(join(target, "pom.xml"), "utf8")).toContain(
-          "commons-fileupload",
-        );
-        expect(await readFile(join(source, pythonPath), "utf8")).toContain(
-          "return len(body) + 1",
-        );
-        expect(await readFile(join(target, javaPath), "utf8")).toBe(
-          input.translation.generatedContent,
-        );
-        expect(task.prompt.length).toBeLessThan(25_000);
-        expect(task.prompt).toContain(source);
-        expect(task.prompt).toContain(target);
-        expect(task.prompt).not.toContain("{{source_project_root}}");
-        expect(task.prompt).toContain(
-          input.request.targetContext.constraints[0],
-        );
-        expect(task.prompt).toContain(input.request.decisionNotes[0]);
-        expect(task.prompt).not.toContain(input.translation.generatedContent);
-        expect(task.prompt).not.toContain("return len(body) + 1");
-        expect(task.prompt).not.toContain("both-count-plus-one");
-        expect(task.prompt).not.toContain("Seeded");
-        expect(task.prompt).not.toContain("outputProvenance");
-        expect(task.prompt).not.toContain('"verificationPolicy"');
-        const observed = { caseId: "body", outcome: "return", value: 3 };
-        const plan = {
-          schemaVersion: "1.0",
-          mode,
-          referenceReason:
-            "Injected workflow decision, not an Agent quality measurement",
-          testBasis: {
-            summary: "Exact byte count",
-            evidence: ["request.requirement"],
-          },
-          cases: [
-            {
-              caseId: "body",
-              intent: "preserve body count",
-              input: { body: "YWJj" },
-              expectationBasis:
-                mode === "differential" ? "source_observation" : "requirement",
-              evidence: ["request.requirement"],
-              expected: observed,
-              ...(mode === "differential"
-                ? { sourceCommandId: "source-1" }
-                : {}),
-            },
-          ],
-        };
-        await writeFile(
-          join(target, ".forexplore-tests/plan.json"),
-          JSON.stringify(plan),
-        );
-        await writeFile(join(target, ".forexplore-tests/runner.json"), "{}\n");
-        if (mode === "differential")
-          await writeFile(
-            join(source, ".forexplore-tests/runner.json"),
-            "{}\n",
-          );
-        await writeFile(
-          join(target, ".forexplore-tests/report.json"),
-          JSON.stringify({
-            schemaVersion: "1.0",
-            targetCommandId: "target-1",
-            testFiles: {
-              source:
-                mode === "differential"
-                  ? [".forexplore-tests/runner.json"]
-                  : [],
-              target: [".forexplore-tests/runner.json"],
-            },
-            notes:
-              "Injected execution records verify orchestration only; no Java behavior claim.",
-          }),
-        );
-        const evidence = (
-          mode === "differential"
-            ? (["source", "target"] as const)
-            : (["target"] as const)
-        ).map((side) => ({
-          commandId: `${side}-1`,
-          side,
-          cwd: side === "source" ? source : target,
-          command: { executable: "injected", args: [] },
-          exitCode: 0,
-          timedOut: false,
-          durationMs: 1,
-          stdout: JSON.stringify([observed]),
-          stderr: "",
-          baselineValid: true,
-          credentialHit: false,
-          testFiles: { ".forexplore-tests/runner.json": "{}\n" },
-        }));
-        return {
-          exitCode: 0,
-          timedOut: false,
-          durationMs: 1,
-          stdout: "",
-          stderr: "",
-          frozenPlan: JSON.stringify(plan),
-          commandEvidence: evidence,
-        };
+      const complete: NonNullable<
+        SingleAgentE2EDeps["client"]
+      >["complete"] = async (messages, tools) => {
+        events.push("model");
+        const prompt = JSON.stringify(messages);
+        expect(prompt).toContain(input.request.targetContext.constraints[0]);
+        expect(prompt).toContain(input.request.decisionNotes[0]);
+        expect(prompt).not.toContain("outputProvenance");
+        expect(prompt).not.toContain('"verificationPolicy"');
+        const toolText = JSON.stringify(tools);
+        expect(toolText).toContain("submit_tests");
+        expect(toolText).not.toContain("run_command");
+        expect(toolText).not.toContain("write_file");
+        return submission(pass);
       };
+      let sourceBefore = "";
       const output = await executeSingleAgentE2E(
         { ...options, variant: "both-count-plus-one" },
         {
           workspaceRoot: root,
           input,
-          runtime: { runAgent, runCommand: noReplay },
+          client: { complete },
           prepareProjects: async (context) => {
             events.push("prepare");
             expect(
               await readFile(join(context.targetRoot, javaPath), "utf8"),
             ).toBe(input.translation.generatedContent);
+            expect(
+              await readFile(join(context.sourceRoot, pythonPath), "utf8"),
+            ).toContain("return len(body) + 1");
+            sourceBefore = projectHash(context.sourceRoot);
             return prepared(context);
           },
         },
       );
-      expect(events).toEqual(["prepare", "agent"]);
-      expect(output.result.problems).toEqual([]);
-      expect(output.result.executionStatus).toBe("completed");
-      expect(output.result.mode).toBe(mode);
-      expect(output.result.artifacts.length).toBeGreaterThan(0);
+      expect(events).toEqual(["prepare", "model"]);
+      expect(output.result.executionStatus).toBe(pass ? "completed" : "failed");
+      expect(output.result.mode).toBe("target_only");
+      expect(output.result.sourceAssessment).toBe("not_checked");
+      expect(projectHash(join(output.workspaceRoot, "source"))).toBe(
+        sourceBefore,
+      );
+      if (pass) {
+        expect(output.result.problems).toEqual([]);
+        expect(
+          await readFile(
+            join(output.workspaceRoot, "target", testPath),
+            "utf8",
+          ),
+        ).toContain("generated test executed");
+      } else {
+        await expect(
+          stat(join(output.workspaceRoot, "target", testPath)),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      }
       expect(JSON.parse(await readFile(output.resultPath, "utf8"))).toEqual(
         output.result,
       );
       expect(
         JSON.parse(await readFile(output.timingPath, "utf8")),
       ).toMatchObject({
-        schemaVersion: "1.0",
-        strategy: "single-agent-differential",
         hostSpans: expect.arrayContaining([
           expect.objectContaining({
             name: "single-agent-validation",
@@ -388,11 +270,12 @@ describe("single-agent E2E execution boundary", () => {
           }),
         ]),
       });
-      expect(output.timings).toMatchObject({
-        preparationMs: expect.any(Number),
-        agentMs: expect.any(Number),
-        totalMs: expect.any(Number),
-      });
+      expect(
+        await readFile(
+          join(output.workspaceRoot, "agent-events.jsonl"),
+          "utf8",
+        ),
+      ).not.toContain("claude");
       expect(input).toEqual(originalInput);
       expect(projectHash(sourceProjectRoot)).toBe(sourceHash);
       expect(projectHash(targetProjectRoot)).toBe(targetHash);
@@ -406,25 +289,29 @@ describe("single-agent E2E execution boundary", () => {
     },
   );
 
-  it.each(["missing-side", "throws", "timeout"] as const)(
-    "preserves preflight failures without starting the Agent (%s)",
+  it.each(["missing-target", "throws", "timeout", "failed-command"] as const)(
+    "preserves preflight failures without starting the model (%s)",
     async (failure) => {
-      const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-      roots.push(root);
-      const runAgent = vi.fn(noReplay);
+      const complete = mustNotStart();
       const output = await executeSingleAgentE2E(
         {
           ...options,
           timeoutMs: failure === "timeout" ? 20 : options.timeoutMs,
         },
         {
-          workspaceRoot: root,
-          runtime: { runAgent, runCommand: noReplay },
+          workspaceRoot: await temporaryRoot(),
+          client: { complete },
           prepareProjects: async (context) => {
             if (failure === "throws")
               throw new Error("preflight could not launch");
             const evidence = await prepared(context);
-            if (failure === "missing-side") return evidence.slice(0, 1);
+            if (failure === "missing-target") return [];
+            if (failure === "failed-command")
+              return evidence.map((item) => ({
+                ...item,
+                exitCode: 1,
+                stderr: "missing JDK",
+              }));
             await new Promise<void>((resolve) =>
               context.signal.addEventListener("abort", () => resolve(), {
                 once: true,
@@ -439,9 +326,9 @@ describe("single-agent E2E execution boundary", () => {
           },
         },
       );
-      expect(runAgent).not.toHaveBeenCalled();
+      expect(complete).not.toHaveBeenCalled();
       expect(output.result.executionStatus).toBe("failed");
-      expect(output.result.referenceDecision).toBe("undetermined");
+      expect(output.result.problems[0].code).toBe("environment_unavailable");
       expect(output.timings.agentMs).toBe(0);
       const preparation = JSON.parse(
         await readFile(output.preparationEvidencePath, "utf8"),
@@ -457,9 +344,8 @@ describe("single-agent E2E execution boundary", () => {
     },
   );
 
-  it("loads an explicitly supplied Analyzer report and rejects malformed report JSON before preparation", async () => {
-    const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-    roots.push(root);
+  it("loads an Analyzer report and rejects malformed JSON before preparation", async () => {
+    const root = await temporaryRoot();
     const reportPath = join(root, "analysis.json");
     const report = {
       scope: "multipart behavior",
@@ -467,73 +353,56 @@ describe("single-agent E2E execution boundary", () => {
     };
     await writeFile(reportPath, JSON.stringify(report));
     let prompt = "";
-    const runtime: NonNullable<SingleAgentE2EDeps["runtime"]> = {
-      async runAgent(task) {
-        prompt = task.prompt;
-        return {
-          exitCode: 1,
-          timedOut: false,
-          durationMs: 1,
-          stdout: "",
-          stderr: "injected stop",
-        };
+    const client: NonNullable<SingleAgentE2EDeps["client"]> = {
+      async complete(messages) {
+        prompt = JSON.stringify(messages);
+        throw new Error("injected stop");
       },
-      runCommand: noReplay,
     };
     const preparation = vi.fn(prepared);
     const output = await executeSingleAgentE2E(
       { ...options, analysisReport: reportPath },
-      { workspaceRoot: root, runtime, prepareProjects: preparation },
+      { workspaceRoot: root, client, prepareProjects: preparation },
     );
-    expect(prompt).toContain(JSON.stringify(report));
+    expect(prompt).toContain(report.evidence);
     expect(output.result.executionStatus).toBe("failed");
     await writeFile(reportPath, "not JSON");
     await expect(
       executeSingleAgentE2E(
         { ...options, analysisReport: reportPath },
-        { workspaceRoot: root, runtime, prepareProjects: preparation },
+        { workspaceRoot: root, client, prepareProjects: preparation },
       ),
     ).rejects.toThrow();
     expect(preparation).toHaveBeenCalledTimes(1);
   });
 
-  it("redacts credentials in preflight evidence and thrown preparation errors", async () => {
-    const root = await mkdtemp(join(tmpdir(), "single-agent-e2e-"));
-    roots.push(root);
+  it("redacts credentials in preflight evidence and errors", async () => {
+    const root = await temporaryRoot();
     const secret = "e2e-private-secret-123";
-    const runtime = { runAgent: vi.fn(noReplay), runCommand: noReplay };
-    const failed = await executeSingleAgentE2E(
-      { ...options, apiKey: secret },
-      {
-        workspaceRoot: root,
-        runtime,
-        prepareProjects: async (context) =>
-          (await prepared(context)).map((item) => ({
-            ...item,
-            exitCode: 1,
-            stdout: `stored credential ${secret}`,
-            stderr: secret,
-          })),
-      },
-    );
-    const text = await readFile(failed.preparationEvidencePath, "utf8");
-    expect(text).not.toContain(secret);
-    expect(text).toContain("[REDACTED]");
-    const thrown = await executeSingleAgentE2E(
-      { ...options, apiKey: secret },
-      {
-        workspaceRoot: root,
-        runtime,
-        prepareProjects: async () => {
-          throw new Error(`failed ${secret}`);
+    const complete = mustNotStart();
+    for (const throws of [false, true]) {
+      const output = await executeSingleAgentE2E(
+        { ...options, apiKey: secret },
+        {
+          workspaceRoot: root,
+          client: { complete },
+          prepareProjects: async (context) => {
+            if (throws) throw new Error(`failed ${secret}`);
+            return (await prepared(context)).map((item) => ({
+              ...item,
+              exitCode: 1,
+              stdout: secret,
+              stderr: secret,
+            }));
+          },
         },
-      },
-    );
-    expect(JSON.stringify(thrown)).not.toContain(secret);
-    expect(
-      await readFile(thrown.preparationEvidencePath, "utf8"),
-    ).not.toContain(secret);
-    expect(runtime.runAgent).not.toHaveBeenCalled();
+      );
+      expect(JSON.stringify(output)).not.toContain(secret);
+      const text = await readFile(output.preparationEvidencePath, "utf8");
+      expect(text).not.toContain(secret);
+      expect(text).toContain("[REDACTED]");
+    }
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("requires explicit live execution and distinguishes an offline skip", async () => {

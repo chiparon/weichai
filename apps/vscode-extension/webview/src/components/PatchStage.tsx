@@ -1,3 +1,4 @@
+import { BehaviorTestResults } from './BehaviorTestResults';
 import { Check, FilePlus2, FileSymlink, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { canApplyAdaptation, evaluateValidationGate, type WorkflowState } from '@forexplore/workflow-core';
 
@@ -55,6 +56,7 @@ export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageP
                 <strong>{item.label} {item.required ? '（必需）' : '（可选）'}</strong>
                 <small>{item.summary}</small>
                 {item.command ? <small>命令：<code>{item.command}</code></small> : null}
+                {item.artifactPath ? <small>运行记录：<code>{item.artifactPath}</code></small> : null}
                 {item.failureReason ? <small>原因：{item.failureReason}</small> : null}
               </span>
             </li>
@@ -69,6 +71,8 @@ export function PatchStage({ state, onApply, onBack, onOpenTarget }: PatchStageP
           </p>
         ) : null}
       </section>
+
+      {result.testRuns?.length ? <section className="card"><BehaviorTestResults results={result.testRuns} durationMs={result.testDurationMs} /></section> : null}
 
       {result.interfaceMappings.length > 0 ? (
         <section className="card">

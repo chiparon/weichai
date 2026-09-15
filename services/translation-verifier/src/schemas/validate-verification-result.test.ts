@@ -1,9 +1,7 @@
-import type {
-  AdaptationRequestV2,
-  FilePatch,
-  RepositoryIngestionJsonValue,
-} from "@forexplore/contracts";
-import { calculatePatchHashV2, canonicalJson } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2, RepositoryIngestionJsonValue } from "./legacy-input.js";
+import { canonicalJson } from "@forexplore/workflow-core";
+import { calculatePatchHashV2 } from "./legacy-input.js";
 import { Ajv } from "ajv";
 import runSchema from "./verification-run.schema.json" with { type: "json" };
 import { createHash } from "node:crypto";
@@ -89,7 +87,7 @@ function input(): VerificationInput {
         },
       ],
     },
-  } as AdaptationRequestV2;
+  } as unknown as AdaptationRequestV2;
 
   return {
     schemaVersion: "1.0",

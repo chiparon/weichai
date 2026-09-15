@@ -18,7 +18,6 @@ export {
 export { VerificationStrategyFactory } from "./workflow/strategy-registry.js";
 export { VerificationService } from "./verification-service.js";
 export { createDefaultVerificationService, DEFAULT_VERIFICATION_STRATEGY } from "./create-default-verifier.js";
-export { DIFFERENTIAL_SMOKE_STRATEGY } from "./strategies/smoke-differential/strategy.js";
 export {
   MULTI_AGENT_DIFFERENTIAL_STRATEGY,
   MultiAgentDifferentialStrategy,

@@ -1,5 +1,6 @@
-import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "./schemas/legacy-input.js";
+import { calculatePatchHashV2 } from "./schemas/legacy-input.js";
 import { createHash } from "node:crypto";
 import {
   existsSync,

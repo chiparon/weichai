@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { calculatePatchHashV2, canonicalJson } from "@forexplore/workflow-core";
+import { canonicalJson } from "@forexplore/workflow-core";
+import { calculatePatchHashV2 } from "../src/schemas/legacy-input.js";
 import type { VerificationInput } from "../src/schemas/verification-types.js";
 import {
   fileUploadInput,

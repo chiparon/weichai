@@ -1,8 +1,4 @@
 import {
-  createDifferentialSmokeProvider,
-  type DifferentialSmokeStrategyOptions,
-} from "./strategies/smoke-differential/strategy.js";
-import {
   VerificationService,
   type VerificationServiceOptions,
 } from "./verification-service.js";
@@ -36,7 +32,7 @@ export type VerificationServiceRuntimeOptions = Pick<
 >;
 
 export function createDefaultVerificationService(
-  options: DifferentialSmokeStrategyOptions &
+  options: Pick<MultiAgentDifferentialOptions, "apiKey" | "model" | "maxTurns" | "effort"> &
     VerificationServiceRuntimeOptions & {
       multiAgent?: MultiAgentDifferentialOptions;
       blackBox?: MultiAgentBlackBoxOptions;
@@ -44,7 +40,6 @@ export function createDefaultVerificationService(
     } = {},
 ): VerificationService {
   const factory = new VerificationStrategyFactory([
-    createDifferentialSmokeProvider(options),
     createMultiAgentDifferentialProvider({
       apiKey: options.apiKey,
       model: options.model,

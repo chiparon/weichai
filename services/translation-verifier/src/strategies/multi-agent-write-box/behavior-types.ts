@@ -1,4 +1,4 @@
-import type { RepositoryIngestionJsonValue as JsonValue } from "@forexplore/contracts";
+import type { RepositoryIngestionJsonValue as JsonValue } from "../../schemas/legacy-input.js";
 import type { BehaviorProjectBaseline } from "./behavior-workspace.js";
 
 export type BehaviorSide = "source" | "target";

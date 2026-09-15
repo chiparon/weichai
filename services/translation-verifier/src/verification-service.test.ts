@@ -1,5 +1,6 @@
-import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "./schemas/legacy-input.js";
+import { calculatePatchHashV2 } from "./schemas/legacy-input.js";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -22,8 +23,7 @@ import {
 import * as recording from "./run-output/record-run.js";
 import { VerificationService } from "./verification-service.js";
 import { createSingleAgentDifferentialProvider } from "./strategies/single-agent-differential/strategy.js";
-import { BEHAVIOR_COMMAND_ENTRY } from "./strategies/multi-agent-write-box/behavior-command.js";
-import * as processes from "./strategies/smoke-differential/manage-test-process.js";
+import * as processes from "./strategies/manage-test-process.js";
 import { VerificationStrategyFactory } from "./workflow/strategy-registry.js";
 import { resolveVerificationPolicy } from "./schemas/verification-assessment.js";
 import type { VerificationAssessment } from "./schemas/verification-types.js";
@@ -1435,84 +1435,62 @@ describe("VerificationService", () => {
     );
   });
 
-  it("joins real proxy cancellation before returning a single-agent receipt and deleting its workspace", async () => {
+  it("joins real target command cancellation before returning a single-agent receipt and deleting its workspace", async () => {
     workspaceRoot = join(realpathSync(root), "workspaces");
     artifactRoot = join(realpathSync(root), "artifacts");
     const controller = new AbortController();
     const actual = processes.runManagedProcess;
     let pid: number | undefined;
     let workspace = "";
-    let sessionStopped = false;
-    let proxy: ReturnType<typeof actual> | undefined;
+    let commandStopped = false;
     vi.spyOn(processes, "runManagedProcess").mockImplementation(
       async (command, signal) => {
-        const response = {
-          exitCode: 0,
-          timedOut: false,
-          durationMs: 1,
-          stdout: "",
-          stderr: "",
-        };
-        if (command.args.includes("--version"))
-          return { ...response, stdout: "2.1.236" };
-        if (!command.args.includes("--print")) return actual(command, signal);
         workspace = dirname(dirname(command.cwd));
-        const pidFile = join(command.cwd, ".forexplore-tests/pid.txt");
-        writeFileSync(join(command.cwd, ".forexplore-tests/plan.json"), "{}");
-        proxy = actual(
-          {
-            command: process.execPath,
-            args: [
-              "--import",
-              import.meta.resolve("tsx"),
-              BEHAVIOR_COMMAND_ENTRY,
-              "--project",
-              "target",
-              "--",
-              "node",
-              "-e",
-              `process.on('SIGTERM',()=>{}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(()=>{},1000);`,
-            ],
-            cwd: command.cwd,
-            env: command.env,
-            deadlineAt: command.deadlineAt,
-          },
-          signal,
-        );
-        // Consume failure immediately while the fixture waits for the nested process to start.
-        const joined = proxy.then(
-          () => {},
-          () => {},
-        );
         try {
-          for (
-            let attempt = 0;
-            attempt < 300 && !existsSync(pidFile);
-            attempt++
-          )
-            await new Promise((resolve) => setTimeout(resolve, 10));
-          expect(existsSync(pidFile)).toBe(true);
-          pid = Number(readFileSync(pidFile, "utf8"));
-          controller.abort(new Error("caller stopped"));
-          await joined;
-          sessionStopped = true;
-          return response;
+          return await actual({
+            ...command,
+            onSpawn(childPid) {
+              pid = childPid;
+              command.onSpawn?.(childPid);
+            },
+            onStdoutChunk(chunk) {
+              command.onStdoutChunk?.(chunk);
+              if (chunk.toString().includes("READY")) {
+                controller.abort(new Error("caller stopped"));
+              }
+            },
+          }, signal);
         } finally {
-          controller.abort();
-          await joined;
+          commandStopped = true;
         }
       },
     );
     try {
       const provider = createSingleAgentDifferentialProvider({
-        apiKey: "local-test-key",
+        client: {
+          async complete() {
+            return {
+              toolCalls: [{
+                id: "submit",
+                name: "submit_tests",
+                arguments: JSON.stringify({
+                  files: [{
+                    path: ".forexplore-tests/cancellation.cjs",
+                    content: "process.on('SIGTERM',()=>{}); process.stdout.write('READY'); setInterval(()=>{},1000);",
+                  }],
+                  command: { executable: "node", args: [".forexplore-tests/cancellation.cjs"] },
+                }),
+              }],
+            };
+          },
+        },
       });
       const receipt = await serviceWith(
         [provider],
         provider.descriptor.id,
       ).verifyWithReceipt(input(), {}, controller.signal);
       expect(
-        sessionStopped,
+        commandStopped,
         receipt.result.problems.map((problem) => problem.message).join("; "),
       ).toBe(true);
       expect(pid).toBeDefined();
@@ -1524,13 +1502,13 @@ describe("VerificationService", () => {
           problem.message.includes("shutdown unconfirmed"),
         ),
       ).toBe(false);
-      const session = receipt.result.artifacts.find((artifact) =>
-        artifact.id.endsWith(":single-agent-session"),
+      const report = receipt.result.artifacts.find((artifact) =>
+        artifact.id.endsWith(":single-agent-report"),
       );
-      expect(session).toBeDefined();
+      expect(report).toBeDefined();
       expect(
-        JSON.parse(readFileSync(join(artifactRoot, session!.path), "utf8")),
-      ).toHaveProperty("commandEvidence");
+        JSON.parse(readFileSync(join(artifactRoot, report!.path), "utf8")),
+      ).toMatchObject({ cleanup: "rolled_back", evidence: [expect.objectContaining({ side: "target" })] });
       expect(
         JSON.parse(
           readFileSync(
@@ -1548,7 +1526,6 @@ describe("VerificationService", () => {
           /* Already stopped. */
         }
       }
-      await proxy?.catch(() => {});
     }
   }, 15_000);
 

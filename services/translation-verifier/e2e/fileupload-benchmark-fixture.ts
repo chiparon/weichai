@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdaptationRequestV2, FilePatch } from "@forexplore/contracts";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import type { FilePatch } from "@forexplore/contracts";
+import type { AdaptationRequestV2 } from "../src/schemas/legacy-input.js";
+import { calculatePatchHashV2 } from "../src/schemas/legacy-input.js";
 import type { VerificationInput } from "../src/schemas/verification-types.js";
 import { translatedDiskJava } from "./fileupload-disk-translation.js";
 

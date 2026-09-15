@@ -13,6 +13,9 @@ export interface AdaptationServiceConfig {
   /** Optional explicit browser origin. Extension-host requests do not need CORS. */
   corsOrigin?: string;
   apiKey: string;
+  /** Applies to the VS Code single-function adaptation route, independently of workspace translation. */
+  testAgentEnabled: boolean;
+  maxTestRepairAttempts: number;
   skeletonProjectPath: string;
   projectRoot: string;
   /** Server-owned analysis snapshot location used by the read-only planner. */
@@ -21,6 +24,8 @@ export interface AdaptationServiceConfig {
     bearerToken: string;
     compileCommand: WorkspaceCompileCommand;
     verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
+    testAgent: boolean;
+    maxTestRepairAttempts: number;
     maxModelTurns: number;
     timeoutMs: number;
   };
@@ -78,6 +83,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
     port: positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
     corsOrigin: env.ADAPTATION_CORS_ORIGIN?.trim() || undefined,
     apiKey,
+    testAgentEnabled: env.ADAPTATION_WORKSPACE_TEST_AGENT_ENABLED?.trim().toLowerCase() === "true",
+    maxTestRepairAttempts: positiveInteger(env.ADAPTATION_WORKSPACE_TEST_REPAIR_ATTEMPTS, 2, "ADAPTATION_WORKSPACE_TEST_REPAIR_ATTEMPTS"),
     skeletonProjectPath,
     projectRoot,
     analysisRoot: resolveConfiguredPath(
@@ -105,13 +112,18 @@ function loadWorkspaceTranslationConfig(env: NodeJS.ProcessEnv): NonNullable<Ada
   validateWorkspaceCompileCommand(compileCommand);
   let verification: NonNullable<AdaptationServiceConfig["workspaceTranslation"]>["verification"];
   if (env.ADAPTATION_WORKSPACE_VERIFICATION) {
-    const value = JSON.parse(env.ADAPTATION_WORKSPACE_VERIFICATION);
+    let value: unknown;
+    try { value = JSON.parse(env.ADAPTATION_WORKSPACE_VERIFICATION); }
+    catch { throw new Error("ADAPTATION_WORKSPACE_VERIFICATION must be a JSON verification object."); }
+    if (!value || typeof value !== "object" || !("command" in value) || !("protectedFiles" in value)) throw new Error("Verification requires command and protectedFiles.");
     validateWorkspaceCompileCommand(value.command);
     if (!Array.isArray(value.protectedFiles) || !value.protectedFiles.length || value.protectedFiles.some((path: unknown) => typeof path !== "string")) throw new Error("Verification protectedFiles must be a nonempty path array.");
-    verification = value;
+    verification = { command: value.command, protectedFiles: value.protectedFiles };
   }
   return {
     bearerToken, compileCommand, ...(verification ? { verification } : {}),
+    testAgent: env.ADAPTATION_WORKSPACE_TEST_AGENT_ENABLED?.trim().toLowerCase() === "true",
+    maxTestRepairAttempts: positiveInteger(env.ADAPTATION_WORKSPACE_TEST_REPAIR_ATTEMPTS, 2, "ADAPTATION_WORKSPACE_TEST_REPAIR_ATTEMPTS"),
     maxModelTurns: positiveInteger(env.ADAPTATION_WORKSPACE_MAX_TURNS, 80, "ADAPTATION_WORKSPACE_MAX_TURNS"),
     timeoutMs: positiveInteger(env.ADAPTATION_WORKSPACE_TIMEOUT_MS, 1_800_000, "ADAPTATION_WORKSPACE_TIMEOUT_MS"),
   };

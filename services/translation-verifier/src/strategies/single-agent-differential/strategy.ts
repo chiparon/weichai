@@ -1,9 +1,8 @@
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import type {
   VerificationArtifact,
-  VerificationAssessment,
   VerificationInput,
   VerificationProblem,
   VerificationStrategy,
@@ -12,56 +11,58 @@ import type {
   VerificationStrategyOutput,
   VerificationStrategyProvider,
 } from "../../schemas/verification-types.js";
+import { parseBehaviorJson } from "../multi-agent-write-box/behavior-schema.js";
 import type {
-  BehaviorAgentResult,
   BehaviorCommandRecord,
-  BehaviorRuntime,
   BehaviorSide,
 } from "../multi-agent-write-box/behavior-types.js";
-import {
-  BehaviorEnvironmentError,
-  createBehaviorRuntime,
-} from "../multi-agent-write-box/claude-runtime.js";
-import {
-  parseBehaviorJson,
-  parseObservations,
-} from "../multi-agent-write-box/behavior-schema.js";
 import {
   assertDeclaredSnapshot,
   assertProjectRoots,
   assertProjectBaseline,
   captureProjectBaseline,
-  isProjectTestPath,
   persistBehaviorArtifact,
-  prepareTestDirectory,
-  readTestFile,
-  TEST_DIRECTORY,
 } from "../multi-agent-write-box/behavior-workspace.js";
 import {
+  buildEnvironment,
   protectedSecrets,
   redact,
+  resolveBehaviorCommand,
+  runBehaviorCommand,
+  type BehaviorCommandControl,
 } from "../multi-agent-write-box/behavior-command.js";
-import { buildSingleAgentPrompt } from "./prompt.js";
 import {
-  parseSingleAgentManifest,
-  parseSingleAgentPlan,
-  type SingleAgentPlan,
-} from "./report.js";
+  createSingleAgentModelClient,
+  generateTests,
+  SingleAgentBlockerError,
+  type SingleAgentModelClient,
+} from "./agent.js";
+import { buildSingleAgentPrompt, singleAgentSystemPrompt } from "./prompt.js";
+import { parseTestSubmission, type TestSubmission } from "./report.js";
+import {
+  defaultWriteDirectories,
+  SubmittedTestFiles,
+  validateWriteDirectories,
+} from "./test-files.js";
 
 export const SINGLE_AGENT_DIFFERENTIAL_STRATEGY: VerificationStrategyDescriptor =
   {
     id: "single-agent-differential",
-    version: "1.0.0",
-    displayName: "Single-Agent Differential",
+    version: "2.0.0",
+    displayName: "Single-Agent Target Tests",
   };
 export interface SingleAgentDifferentialOptions {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
   maxTurns?: number;
+  /** Retained for callers sharing model options; this direct client uses non-thinking tool calls. */
   effort?: string;
-  runtime?: BehaviorRuntime;
-  /** Trusted caller execution authorization. Available directories alone do not grant extra permissions. */
+  client?: SingleAgentModelClient;
+  /** Existing project test directories; only new files may be published. */
+  writeDirectories?: string[];
+  onEvent?: (event: Record<string, unknown>) => void;
+  /** Target must be authorized. Source is read-only regardless of this list. */
   executionSides?: BehaviorSide[];
 }
 class SingleAgentFailure extends Error {
@@ -73,54 +74,46 @@ class SingleAgentFailure extends Error {
   }
 }
 const limitations = [
-  "One agent derives expectations and test harnesses. Host execution checks do not prove the basis, harness correctness, coverage, or business correctness.",
-  "Matching source and target observations cannot detect shared defects. Only the frozen cases and modeled observable effects are checked.",
-  "Project baselines and fixed command controls are workflow checks, not OS isolation. Supplied projects and build scripts must be trusted for execution.",
+  "One agent authors test assertions from task and project context. Passing generated tests does not prove coverage or business correctness.",
+  "Only the target test command executes. Source files are read-only context; no source behavior is certified.",
+  "Command success is based on its exit status; this first version does not independently count tests across all frameworks.",
+  "Baseline checks are workflow controls, not OS isolation. Build caches and command-created outputs are not rolled back with submitted test files.",
 ];
+
 export class SingleAgentDifferentialStrategy implements VerificationStrategy {
   constructor(private readonly options: SingleAgentDifferentialOptions = {}) {}
+
   async verify(
     input: VerificationInput,
     context: VerificationStrategyContext,
     signal?: AbortSignal,
   ): Promise<VerificationStrategyOutput> {
-    const timeoutMs = this.options.timeoutMs ?? 300000;
+    const timeoutMs = this.options.timeoutMs ?? 300_000;
     const deadlineAt = Math.min(context.deadlineAt, Date.now() + timeoutMs);
+    const budgetValid =
+      Number.isFinite(timeoutMs) &&
+      timeoutMs > 0 &&
+      Number.isFinite(deadlineAt);
     const timeout = AbortSignal.timeout(
-      Math.max(
-        0,
-        Math.min(
-          2147483647,
-          Math.floor(Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : 0),
-        ),
-      ),
+      budgetValid
+        ? Math.max(0, Math.min(2147483647, Math.floor(deadlineAt - Date.now())))
+        : 0,
     );
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const artifacts: VerificationArtifact[] = [];
-    let evidence: BehaviorCommandRecord[] = [];
-    let frozenPlan: string | undefined;
-    let plan: SingleAgentPlan | undefined;
-    let stage = "preparation";
-    let cases: {
-      caseId: string;
-      source: unknown;
-      target: unknown;
-      expected: unknown;
-      matches: boolean;
-    }[] = [];
-    let assessment: VerificationAssessment = {
-      mode: "target_only",
-      referenceDecision: "undetermined",
-      referenceReason: "No validated Agent reference decision is available.",
-      executionStatus: "failed",
-      sourceAssessment: "not_checked",
-      targetAssessment: "inconclusive",
-      problems: [],
-    };
-    let checkIntegrity = () => {};
     const secrets = protectedSecrets(
       this.options.apiKey ?? process.env.DEEPSEEK_API_KEY,
     );
+    const artifacts: VerificationArtifact[] = [];
+    const events: Record<string, unknown>[] = [];
+    const problems: VerificationProblem[] = [];
+    let stage = "preparation";
+    let submission: TestSubmission | undefined;
+    let files: SubmittedTestFiles | undefined;
+    let evidence: BehaviorCommandRecord[] = [];
+    let commandEvidencePath: string | undefined;
+    let passed = false;
+    let cleanup = "not_needed";
+    let checkIntegrity = () => {};
     const recordArtifact = async (id: string, value: unknown) => {
       const artifact = await persistBehaviorArtifact(
         context,
@@ -134,36 +127,40 @@ export class SingleAgentDifferentialStrategy implements VerificationStrategy {
       artifacts.push(artifact);
       return artifact;
     };
+    const onEvent = (event: Record<string, unknown>) => {
+      const safe = parseBehaviorJson(
+        redact(JSON.stringify(event), secrets),
+      ) as Record<string, unknown>;
+      if (events.length < 2000) events.push(safe);
+      this.options.onEvent?.(safe);
+    };
+    const measured = async <T>(
+      name: string,
+      work: () => Promise<T>,
+    ): Promise<T> =>
+      context.measureStep ? context.measureStep(name, work) : work();
     try {
-      if (
-        !Number.isFinite(timeoutMs) ||
-        timeoutMs <= 0 ||
-        !Number.isFinite(deadlineAt)
-      )
+      if (!budgetValid)
         throw new SingleAgentFailure(
           "context_incomplete",
           "Invalid single-agent deadline.",
         );
       combined.throwIfAborted();
-      if (deadlineAt <= Date.now())
-        throw new SingleAgentFailure(
-          "agent_timeout",
-          "Verification deadline expired.",
-        );
-      const executionSides = this.options.executionSides ?? [
-        "source",
-        "target",
-      ];
+      const executionSides = this.options.executionSides ?? ["target"];
       if (
         !executionSides.includes("target") ||
         executionSides.some((side) => !["source", "target"].includes(side))
-      )
+      ) {
         throw new SingleAgentFailure(
           "context_incomplete",
           "Target execution is not authorized.",
         );
+      }
+      const writeDirectories =
+        this.options.writeDirectories ?? defaultWriteDirectories;
+      validateWriteDirectories(writeDirectories);
       assertProjectRoots(context);
-      const { sourceRoot, targetRoot } = context.workspace;
+      const { sourceRoot, targetRoot, strategyRoot } = context.workspace;
       const baselines = [
         captureProjectBaseline(sourceRoot),
         captureProjectBaseline(targetRoot),
@@ -173,339 +170,225 @@ export class SingleAgentDifferentialStrategy implements VerificationStrategy {
       };
       assertDeclaredSnapshot(input, sourceRoot, "source");
       assertDeclaredSnapshot(input, targetRoot, "target");
-      const roots = { source: sourceRoot, target: targetRoot };
-      const scopes = Object.fromEntries(
-        (["source", "target"] as const).map((side, index) => [
-          side,
-          {
-            cwd: roots[side],
-            readRoots: [sourceRoot, targetRoot],
-            writeRoots: [prepareTestDirectory(roots[side]), roots[side]],
-            baseline: baselines[index],
-          },
-        ]),
-      );
-      const expectationFile = join(targetRoot, TEST_DIRECTORY, "plan.json");
-      const runtime =
-        this.options.runtime ?? createBehaviorRuntime(this.options);
-      stage = "agent";
-      let agent: BehaviorAgentResult | undefined;
-      let partialOutput = "";
-      const prompt = buildSingleAgentPrompt(input, context.workspace);
-      await recordArtifact("single-agent-prompt", { prompt });
-      // The managed runtime must finish process-group cleanup before resolving or rejecting.
-      const invoke = () =>
-        runtime.runAgent({
-          side: "target",
-          sandbox: scopes.target!,
-          additionalProjects: { source: scopes.source! },
-          executionSides,
-          sessionRole: "single-agent",
-          expectationFile,
-          prompt,
-          deadlineAt,
-          signal: combined,
-          onOutput: (text) => {
-            partialOutput = redact(text, secrets).slice(0, 1024 * 1024);
-          },
-          onEvidence: (records, frozen) => {
-            evidence = records;
-            frozenPlan = frozen;
-          },
-        });
-      try {
-        agent = await (context.measureStep
-          ? context.measureStep("single-agent-session", invoke)
-          : invoke());
-        evidence = agent.commandEvidence ?? evidence;
-        frozenPlan = agent.frozenPlan ?? frozenPlan;
-      } finally {
-        await recordArtifact("single-agent-session", {
-          ...(agent ?? {}),
-          partialOutput,
-          commandEvidence: evidence,
-          frozenPlan: frozenPlan ?? null,
-        });
-        checkIntegrity();
-      }
-      combined.throwIfAborted();
-      if (agent.timedOut)
-        throw new SingleAgentFailure(
-          "agent_timeout",
-          "Single-agent session timed out.",
-        );
-      if (agent.exitCode !== 0)
-        throw new SingleAgentFailure(
-          "agent_error",
-          "Single-agent session failed; no repair session is started.",
-        );
-      stage = "evidence";
-      if (!frozenPlan)
-        throw new SingleAgentFailure(
-          "insufficient_test_basis",
-          "Missing Host-frozen Agent test basis before target execution.",
-        );
-      if (
-        readTestFile(targetRoot, `${TEST_DIRECTORY}/plan.json`) !== frozenPlan
-      )
-        throw new SingleAgentFailure(
-          "workspace_integrity_violation",
-          "Frozen test plan changed after target execution.",
-        );
-      try {
-        plan = parseSingleAgentPlan(frozenPlan);
-      } catch (cause) {
-        throw new SingleAgentFailure("insufficient_test_basis", String(cause));
-      }
-      assessment = {
-        ...assessment,
-        mode: plan.mode,
-        referenceDecision:
-          plan.mode === "differential" ? "accepted" : "rejected",
-        referenceReason: plan.referenceReason,
-        sourceAssessment:
-          plan.mode === "differential" ? "inconclusive" : "not_checked",
-      };
-      const manifest = parseSingleAgentManifest(
-        readTestFile(targetRoot, `${TEST_DIRECTORY}/report.json`),
-      );
-      const ids = new Set<string>();
-      for (const record of evidence) {
-        if (
-          !record.commandId ||
-          ids.has(record.commandId) ||
-          !record.side ||
-          !executionSides.includes(record.side) ||
-          record.cwd !== realpathSync(roots[record.side]) ||
-          !record.baselineValid ||
-          record.credentialHit
-        )
-          throw new SingleAgentFailure(
-            "report_evidence_invalid",
-            "Invalid, unauthorized, or duplicate Host command evidence.",
-          );
-        if (record.completed === false)
-          throw new SingleAgentFailure(
-            "report_evidence_invalid",
-            "A command has no completion record; execution cannot be certified.",
-          );
-        ids.add(record.commandId);
-        if (record.timedOut)
-          throw new SingleAgentFailure(
-            "command_timeout",
-            "A recorded command timed out.",
-          );
-      }
-      if (
-        plan.mode === "target_only" &&
-        evidence.some((record) => record.side === "source")
-      )
-        throw new SingleAgentFailure(
-          "report_evidence_invalid",
-          "Target-only verification must not execute source commands.",
-        );
-      const target = evidence.find(
-        (record) => record.commandId === manifest.targetCommandId,
-      );
-      if (!target || target.side !== "target" || target.exitCode !== 0)
-        throw new SingleAgentFailure(
-          "report_evidence_invalid",
-          "No successful Host target command matches the report.",
-        );
-      const caseIds = plan.cases.map((item) => item.caseId);
-      const targetResults = parseObservations(target.stdout, caseIds);
-      const firstTarget = evidence.findIndex(
-        (record) => record.side === "target",
-      );
-      cases = plan.cases.map((item) => {
-        let source = null;
-        if (plan!.mode === "differential") {
-          const record = evidence.find(
-            (row) => row.commandId === item.sourceCommandId,
-          );
-          if (
-            !record ||
-            record.side !== "source" ||
-            record.exitCode !== 0 ||
-            evidence.indexOf(record) >= firstTarget
-          )
-            throw new SingleAgentFailure(
-              "report_evidence_invalid",
-              "Source reference must be a successful command before target execution.",
-            );
-          const observations = parseBehaviorJson(record.stdout);
-          if (!Array.isArray(observations))
-            throw new SingleAgentFailure(
-              "report_evidence_invalid",
-              "Source command stdout must be observations.",
-            );
-          const sourceIds = observations.map(
-            (row) => (row as { caseId: string }).caseId,
-          );
-          source =
-            parseObservations(record.stdout, sourceIds).find(
-              (row) => row.caseId === item.caseId,
-            ) ?? null;
-          if (
-            !source ||
-            (item.expectationBasis === "source_observation" &&
-              !isDeepStrictEqual(source, item.expected))
-          )
-            throw new SingleAgentFailure(
-              "report_evidence_invalid",
-              "Frozen expected value does not match actual source evidence.",
-            );
-        }
-        const observed = targetResults.find(
-          (row) => row.caseId === item.caseId,
-        )!;
-        return {
-          caseId: item.caseId,
-          source,
-          target: observed,
-          expected: item.expected,
-          matches: isDeepStrictEqual(item.expected, observed),
-        };
+      files = new SubmittedTestFiles(targetRoot, writeDirectories);
+      stage = "generation";
+      await recordArtifact("single-agent-prompt", {
+        system: singleAgentSystemPrompt,
+        prompt: buildSingleAgentPrompt(input, {
+          ...context.workspace,
+          writeDirectories,
+        }),
       });
-      for (const side of ["source", "target"] as const) {
-        if (
-          side === "source" &&
-          plan.mode === "target_only" &&
-          manifest.testFiles.source.length
-        )
-          throw new SingleAgentFailure(
-            "report_evidence_invalid",
-            "Target-only report must not claim source test execution.",
-          );
-        if (plan.mode === "differential" && !manifest.testFiles[side].length)
-          throw new SingleAgentFailure(
-            "report_evidence_invalid",
-            "Differential verification requires both test harnesses.",
-          );
-        for (const path of manifest.testFiles[side]) {
-          if (
-            !isProjectTestPath(path) ||
-            Object.hasOwn(baselines[side === "source" ? 0 : 1]!.files, path) ||
-            [
-              ".forexplore-tests/plan.json",
-              ".forexplore-tests/report.json",
-            ].includes(path)
-          )
-            throw new SingleAgentFailure(
-              "report_evidence_invalid",
-              "Report must identify newly authored project test files.",
-            );
-          const content = readTestFile(roots[side], path);
-          const executed =
-            side === "target"
-              ? [target]
-              : evidence.filter(
-                  (row) =>
-                    row.side === "source" &&
-                    plan!.cases.some(
-                      (item) => item.sourceCommandId === row.commandId,
-                    ),
-                );
-          if (!executed.some((row) => row.testFiles?.[path] === content))
-            throw new SingleAgentFailure(
-              "report_evidence_invalid",
-              "Test file is absent from execution evidence or changed after execution.",
-            );
-          await recordArtifact(
-            `single-agent-${side}-test-${artifacts.length}`,
-            { side, path, content },
-          );
-        }
-      }
+      submission = parseTestSubmission(
+        await measured("single-agent-session", () =>
+          generateTests({
+            input,
+            workspace: context.workspace,
+            writeDirectories,
+            client:
+              this.options.client ??
+              createSingleAgentModelClient({
+                ...this.options,
+                apiKey:
+                  this.options.apiKey ?? process.env.DEEPSEEK_API_KEY ?? "",
+              }),
+            maxTurns: this.options.maxTurns ?? 50,
+            signal: combined,
+            onEvent,
+          }),
+        ),
+      );
+      combined.throwIfAborted();
       checkIntegrity();
-      stage = "comparison";
-      assessment = {
-        ...assessment,
-        executionStatus: "completed",
-        targetAssessment: cases.some((item) => !item.matches)
-          ? "bug_found"
-          : "no_bug_observed",
-        problems: [],
-      };
-    } catch (cause) {
-      try {
-        checkIntegrity();
-      } catch (integrity) {
-        cause = new SingleAgentFailure(
-          "workspace_integrity_violation",
-          String(integrity),
+      if (
+        redact(JSON.stringify(submission), secrets) !==
+        JSON.stringify(submission)
+      ) {
+        throw new SingleAgentFailure(
+          "report_evidence_invalid",
+          "Submitted tests contain protected credential material.",
         );
       }
-      const message = redact(
-        cause instanceof Error ? cause.message : String(cause),
-        secrets,
+      await recordArtifact("single-agent-submission", submission);
+      commandEvidencePath = join(
+        strategyRoot,
+        `single-agent-commands-${randomUUID()}.jsonl`,
       );
-      const code: VerificationProblem["code"] =
+      const control: BehaviorCommandControl = {
+        scope: {
+          cwd: realpathSync(targetRoot),
+          readRoots: [sourceRoot, targetRoot],
+          writeRoots: [targetRoot],
+          baseline: baselines[1],
+        },
+        baselines,
+        frozenFiles: {},
+        deadlineAt,
+        env: buildEnvironment(),
+        secrets,
+        side: "target",
+        evidencePath: commandEvidencePath,
+      };
+      // Reject an unavailable/unsupported executable before publishing any test files.
+      stage = "writing";
+      resolveBehaviorCommand(submission.command, control);
+      combined.throwIfAborted();
+      files.apply(submission.files);
+      stage = "execution";
+      const result = await measured("single-agent-target-tests", () =>
+        runBehaviorCommand(submission!.command, control, combined),
+      );
+      combined.throwIfAborted();
+      files.assertUnchanged();
+      checkIntegrity();
+      if (result.timedOut)
+        throw new SingleAgentFailure(
+          "command_timeout",
+          "Target test command timed out.",
+        );
+      if (result.exitCode !== 0) {
+        throw new SingleAgentFailure(
+          "report_evidence_invalid",
+          `Target test command did not pass (exit code ${result.exitCode}); inspect host command output.`,
+        );
+      }
+      passed = true;
+      cleanup = "retained_on_success";
+      stage = "completed";
+    } catch (cause) {
+      let code: VerificationProblem["code"] =
         cause instanceof SingleAgentFailure
           ? cause.code
           : signal?.aborted
             ? "cancelled"
             : combined.aborted
-              ? "agent_timeout"
-              : /baseline|integrity|outside project|Hard-linked|linked test|snapshot/.test(
-                    message,
-                  )
-                ? "workspace_integrity_violation"
-                : cause instanceof BehaviorEnvironmentError
+              ? stage === "execution"
+                ? "command_timeout"
+                : "agent_timeout"
+              : stage === "preparation"
+                ? "context_incomplete"
+                : /unavailable|API key|API_KEY/.test(String(cause))
                   ? "environment_unavailable"
-                  : stage === "preparation"
+                  : cause instanceof SingleAgentBlockerError
                     ? "context_incomplete"
-                    : stage === "agent"
+                    : stage === "generation"
                       ? "agent_error"
                       : "report_evidence_invalid";
-      assessment = {
-        ...assessment,
-        executionStatus: code === "cancelled" ? "cancelled" : "failed",
-        targetAssessment: "inconclusive",
-        sourceAssessment:
-          assessment.mode === "differential" ? "inconclusive" : "not_checked",
-        problems: [{ code, message }],
-      };
+      try {
+        checkIntegrity();
+      } catch (integrity) {
+        code = "workspace_integrity_violation";
+        cause = integrity;
+      }
+      problems.push({
+        code,
+        message: redact(
+          cause instanceof Error ? cause.message : String(cause),
+          secrets,
+        ),
+      });
+    } finally {
+      if (!passed && files) {
+        try {
+          files.rollback();
+          cleanup = "rolled_back";
+        } catch (error) {
+          cleanup = "failed";
+          problems.push({
+            code: "workspace_integrity_violation",
+            message: redact(`Test cleanup failed: ${String(error)}`, secrets),
+          });
+        }
+      }
+      if (commandEvidencePath && existsSync(commandEvidencePath)) {
+        try {
+          if (statSync(commandEvidencePath).size > 8 * 1024 * 1024)
+            throw new Error("Command evidence exceeds budget.");
+          const rows = readFileSync(commandEvidencePath, "utf8")
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as BehaviorCommandRecord);
+          evidence = [
+            ...new Map(rows.map((row) => [row.commandId, row])).values(),
+          ];
+        } catch (error) {
+          passed = false;
+          problems.push({
+            code: "report_evidence_invalid",
+            message: `Unable to read host command evidence: ${String(error)}`,
+          });
+        }
+      }
     }
-    const report = {
-      schemaVersion: "1.0",
-      stage,
-      ...(plan ? { plan } : {}),
-      cases,
-      evidence,
-      limitations,
-    };
+    // Command evidence comes from the host runner, never from model output.
+    if (
+      passed &&
+      (evidence.length !== 1 ||
+        evidence[0]?.completed === false ||
+        evidence[0]?.exitCode !== 0 ||
+        !evidence[0]?.baselineValid ||
+        evidence[0]?.credentialHit)
+    ) {
+      passed = false;
+      problems.push({
+        code: "report_evidence_invalid",
+        message: "Missing successful host command evidence.",
+      });
+    }
+    if (!passed && cleanup === "retained_on_success" && files) {
+      try {
+        files.rollback();
+        cleanup = "rolled_back";
+      } catch (error) {
+        cleanup = "failed";
+        problems.push({
+          code: "workspace_integrity_violation",
+          message: String(error),
+        });
+      }
+    }
+    await recordArtifact("single-agent-session", { events });
+    const report = parseBehaviorJson(
+      redact(
+        JSON.stringify({
+          schemaVersion: "2.0",
+          stage,
+          submission: submission ?? null,
+          evidence,
+          cleanup,
+          limitations,
+        }),
+        secrets,
+      ),
+      10 * 1024 * 1024,
+      24,
+    );
     const reportArtifact = await recordArtifact("single-agent-report", report);
     return {
-      ...assessment,
-      summary: `${stage}: ${assessment.executionStatus}; ${cases.length} recorded cases. Agent-derived test evidence, not proof of business correctness.`,
+      mode: "target_only",
+      referenceDecision: "undetermined",
+      referenceReason:
+        "Source is read-only context; this version executes generated tests on the target only.",
+      executionStatus: passed
+        ? "completed"
+        : problems.some((problem) => problem.code === "cancelled")
+          ? "cancelled"
+          : "failed",
+      sourceAssessment: "not_checked",
+      targetAssessment: passed ? "no_bug_observed" : "inconclusive",
+      problems,
+      summary: passed
+        ? "Host target test command passed. Generated tests retained; source was not executed."
+        : `${stage}: target verification did not complete; test cleanup ${cleanup}.`,
       artifacts,
-      strategyReport: parseBehaviorJson(
-        redact(JSON.stringify(report), secrets),
-        10 * 1024 * 1024,
-        24,
-      ),
-      issues:
-        assessment.executionStatus === "completed"
-          ? cases
-              .filter((item) => !item.matches)
-              .map((item) => ({
-                id: `single-agent-${item.caseId}`,
-                kind: "behavioral-divergence",
-                caseId: item.caseId,
-                message:
-                  "Target observation differs from the frozen expected outcome.",
-                targetObservation: parseBehaviorJson(
-                  JSON.stringify(item.target),
-                ),
-                evidenceArtifactIds: [reportArtifact.id],
-              }))
-          : assessment.problems.map((problem, index) => ({
-              id: `single-agent-problem-${index}`,
-              kind: problem.code,
-              message: problem.message,
-              evidenceArtifactIds: [reportArtifact.id],
-            })),
+      strategyReport: report,
+      issues: problems.map((problem, index) => ({
+        id: `single-agent-problem-${index}`,
+        kind: problem.code,
+        message: problem.message,
+        evidenceArtifactIds: [reportArtifact.id],
+      })),
     };
   }
 }

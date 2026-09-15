@@ -1,10 +1,18 @@
+import { BehaviorTestResults } from './BehaviorTestResults';
 import { useEffect, useRef, useState } from 'react';
 import type { WorkspaceTranslationRun } from '@forexplore/contracts';
+const running = new Set(['analyzing', 'translating', 'compiling', 'testing', 'rolling-back']);
+
 import type { TranslationProvider, TranslationResult } from '../workspace-translation-provider';
 
 const statuses: Record<WorkspaceTranslationRun['status'], string> = { analyzing: '制定计划', translating: '生成代码', compiling: '编译检查', testing: '行为测试',
   completed: '执行完成，待审阅', failed: '执行失败', cancelled: '已取消', interrupted: '执行已中断', 'rolling-back': '正在回滚', 'rolled-back': '已回滚' };
-const running = new Set(['analyzing', 'translating', 'compiling', 'testing', 'rolling-back']);
+function TestResults({ run }: { run: WorkspaceTranslationRun }) {
+  const results = run.testRuns ?? [];
+  if (!results.length) return run.verification?.runs.length ? null : <p className="muted">{run.status === 'testing' ? '行为测试正在运行' : '尚未运行行为测试'}</p>;
+  return <BehaviorTestResults results={results} feedback={run.testFeedback} />;
+}
+
 
 export function WorkspaceTranslation({ provider, packetId, evidenceIds, moduleScopeId, onFinished }: {
   provider: TranslationProvider; packetId?: string; evidenceIds?: readonly string[]; moduleScopeId?: string;
@@ -70,6 +78,7 @@ export function WorkspaceTranslation({ provider, packetId, evidenceIds, moduleSc
         <h3>修改前</h3><pre>{change.before ?? '（新文件）'}</pre><h3>修改后</h3><pre>{change.after}</pre></details>)}
       {[...run.compilations.map((check, index) => ({ check, label: `编译 ${index + 1}` })), ...(run.verification?.runs ?? []).map((check, index) => ({ check, label: `行为测试 ${index + 1}` }))]
         .map(({ check, label }) => <details key={label}><summary>{label} · {check.success ? '通过' : '失败'}</summary><pre>{check.output || check.diagnostics.join('\n')}</pre></details>)}
+      <TestResults run={run} />
       {run.status === 'completed' ? <label><input type="checkbox" checked={reviewed} onChange={event => setReviewed(event.target.checked)} />已审阅本次差异与验证记录{reviewed ? '（本页标记）' : ''}</label> : null}
     </> : null}
   </section>;

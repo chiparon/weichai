@@ -1,122 +1,104 @@
 import { Ajv } from "ajv";
-import type { RepositoryIngestionJsonValue as JsonValue } from "@forexplore/contracts";
-import type { BehaviorCaseResult } from "../multi-agent-write-box/behavior-types.js";
-import {
-  parseBehaviorJson,
-  parseObservations,
-} from "../multi-agent-write-box/behavior-schema.js";
+import type { BehaviorCommand } from "../multi-agent-write-box/behavior-types.js";
 
-export interface SingleAgentPlan {
-  schemaVersion: "1.0";
-  mode: "target_only" | "differential";
-  referenceReason: string;
-  testBasis: { summary: string; evidence: string[] };
-  cases: {
-    caseId: string;
-    intent: string;
-    input: JsonValue;
-    expectationBasis: "source_observation" | "requirement";
-    evidence: string[];
-    expected: BehaviorCaseResult;
-    sourceCommandId?: string;
-  }[];
+/** Generated artifacts only. Execution results always come from the host. */
+export interface TestSubmission {
+  files: { path: string; content: string }[];
+  command: BehaviorCommand;
 }
-export interface SingleAgentManifest {
-  schemaVersion: "1.0";
-  targetCommandId: string;
-  testFiles: { source: string[]; target: string[] };
-  notes: string;
-}
-const text = { type: "string", minLength: 1, maxLength: 16000, pattern: "\\S" };
-const id = { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" };
-const paths = { type: "array", maxItems: 100, uniqueItems: true, items: text };
-const ajv = new Ajv({ allErrors: true, strict: false });
-const validatePlan = ajv.compile<SingleAgentPlan>({
+
+export const testSubmissionSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["schemaVersion", "mode", "referenceReason", "testBasis", "cases"],
+  required: ["files", "command"],
   properties: {
-    schemaVersion: { const: "1.0" },
-    mode: { enum: ["target_only", "differential"] },
-    referenceReason: text,
-    testBasis: {
-      type: "object",
-      additionalProperties: false,
-      required: ["summary", "evidence"],
-      properties: {
-        summary: text,
-        evidence: { type: "array", minItems: 1, maxItems: 100, items: text },
-      },
-    },
-    cases: {
+    files: {
       type: "array",
       minItems: 1,
-      maxItems: 100,
+      maxItems: 32,
       items: {
         type: "object",
         additionalProperties: false,
-        required: [
-          "caseId",
-          "intent",
-          "input",
-          "expected",
-          "expectationBasis",
-          "evidence",
-        ],
+        required: ["path", "content"],
         properties: {
-          caseId: id,
-          intent: text,
-          input: {},
-          expectationBasis: { enum: ["source_observation", "requirement"] },
-          evidence: { type: "array", minItems: 1, maxItems: 100, items: text },
-          expected: { type: "object" },
-          sourceCommandId: id,
+          path: { type: "string", minLength: 1, maxLength: 1024 },
+          content: {
+            type: "string",
+            minLength: 1,
+            maxLength: 256_000,
+            pattern: "\\S",
+          },
+        },
+      },
+    },
+    command: {
+      type: "object",
+      additionalProperties: false,
+      required: ["executable", "args"],
+      properties: {
+        executable: {
+          type: "string",
+          minLength: 1,
+          maxLength: 1024,
+          pattern: "\\S",
+        },
+        args: {
+          type: "array",
+          maxItems: 128,
+          items: { type: "string", maxLength: 16_000 },
         },
       },
     },
   },
-});
-const validateManifest = ajv.compile<SingleAgentManifest>({
-  type: "object",
-  additionalProperties: false,
-  required: ["schemaVersion", "targetCommandId", "testFiles", "notes"],
-  properties: {
-    schemaVersion: { const: "1.0" },
-    targetCommandId: id,
-    notes: { type: "string", maxLength: 16000 },
-    testFiles: {
-      type: "object",
-      additionalProperties: false,
-      required: ["source", "target"],
-      properties: { source: paths, target: { ...paths, minItems: 1 } },
-    },
-  },
-});
-export function parseSingleAgentPlan(text: string): SingleAgentPlan {
-  const value = parseBehaviorJson(text);
-  if (!validatePlan(value))
-    throw new Error(
-      `Invalid single-agent plan: ${ajv.errorsText(validatePlan.errors)}`,
-    );
-  const ids = value.cases.map((c) => c.caseId);
-  if (new Set(ids).size !== ids.length)
-    throw new Error("Duplicate caseId in plan.");
-  parseObservations(JSON.stringify(value.cases.map((c) => c.expected)), ids);
-  for (const item of value.cases) {
-    if (item.expected.caseId !== item.caseId)
-      throw new Error("Expected caseId does not match its input.");
-    if (value.mode === "target_only" && item.expectationBasis !== "requirement")
-      throw new Error("Target-only expectations must be requirement-derived.");
-    if ((value.mode === "differential") !== Boolean(item.sourceCommandId))
-      throw new Error("Reference command does not match verification mode.");
+} as const;
+const ajv = new Ajv({ allErrors: true, strict: false });
+const validate = ajv.compile<TestSubmission>(testSubmissionSchema);
+
+export function validateTestPath(path: string): void {
+  if (
+    !path ||
+    path.length > 1024 ||
+    /[\\:\x00-\x1f]/.test(path) ||
+    path
+      .split("/")
+      .some(
+        (part) =>
+          !part ||
+          part === "." ||
+          part === ".." ||
+          /[. ]$/.test(part) ||
+          [".git", ".forexplore"].includes(part.toLowerCase()),
+      )
+  ) {
+    throw new Error(`Invalid test-relative path: ${path}`);
   }
-  return value;
 }
-export function parseSingleAgentManifest(text: string): SingleAgentManifest {
-  const value = parseBehaviorJson(text);
-  if (!validateManifest(value))
+
+export function parseTestSubmission(value: unknown): TestSubmission {
+  if (!validate(value))
     throw new Error(
-      `Invalid single-agent report: ${ajv.errorsText(validateManifest.errors)}`,
+      `Invalid test submission: ${ajv.errorsText(validate.errors)}`,
     );
-  return value;
+  const paths = new Set<string>();
+  let characters = 0;
+  for (const file of value.files) {
+    validateTestPath(file.path);
+    // Case-folding also prevents ambiguous bundles moved between platforms.
+    const key = file.path.toLowerCase();
+    if (paths.has(key)) throw new Error(`Duplicate test path: ${file.path}`);
+    paths.add(key);
+    if (file.content.includes("\0"))
+      throw new Error("Test content must be UTF-8 text without NUL.");
+    characters += file.content.length;
+  }
+  if (characters > 1_000_000)
+    throw new Error("Test submission exceeds 1000000 characters.");
+  if (
+    [value.command.executable, ...value.command.args].some((text) =>
+      text.includes("\0"),
+    )
+  ) {
+    throw new Error("Command arguments cannot contain NUL.");
+  }
+  return structuredClone(value);
 }

@@ -1,5 +1,5 @@
 import type { VerificationInput } from "./verification-types.js";
-import { calculatePatchHashV2 } from "@forexplore/workflow-core";
+import { calculatePatchHashV2 } from "./legacy-input.js";
 import { assertSchema, validateInputSchema } from "./compile-schema-validators.js";
 import { assertJsonCompatible, normalizeRepositoryRelativePath, sha256Hex } from "./validate-json-paths.js";
 

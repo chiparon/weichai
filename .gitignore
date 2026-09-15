@@ -12,6 +12,7 @@ coverage/
 .vscode-test-user/
 *.vsix
 .forexplore/
+fixtures/target-system/.forexplore-java-integrated-*/
 
 # Local environment files
 .env

@@ -134,7 +134,7 @@ export function ProjectPicker(props: ProjectPickerProps) {
                   return <button type="button" role="menuitemradio" aria-checked={selected} key={project.projectId}
                     className="workspace-picker-option" disabled={!repository.selectedRevision || adding}
                     onClick={() => choose(() => props.onSelect(repository.repositoryId, repository.selectedRevision!, project.projectId))}>
-                    <span><strong>{project.displayName}</strong><small>{project.relativePath || '.'}</small></span>
+                    <span><strong>{repository.displayName}</strong></span>
                     {selected ? <Check size={14} /> : null}
                   </button>;
                 })}

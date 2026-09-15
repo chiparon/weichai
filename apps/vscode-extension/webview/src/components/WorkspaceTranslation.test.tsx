@@ -31,3 +31,27 @@ it('previews the destination, starts with evidence IDs, reviews failed tests and
   expect(provider).toHaveBeenLastCalledWith({ action: 'rollback', runId: run.id });
   expect(container.textContent).toContain('已回滚');
 });
+
+it('shows the phase animation while the service works and the detail once it stops', async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const run: WorkspaceTranslationRun = { id: 'd8be6e6b-bd4f-4690-a54a-4b89b4a692fa', workspaceRoot: '/target', status: 'translating',
+    request: { spec: 'Disk storage', sourceLanguage: 'C#', targetLanguage: 'Java', context: [],
+      workspaceFiles: ['DiskFileItem.java'], writeFiles: ['DiskFileItem.java'] },
+    createdAt: new Date().toISOString(), updatedAt: '', completedSteps: ['step-1'], changes: [], compilations: [],
+    modelTurns: 6, acceptance: 'compilation-only' };
+  const provider = vi.fn<TranslationProvider>(async intent => ({ type: 'WORKSPACE_TRANSLATION_RESULT', requestId: 'reply',
+    ...(intent.action === 'describe' ? { profile: { profileId: 'profile-1', moduleScopeId: 'a'.repeat(64), workspaceRoot: '/target',
+      sourceLanguage: 'C#', targetLanguage: 'Java', workspaceFiles: ['DiskFileItem.java'], writeFiles: ['DiskFileItem.java'], behavioralVerification: true } }
+      : { run }) }));
+  const container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<WorkspaceTranslation provider={provider} moduleScopeId={'a'.repeat(64)} />));
+  await act(async () => [...container.querySelectorAll('button')].find(item => item.textContent === '开始模块翻译并回填')!.click());
+
+  // While the run is active the animated phases are the page: no form in the way.
+  expect(container.querySelector('.processing-ring')).not.toBeNull();
+  expect(container.textContent).toContain('正在翻译源实现到目标语言');
+  expect(container.textContent).toContain('已写入 0/1 个文件');
+  expect(container.textContent).toContain('取消运行');
+  expect(container.textContent).not.toContain('运行编号');
+  expect(container.querySelector('.workspace-translation details')).toBeNull();
+});

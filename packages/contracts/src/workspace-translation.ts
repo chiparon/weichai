@@ -99,6 +99,7 @@ export interface WorkspaceTranslationRun {
   /** Every on-demand history query this run performed, in order. */
   evidenceQueries?: WorkspaceEvidenceQuery[];
   modelTurns: number;
+  events?: WorkspaceTranslationEvent[];
   error?: string;
   /** A passing fixed test suite is evidence, not a proof of all behaviors. */
   acceptance: "compilation-only" | "behavior-verified";
@@ -108,3 +109,4 @@ export interface WorkspaceTranslationRun {
     runs: Array<WorkspaceCompilation & { sourceSnapshot: string; planHash: string; filesUnchanged: boolean }>;
   };
 }
+export interface WorkspaceTranslationEvent { at: string; phase: WorkspaceTranslationStatus; message: string; }

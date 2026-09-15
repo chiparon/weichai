@@ -101,6 +101,7 @@ export class WorkspaceTranslationRuntime {
       id: randomUUID(), workspaceRoot: this.files.root, request, status: "analyzing",
       createdAt: now, updatedAt: now, completedSteps: [], changes: [], compilations: [], evidenceQueries: [],
       modelTurns: 0, acceptance: "compilation-only",
+      events: [{ at: now, phase: "analyzing", message: "翻译任务已启动，等待 Analyzer" }],
       ...(verification ? { verification: { command: structuredClone(verification.command),
         criteria: verification.protectedFiles.map(path => {
           const value = hash(this.files.read(path));
@@ -146,6 +147,9 @@ export class WorkspaceTranslationRuntime {
     run.acceptance = "compilation-only";
     run.status = run.plan ? "translating" : "analyzing";
     delete run.error;
+    run.events ??= [];
+    run.events.push({ at: new Date().toISOString(), phase: run.status, message: "翻译任务已恢复" });
+    if (run.events.length > 300) run.events.splice(0, run.events.length - 300);
     this.save(run);
     return this.launch(run);
   }
@@ -286,6 +290,10 @@ export class WorkspaceTranslationRuntime {
       !item || typeof item.at !== "string" || typeof item.requirement !== "string" || !Array.isArray(item.repositoryIds) ||
       !Number.isInteger(item.excerptCount) || !Number.isInteger(item.characters) ||
       (item.error !== undefined && typeof item.error !== "string")))) throw new Error("Invalid evidence query record.");
+    if (run.events !== undefined && (!Array.isArray(run.events) || run.events.length > 300 || run.events.some((item) =>
+      !item || typeof item.at !== "string" || typeof item.phase !== "string" || typeof item.message !== "string"))) {
+      throw new Error("Invalid translation event record.");
+    }
     const paths = new Set<string>();
     for (const change of run.changes) {
       if (!change || !run.request.writeFiles.includes(change.path) || paths.has(change.path) ||
@@ -363,6 +371,7 @@ export class WorkspaceTranslationRuntime {
   }
 
   private async execute(run: WorkspaceTranslationRun, signal: AbortSignal): Promise<void> {
+    const log = (message: string) => { run.events ??= []; run.events.push({ at: new Date().toISOString(), phase: run.status, message }); if (run.events.length > 300) run.events.splice(0, run.events.length - 300); this.save(run); };
     this.assertVerification(run);
     let analyzer = !run.plan;
     let revisionReason = "";
@@ -391,6 +400,7 @@ export class WorkspaceTranslationRuntime {
       signal.throwIfAborted();
       run.status = analyzer ? "analyzing" : "translating";
       run.modelTurns++;
+      log(`${analyzer ? 'Analyzer' : 'Translator'} 第 ${run.modelTurns} 轮模型调用`);
       this.save(run);
       const completion = await this.options.client.complete(messages, toolsFor(), signal);
       signal.throwIfAborted();
@@ -398,11 +408,13 @@ export class WorkspaceTranslationRuntime {
       if (calls.length > 32) throw new Error("Model returned too many tool calls in one turn.");
       messages.push({ role: "assistant", content: completion.content ?? "", toolCalls: calls });
       if (!calls.length) {
+        log(`${analyzer ? 'Analyzer' : 'Translator'} 未返回工具调用，继续请求下一轮`);
         messages.push({ role: "user", content: "Continue using the supplied tools, or describe the unresolved scope in a plan revision." });
         continue;
       }
       let transition = false;
       for (const call of calls) {
+        log(`${analyzer ? 'Analyzer' : 'Translator'} 调用工具：${call.name}`);
         signal.throwIfAborted();
         let result: unknown;
         try {
@@ -421,6 +433,7 @@ export class WorkspaceTranslationRuntime {
               if (typeof args.reason !== "string" || !args.reason.trim()) throw new Error("A blocker requires a reason.");
               run.status = "failed";
               run.error = args.reason;
+              log(`${analyzer ? 'Analyzer' : 'Translator'} 报告阻塞：${args.reason.slice(0, 240)}`);
               this.save(run);
               return;
             }
@@ -442,6 +455,7 @@ export class WorkspaceTranslationRuntime {
               run.completedSteps = [];
               analyzer = false;
               transition = true;
+              log(`Analyzer 提交适配计划，共 ${run.plan.steps.length} 个步骤`);
               result = { accepted: true };
               break;
             }
@@ -485,6 +499,7 @@ export class WorkspaceTranslationRuntime {
               change.applied = true;
               delete change.pendingBefore;
               readHashes.delete(path);
+              log(`Translator 写入文件：${path}`);
               result = { path, hash: hash(args.content) };
               break;
             }
@@ -505,12 +520,14 @@ export class WorkspaceTranslationRuntime {
               verifiedSnapshot = undefined;
               run.acceptance = "compilation-only";
               run.status = "compiling";
+              log("开始编译检查");
               this.save(run);
               const before = this.snapshot(run);
               const compilation: WorkspaceCompilation = await compileWorkspace(this.files.root, this.command, signal);
               run.compilations.push(compilation);
               successfulSnapshot = compilation.success && before === this.snapshot(run) ? before : undefined;
               run.status = "translating";
+              log(`编译检查${compilation.success ? '通过' : '失败'}`);
               result = { ...compilation, filesUnchanged: successfulSnapshot !== undefined };
               break;
             }
@@ -523,6 +540,7 @@ export class WorkspaceTranslationRuntime {
               verifiedSnapshot = undefined;
               run.acceptance = "compilation-only";
               run.status = "testing";
+              log("开始行为测试");
               this.save(run);
               const resultRun = await compileWorkspace(this.files.root, run.verification.command, signal);
               const filesUnchanged = before === this.snapshot(run);
@@ -530,6 +548,7 @@ export class WorkspaceTranslationRuntime {
               this.assertVerification(run);
               if (resultRun.success && filesUnchanged) verifiedSnapshot = before;
               run.status = "translating";
+              log(`行为测试${resultRun.success && filesUnchanged ? '通过' : '失败'}`);
               result = { ...resultRun, filesUnchanged };
               break;
             }
@@ -543,6 +562,7 @@ export class WorkspaceTranslationRuntime {
               verifiedSnapshot = undefined;
               run.acceptance = "compilation-only";
               transition = true;
+              log(`Translator 请求 Analyzer 修订计划：${args.reason.slice(0, 240)}`);
               result = { accepted: true };
               break;
             }
@@ -557,6 +577,7 @@ export class WorkspaceTranslationRuntime {
               signal.throwIfAborted();
               run.acceptance = run.verification ? "behavior-verified" : "compilation-only";
               run.status = "completed";
+              log("翻译完成，验证通过");
               this.save(run);
               return;
             }
@@ -564,6 +585,7 @@ export class WorkspaceTranslationRuntime {
         } catch (error) {
           signal.throwIfAborted();
           result = { error: message(error) };
+          log(`${analyzer ? 'Analyzer' : 'Translator'} 工具执行失败：${message(error).slice(0, 240)}`);
         }
         this.save(run);
         messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(result) });

@@ -4,7 +4,8 @@ import { RecastLogo } from './components/RecastLogo';
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { GitBranch, Search, Settings2 } from 'lucide-react';
 import { createTranslationProvider } from './workspace-translation-provider';
-import { WorkspaceTranslation } from './components/WorkspaceTranslation';
+import { AgentRunLog, WorkspaceTranslation } from './components/WorkspaceTranslation';
+import type { WorkspaceTranslationRun } from '@forexplore/contracts';
 import { TaskSearch, type TaskSearchProvider } from './components/TaskSearch';
 import type { CodeIntelligencePresentation, RepositoryStatus, ServiceStatus } from '../../src/ui-types';
 import type { ModuleExplorerMode, ModuleExplorerNode } from '../../src/ui-types';
@@ -59,6 +60,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   const [targetAdd, setTargetAdd] = useState<TargetAddUiState>(idleTargetAdd);
   const [visibleStep, setVisibleStep] = useState<WorkflowStage>('target');
   const [moduleTranslation, setModuleTranslation] = useState<{ moduleScopeId: string } | null>(null);
+  const [translationRun, setTranslationRun] = useState<WorkspaceTranslationRun>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
@@ -394,6 +396,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         onRetry={(scope, force) => bus.post({ type: 'RETRY_PROJECT_ANALYSIS', ...scope, force })}
         onOpenSettings={() => setSettingsOpen(true)}
         settingsOpen={settingsOpen}
+        afterUnderstanding={taskMode === 'migration' ? <AgentRunLog run={translationRun} enabled={Boolean(moduleTranslation)} /> : null}
       >
         <div hidden={settingsOpen || taskMode !== 'search'}>
           <TaskSearch key={`${moduleExplorer.target.repositoryId}:${moduleExplorer.target.projectId}:${moduleExplorer.target.revision}`}
@@ -464,7 +467,8 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
 
             {moduleTranslation ? <div hidden={visibleStep !== 'adaptation' && visibleStep !== 'patch'}>
               <WorkspaceTranslation key={moduleTranslation.moduleScopeId} provider={translation} moduleScopeId={moduleTranslation.moduleScopeId}
-                onFinished={(completed) => dispatch({ type: 'MODULE_TRANSLATION_FINISHED', completed })} />
+                onFinished={(completed) => dispatch({ type: 'MODULE_TRANSLATION_FINISHED', completed })}
+                onRunChange={setTranslationRun} />
             </div> : null}
             {visibleStep === 'adaptation' && !moduleTranslation ? (
               <AdaptationStage state={state} candidate={candidate}

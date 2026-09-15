@@ -54,6 +54,7 @@ interface ModuleWorkspaceProps {
   onOpenSettings(): void;
   settingsOpen: boolean;
   children: React.ReactNode;
+  afterUnderstanding?: React.ReactNode;
 }
 
 export function ModuleWorkspace({
@@ -79,6 +80,7 @@ export function ModuleWorkspace({
   onOpenSettings,
   settingsOpen,
   children,
+  afterUnderstanding,
 }: ModuleWorkspaceProps) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
@@ -327,6 +329,7 @@ export function ModuleWorkspace({
           {!settingsOpen && workspace.projectId && (primaryContent || mode === 'target') ? (
             <ProjectUnderstandingOverview workspace={workspace} onRetry={onRetry} />
           ) : null}
+          {!settingsOpen && workspace.projectId && (primaryContent || mode === 'target') ? afterUnderstanding : null}
           {!settingsOpen && workspace.projectId && mode === 'history' && !primaryContent ? (
             <ProjectEngineeringDetails workspace={workspace} onRetry={onRetry} />
           ) : null}

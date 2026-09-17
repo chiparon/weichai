@@ -67,6 +67,41 @@ function Start-DevWindow {
   ) | Out-Null
 }
 
+function Test-ListeningPort {
+  param([int]$Port)
+
+  $client = New-Object System.Net.Sockets.TcpClient
+  try { $client.Connect('127.0.0.1', $Port); return $true }
+  catch { return $false }
+  finally { $client.Dispose() }
+}
+
+# The service log lives in a window nobody watches, so "did it come up" has to
+# be answered here: 401 means the translation route exists and only the token is
+# missing, 404 means the service was started without translation configured.
+function Test-TranslationEndpoint {
+  param([int]$Port)
+
+  try {
+    Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/workspace-translations/configuration" -TimeoutSec 5 -UseBasicParsing | Out-Null
+    return $true
+  } catch {
+    $status = $_.Exception.Response.StatusCode.value__
+    return ($status -eq 401)
+  }
+}
+
+function Wait-ListeningPort {
+  param([int]$Port, [int]$Seconds)
+
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-ListeningPort $Port) { return $true }
+    Start-Sleep -Seconds 2
+  }
+  return (Test-ListeningPort $Port)
+}
+
 # One configuration point for the whole dev environment: database, embeddings,
 # translation token and the host-side fallback profile. Edit scripts/dev-env.ps1
 # instead of passing these around.
@@ -85,12 +120,34 @@ if (-not $SkipServices) {
   if ($LASTEXITCODE -ne 0) {
     Write-Warning "依赖服务未全部就绪（embedding 4021 / rerank 4022 / SeekDB）：检索会以 'fetch failed' 失败。"
   }
-  Start-DevWindow -Command 'npm run dev:retrieval'
+
+  if (Test-ListeningPort 8787) {
+    Write-Host '检索服务已在 8787 运行，复用现有实例。'
+  } else {
+    Start-DevWindow -Command 'npm run dev:retrieval'
+    if (Wait-ListeningPort -Port 8787 -Seconds 90) { Write-Host '检索服务已就绪：http://127.0.0.1:8787' }
+    else { Write-Warning '检索服务 90 秒内未在 8787 就绪；请手动运行 npm run dev:retrieval 查看报错。' }
+  }
+
   # `npm run dev:adaptation` alone registers no translation endpoint, so the
   # panel's translation always failed. Start the service through the one script
   # that owns the complete environment instead.
-  $adaptationScript = Join-Path $PSScriptRoot 'run-adaptation-full.ps1'
-  Start-DevWindow -Command ("powershell -ExecutionPolicy Bypass -File '{0}' -Port 8788 -SemanticQueryUrl 'http://127.0.0.1:8790'" -f $adaptationScript)
+  if (Test-ListeningPort 8788) {
+    Write-Host '适配服务已在 8788 运行，复用现有实例。'
+  } else {
+    $adaptationScript = Join-Path $PSScriptRoot 'run-adaptation-full.ps1'
+    Start-DevWindow -Command ("powershell -ExecutionPolicy Bypass -File '{0}' -Port 8788 -SemanticQueryUrl 'http://127.0.0.1:8790'" -f $adaptationScript)
+    if (-not (Wait-ListeningPort -Port 8788 -Seconds 120)) {
+      Write-Warning '适配服务 120 秒内未在 8788 就绪；请手动运行 scripts/run-adaptation-full.ps1 查看报错。'
+    }
+  }
+  if (Test-ListeningPort 8788) {
+    if (Test-TranslationEndpoint 8788) {
+      Write-Host '翻译服务已就绪：http://127.0.0.1:8788/v1/workspace-translations（目标工程见上方 ADAPTATION_PROJECT_ROOT）'
+    } else {
+      Write-Warning '8788 上的服务没有注册翻译端点（很可能是用 npm run dev:adaptation 或裸 node 起的）。请先停掉它，再用 scripts/run-adaptation-full.ps1 启动。'
+    }
+  }
 }
 
 # The extension host reads the token and the fallback profile from its own

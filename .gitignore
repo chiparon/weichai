@@ -69,3 +69,13 @@ logs/
 
 # Git worktrees
 .worktrees/
+
+# 误提交过一次的类别（见 scripts/check-repo-hygiene.mjs 的门禁）
+# 1) 带空格的 "xxx - 副本" 整棵复制目录（含 skeleton 的完整拷贝）
+**/* - 副本/
+# 2) 归档与比赛材料（大体积二进制应放 release/外部存储，不进 git）
+*.zip
+# 3) .NET 构建产物（历史上已跟踪 20 个，勿再新增）
+fixtures/code-corpus/**/obj/
+# 4) 临时截图
+apps/vscode-extension/webview/image.png

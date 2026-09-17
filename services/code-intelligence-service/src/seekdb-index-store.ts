@@ -448,6 +448,9 @@ async function withTransaction<T>(pool: Pool, operation: (connection: PoolConnec
 
 type InsertRow = { values: unknown[]; vector?: string };
 
+/** Fused score of one search document inside a single view. */
+type RankedScores = { score: number; retrievalScore: NonNullable<SearchDocumentRecord['retrievalScore']> };
+
 function* insertRows<T>(rows: readonly T[], convert: (row: T, index: number) => InsertRow): Iterable<InsertRow> {
   for (let index = 0; index < rows.length; index++) yield convert(rows[index]!, index);
 }
@@ -524,11 +527,23 @@ export class SeekDbIndexStore implements IndexStore {
     // ("query has reached the maximum query timeout").  Registered before the
     // first statement, so no query runs under the default.
     const registerSessionCeiling = (this.pool as unknown as {
-      on?: (event: 'connection', listener: (connection: PoolConnection) => void) => unknown;
+      on?: (event: 'connection', listener: (connection: unknown) => void) => unknown;
     }).on;
     if (typeof registerSessionCeiling === 'function') {
-      registerSessionCeiling.call(this.pool, 'connection', (connection: PoolConnection) => {
-        void connection.query(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`).catch(() => undefined);
+      registerSessionCeiling.call(this.pool, 'connection', (connection: unknown) => {
+        const statement = `SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`;
+        // The pool event hands over the callback-style connection, whose query()
+        // is not a promise; use the wrapper when it exists and ignore the rest.
+        const promiseFactory = (connection as { promise?: () => { query: (sql: string) => Promise<unknown> } }).promise;
+        if (typeof promiseFactory === 'function') {
+          void promiseFactory.call(connection).query(statement).catch(() => undefined);
+          return;
+        }
+        try {
+          (connection as { query: (sql: string, callback: () => void) => unknown }).query(statement, () => undefined);
+        } catch {
+          // A pool double without query support must not break construction.
+        }
       });
     }
     this.#embeddingIdentity = createHash('sha256').update(JSON.stringify({
@@ -1365,55 +1380,149 @@ export class SeekDbIndexStore implements IndexStore {
     kind: SearchDocumentRecord['kind'] = 'symbol',
     signal?: AbortSignal,
   ): Promise<SearchDocumentRecord[]> {
+    const perView = await this.#searchViews(scope, query, { [kind]: limit }, [kind], signal);
+    return perView[kind] ?? [];
+  }
+
+  /**
+   * Batched recall over several views at once.
+   *
+   * One view costs one embedding, two candidate statements and one hydration
+   * statement.  A module search asks for three views per reference repository,
+   * which used to mean nine statements and three identical embeddings per
+   * repository: 20 repositories against a pool of eight connections, racing the
+   * indexing transaction, is what pushed single queries past the SeekDB session
+   * timeout.  Batching issues one embedding, two candidates (both views share
+   * the kind filter) and one hydration for the whole request.
+   *
+   * A project-scoped recall keeps the per-view path: the project filter differs
+   * between summary and file-backed documents, so the kinds cannot share one
+   * statement.
+   */
+  async searchSearchDocumentsByViews(
+    scope: RepositoryRevisionScope & { projectId?: string },
+    query: string,
+    limits: Partial<Record<SearchDocumentRecord['kind'], number>>,
+    views: readonly SearchDocumentRecord['kind'][],
+    signal?: AbortSignal,
+  ): Promise<Partial<Record<SearchDocumentRecord['kind'], SearchDocumentRecord[]>>> {
+    return this.#searchViews(scope, query, limits, views, signal);
+  }
+
+  async #searchViews(
+    scope: RepositoryRevisionScope & { projectId?: string },
+    query: string,
+    limits: Partial<Record<SearchDocumentRecord['kind'], number>>,
+    views: readonly SearchDocumentRecord['kind'][],
+    signal?: AbortSignal,
+  ): Promise<Partial<Record<SearchDocumentRecord['kind'], SearchDocumentRecord[]>>> {
     signal?.throwIfAborted();
     const text = query.trim();
-    if (!text || !Number.isInteger(limit) || limit < 1) return [];
-    const boundedLimit = Math.min(limit, 200);
+    if (!text) return {};
+    const planned = views.flatMap((view) => {
+      const limit = limits[view];
+      if (!Number.isInteger(limit) || (limit ?? 0) < 1) return [];
+      const boundedLimit = Math.min(limit!, 200);
+      return [{ view, boundedLimit, candidateLimit: Math.min(Math.max(boundedLimit * 4, 24), 800) }];
+    });
+    if (!planned.length) return {};
+
     const embedding = this.#embeddingProvider.embedQuery
       ? await this.#embeddingProvider.embedQuery(text, signal)
       : (await this.#embeddingProvider.embed([text], signal))[0];
     if (!embedding) throw new Error('Search embedding provider omitted a query vector.');
     assertEmbedding(embedding, this.#vectorDimension);
-    const candidateLimit = Math.min(Math.max(boundedLimit * 4, 24), 800);
-    const select = `
-      search_document_id, kind, relative_path, symbol_key, source_range, module_artifact_id, content_hash, title, document_text
-    `;
+
+    const batched = planned.length > 1 && !scope.projectId;
+    const selected = new Map<SearchDocumentRecord['kind'], Array<[string, RankedScores]>>();
+    if (batched) {
+      // The union limit keeps the same head-room per view; kinds that produce no
+      // hit above the union cut simply return fewer rows, exactly as a per-view
+      // query with too small a limit would.
+      const candidateLimit = Math.min(2_400, planned.reduce((sum, item) => sum + item.candidateLimit, 0) * 2);
+      const candidates = await this.#recallCandidates({ scope, text, embedding,
+        kinds: planned.map((item) => item.view), candidateLimit, signal });
+      for (const item of planned) {
+        selected.set(item.view, this.#fuseCandidates(candidates.textRows, candidates.vectorRows, item.view, item.boundedLimit));
+      }
+    } else {
+      for (const item of planned) {
+        const candidates = await this.#recallCandidates({ scope, text, embedding,
+          kinds: [item.view], candidateLimit: item.candidateLimit, signal });
+        selected.set(item.view, this.#fuseCandidates(candidates.textRows, candidates.vectorRows, item.view, item.boundedLimit));
+      }
+    }
+
+    const wanted = [...new Set([...selected.values()].flatMap((entries) => entries.map(([id]) => id)))];
+    const documents = await this.#hydrateDocuments(scope, wanted, signal);
+    const result: Partial<Record<SearchDocumentRecord['kind'], SearchDocumentRecord[]>> = {};
+    for (const [view, entries] of selected) {
+      result[view] = entries.flatMap(([searchDocumentId, scores]) => {
+        const document = documents.get(searchDocumentId);
+        return document ? [{ ...document, retrievalScore: scores.retrievalScore }] : [];
+      });
+    }
+    return result;
+  }
+
+  /** The two ranked candidate sets of one hybrid lookup. */
+  async #recallCandidates(input: {
+    scope: RepositoryRevisionScope & { projectId?: string };
+    text: string;
+    embedding: number[];
+    kinds: readonly SearchDocumentRecord['kind'][];
+    candidateLimit: number;
+    signal?: AbortSignal;
+  }): Promise<{ textRows: RowDataPacket[]; vectorRows: RowDataPacket[] }> {
+    const { scope, text, embedding, kinds, candidateLimit, signal } = input;
+    const single = kinds.length === 1 ? kinds[0]! : undefined;
     const textMatch = 'MATCH(d.search_text) AGAINST (? IN NATURAL LANGUAGE MODE)';
-    const projectFilter = !scope.projectId ? '' : kind === 'summary'
+    const projectFilter = single === undefined || !scope.projectId ? '' : single === 'summary'
       ? " AND JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(document_text), document_text, '{}'), '$.projectId')) = ?"
       : ` AND relative_path IN (SELECT relative_path FROM ${this.#tables.files} WHERE repository_id = ? AND analysis_revision = ? AND project_id = ?)`;
-    const projectValues = !scope.projectId ? [] : kind === 'summary' ? [scope.projectId] : [...scopeParams(scope), scope.projectId];
+    const projectValues = projectFilter === '' ? [] : single === 'summary' ? [scope.projectId] : [...scopeParams(scope), scope.projectId];
     // The explicit join lets full-text retrieval hash project ownership once instead of running a subquery per match.
-    const textProjectJoin = scope.projectId && kind !== 'summary'
+    const textProjectJoin = single !== undefined && single !== 'summary' && scope.projectId
       ? ` JOIN ${this.#tables.files} f ON f.repository_id = d.repository_id AND f.analysis_revision = d.analysis_revision
           AND f.relative_path = d.relative_path AND f.project_id = ?` : '';
-    const textProjectFilter = scope.projectId && kind === 'summary'
+    const textProjectFilter = single === 'summary' && scope.projectId
       ? " AND JSON_UNQUOTE(JSON_EXTRACT(IF(JSON_VALID(d.document_text), d.document_text, '{}'), '$.projectId')) = ?" : '';
     const [textRows, vectorRows] = await Promise.all([
       queryRows<RowDataPacket[]>(this.pool, `
-        SELECT d.search_document_id, ${textMatch} AS text_score
+        SELECT d.search_document_id, d.kind, ${textMatch} AS text_score
         FROM ${this.#tables.searchDocuments} d${textProjectJoin}
-        WHERE d.repository_id = ? AND d.analysis_revision = ? AND d.kind = ?${textProjectFilter} AND ${textMatch}
+        WHERE d.repository_id = ? AND d.analysis_revision = ? AND ${single === undefined ? `d.kind IN (${kinds.map(() => '?').join(',')})` : 'd.kind = ?'}${textProjectFilter} AND ${textMatch}
         ORDER BY text_score DESC
         LIMIT ?
-      `, [text, ...(textProjectJoin ? [scope.projectId] : []), ...scopeParams(scope), kind,
+      `, [text, ...(textProjectJoin ? [scope.projectId] : []), ...scopeParams(scope), ...kinds,
         ...(textProjectFilter ? [scope.projectId] : []), text, candidateLimit], signal),
       queryRows<RowDataPacket[]>(this.pool, `
-        SELECT search_document_id, GREATEST(0, 1 - cosine_distance(embedding, ${vectorHex(embedding)})) AS semantic_score
+        SELECT search_document_id, kind, GREATEST(0, 1 - cosine_distance(embedding, ${vectorHex(embedding)})) AS semantic_score
         FROM ${this.#tables.searchDocuments}
-        WHERE repository_id = ? AND analysis_revision = ? AND kind = ?${projectFilter}
+        WHERE repository_id = ? AND analysis_revision = ? AND ${single === undefined ? `kind IN (${kinds.map(() => '?').join(',')})` : 'kind = ?'}${projectFilter}
         ORDER BY cosine_distance(embedding, ${vectorHex(embedding)})
         APPROXIMATE
         LIMIT ?
-      `, [...scopeParams(scope), kind, ...projectValues, candidateLimit], signal),
+      `, [...scopeParams(scope), ...kinds, ...projectValues, candidateLimit], signal),
     ]);
-    signal?.throwIfAborted();
-    const byId = new Map<string, { score: number; retrievalScore: NonNullable<SearchDocumentRecord['retrievalScore']> }>();
-    const add = (rows: RowDataPacket[], rankWeight: number): void => {
-      rows.forEach((row, index) => {
+    return { textRows, vectorRows };
+  }
+
+  /** Reciprocal-rank fusion of both candidate sets, for one view. */
+  #fuseCandidates(
+    textRows: RowDataPacket[],
+    vectorRows: RowDataPacket[],
+    view: SearchDocumentRecord['kind'],
+    boundedLimit: number,
+  ): Array<[string, RankedScores]> {
+    const byId = new Map<string, RankedScores>();
+    const add = (rows: RowDataPacket[]): void => {
+      let rank = 0;
+      for (const row of rows) {
+        if (row.kind !== undefined && row.kind !== view) continue;
         const searchDocumentId = stringValue(row.search_document_id)!;
         const existing = byId.get(searchDocumentId);
-        const score = (existing?.score ?? 0) + 1 / (60 + index + 1) * rankWeight;
+        const score = (existing?.score ?? 0) + 1 / (60 + rank + 1);
         const retrievalScore = {
           ...existing?.retrievalScore,
           ...(row.semantic_score !== undefined ? { semantic: numberValue(row.semantic_score) } : {}),
@@ -1421,26 +1530,33 @@ export class SeekDbIndexStore implements IndexStore {
           fusion: score,
         };
         byId.set(searchDocumentId, { score, retrievalScore });
-      });
+        rank += 1;
+      }
     };
-    add(textRows, 1);
-    add(vectorRows, 1);
-    const selected = [...byId.entries()]
+    add(textRows);
+    add(vectorRows);
+    return [...byId.entries()]
       .sort(([leftId, left], [rightId, right]) => right.score - left.score || leftId.localeCompare(rightId))
       .slice(0, boundedLimit);
-    if (!selected.length) return [];
-    // Retrieve long source text only after both ranked candidate sets have been bounded and fused.
+  }
+
+  /** Long source text is fetched only after both candidate sets were bounded and fused. */
+  async #hydrateDocuments(
+    scope: RepositoryRevisionScope,
+    searchDocumentIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<Map<string, SearchDocumentRecord>> {
+    if (!searchDocumentIds.length) return new Map();
+    const select = `
+      search_document_id, kind, relative_path, symbol_key, source_range, module_artifact_id, content_hash, title, document_text
+    `;
     const rows = await queryRows<SearchDocumentRow[]>(this.pool, `SELECT ${select} FROM ${this.#tables.searchDocuments}
-      WHERE repository_id = ? AND analysis_revision = ? AND search_document_id IN (${selected.map(() => '?').join(',')})
-      LIMIT ?`, [...scopeParams(scope), ...selected.map(([searchDocumentId]) => searchDocumentId), boundedLimit], signal);
-    const documents = new Map(rows.map(row => {
+      WHERE repository_id = ? AND analysis_revision = ? AND search_document_id IN (${searchDocumentIds.map(() => '?').join(',')})
+      LIMIT ?`, [...scopeParams(scope), ...searchDocumentIds, searchDocumentIds.length], signal);
+    return new Map(rows.map(row => {
       const document = toSearchDocument(scope, row);
       return [document.searchDocumentId, document] as const;
     }));
-    return selected.flatMap(([searchDocumentId, scores]) => {
-      const document = documents.get(searchDocumentId);
-      return document ? [{ ...document, retrievalScore: scores.retrievalScore }] : [];
-    });
   }
 
   async activateRevision(

@@ -65,11 +65,12 @@ export interface RecallRequest {
 }
 
 export class RecallKernel {
-  constructor(private readonly store: Pick<IndexStore, 'searchSearchDocuments'>) {}
+  constructor(private readonly store: Pick<IndexStore, 'searchSearchDocuments' | 'searchSearchDocumentsByViews'>) {}
 
   async recall(request: RecallRequest): Promise<RecallOutcome> {
     const search = this.store.searchSearchDocuments;
-    if (!search) throw new Error('Recall requires a bounded search-document query.');
+    const searchByViews = this.store.searchSearchDocumentsByViews;
+    if (!search && !searchByViews) throw new Error('Recall requires a bounded search-document query.');
     if (request.plans.length === 0) throw new Error('Recall requires at least one query plan.');
     for (const plan of request.plans) {
       if (!plan.label.trim() || !plan.query.trim()) throw new Error('Every recall plan needs a label and a query.');
@@ -87,11 +88,20 @@ export class RecallKernel {
     // reaches the store with a half-finished fan-out.
     const limits = new Map(views.map((view) => [view, limitFor(view)] as const));
 
-    // One channel per (plan, view) pair, issued concurrently and merged in a
-    // fixed plan-major order so the fused result stays deterministic.
-    const channelSets = await Promise.all(request.plans.flatMap((plan) => views.map(async (view) => ({
-      plan, view, documents: await search.call(this.store, request.scope, plan.query, limits.get(view)!, view, request.signal),
-    }))));
+    // One channel per (plan, view) pair, merged in a fixed plan-major order so
+    // the fused result stays deterministic. A store that can batch the views is
+    // asked once per plan: the same documents come back, with one embedding and
+    // a quarter of the statements.
+    const perPlan = await Promise.all(request.plans.map(async (plan) => {
+      if (searchByViews) {
+        const batched = await searchByViews.call(this.store, request.scope, plan.query,
+          Object.fromEntries([...limits]), views, request.signal);
+        return views.map((view) => ({ plan, view, documents: batched[view] ?? [] }));
+      }
+      return Promise.all(views.map(async (view) => ({ plan, view,
+        documents: await search!.call(this.store, request.scope, plan.query, limits.get(view)!, view, request.signal) })));
+    }));
+    const channelSets = perPlan.flat();
 
     const documents: SearchDocumentRecord[] = [];
     const fusedRanks = new Map<string, number>();

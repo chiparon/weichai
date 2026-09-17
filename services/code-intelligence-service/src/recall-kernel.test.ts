@@ -20,6 +20,38 @@ function fakeStore(corpus: Record<string, SearchDocumentRecord[]>) {
 }
 
 describe('shared recall kernel', () => {
+  it('asks a batching store once per plan and keeps the fused ranking identical', async () => {
+    const symbol = [document('a', 'symbol'), document('b', 'symbol')];
+    const fragments = [document('c', 'source-fragment'), document('a', 'source-fragment')];
+    const perView = fakeStore({ 'query|symbol': symbol, 'query|source-fragment': fragments });
+    const batchedCalls: Array<{ query: string; views: readonly SearchDocumentKind[]; limits: Record<string, number> }> = [];
+    const batched = {
+      searchSearchDocuments: vi.fn(),
+      searchSearchDocumentsByViews: vi.fn(async (_scope: RepositoryRevisionScope, query: string,
+        limits: Partial<Record<SearchDocumentKind, number>>, views: readonly SearchDocumentKind[]) => {
+        batchedCalls.push({ query, views, limits: limits as Record<string, number> });
+        const byView: Partial<Record<SearchDocumentKind, SearchDocumentRecord[]>> = {};
+        for (const view of views) byView[view] = (view === 'symbol' ? symbol : view === 'source-fragment' ? fragments : [])
+          .slice(0, limits[view] ?? 0);
+        return byView;
+      }),
+    } as unknown as Pick<IndexStore, 'searchSearchDocuments' | 'searchSearchDocumentsByViews'>;
+
+    const request = { scope, plans: [{ label: 'code-identity', query: 'query', weight: 1 }], limitPerView: 10 } as const;
+    const expected = await new RecallKernel(perView.store).recall(request);
+    const actual = await new RecallKernel(batched).recall(request);
+
+    expect(batchedCalls).toHaveLength(1);
+    expect(batchedCalls[0]!.views).toEqual([...recallViews]);
+    expect(batchedCalls[0]!.limits).toEqual({ symbol: 10, 'source-fragment': 10, summary: 10 });
+    expect(batched.searchSearchDocuments).not.toHaveBeenCalled();
+    // Switching a projection onto the batched query must not move its ranking.
+    expect(actual.documents.map((item) => item.searchDocumentId)).toEqual(expected.documents.map((item) => item.searchDocumentId));
+    expect([...actual.fusedRanks]).toEqual([...expected.fusedRanks]);
+    expect([...actual.provenance]).toEqual([...expected.provenance]);
+    expect(actual.channels).toEqual(expected.channels);
+  });
+
   it('fuses one plan across every view in plan-major channel order', async () => {
     const { store, calls } = fakeStore({
       'query|symbol': [document('a', 'symbol'), document('b', 'symbol')],

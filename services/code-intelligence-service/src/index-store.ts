@@ -146,6 +146,19 @@ export interface IndexStore {
     kind?: SearchDocumentRecord['kind'],
     signal?: AbortSignal,
   ): Promise<SearchDocumentRecord[]>;
+  /**
+   * Optional batched variant of the same lookup: every requested view is served
+   * by one embedding, two candidate statements and one hydration statement,
+   * which is what keeps a multi-repository recall inside the connection pool.
+   * Results are identical to one `searchSearchDocuments` call per view.
+   */
+  searchSearchDocumentsByViews?(
+    scope: RepositoryRevisionScope & { projectId?: string },
+    query: string,
+    limits: Partial<Record<SearchDocumentRecord['kind'], number>>,
+    views: readonly SearchDocumentRecord['kind'][],
+    signal?: AbortSignal,
+  ): Promise<Partial<Record<SearchDocumentRecord['kind'], SearchDocumentRecord[]>>>;
 
   /** Atomically flips the repository's active pointer after a completed build. */
   activateRevision(

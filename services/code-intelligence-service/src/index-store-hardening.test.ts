@@ -379,9 +379,15 @@ describe('SeekDbIndexStore pre-write validation', () => {
       database: 'code_intelligence_test' }, pool);
 
     expect(listeners).toHaveLength(1);
-    const query = vi.fn(async () => [[{}]]);
+    const query = vi.fn();
     listeners[0]!({ query });
-    expect(query).toHaveBeenCalledWith(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`);
+    // The pool event hands over the callback-style connection, so the statement
+    // is issued with a callback rather than awaited as a promise.
+    expect(query.mock.calls[0]![0]).toBe(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`);
+    expect(typeof query.mock.calls[0]![1]).toBe('function');
+    const promisified = vi.fn(async () => undefined);
+    listeners[0]!({ promise: () => ({ query: promisified }) });
+    expect(promisified).toHaveBeenCalledWith(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`);
     // A pool without an event emitter (test doubles) must not break construction.
     expect(() => new SeekDbIndexStore({ host: 'localhost', port: 2881, user: 'root', password: '',
       database: 'code_intelligence_test' }, { query: vi.fn() } as unknown as Pool)).not.toThrow();

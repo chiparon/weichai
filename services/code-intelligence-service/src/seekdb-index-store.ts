@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { queryRows } from './abortable-query.js';
+import { seekDbQueryTimeoutMs } from './seekdb-timeouts.js';
 import mysql, {
   type Pool,
   type PoolConnection,
@@ -415,8 +416,9 @@ async function withTransaction<T>(pool: Pool, operation: (connection: PoolConnec
     const [rows] = await connection.query<RowDataPacket[]>('SELECT @@session.ob_query_timeout AS query_timeout');
     previousTimeout = Number(rows[0]!.query_timeout);
     // Bulk index writes also pay for secondary indexes and log flushes at COMMIT.
-    if (previousTimeout > 0 && previousTimeout < 60_000_000) {
-      await connection.query('SET SESSION ob_query_timeout = 60000000');
+    const ceiling = seekDbQueryTimeoutMs * 1_000;
+    if (previousTimeout > 0 && previousTimeout < ceiling) {
+      await connection.query('SET SESSION ob_query_timeout = ?', [ceiling]);
       timeoutChanged = true;
     }
     await connection.beginTransaction();
@@ -517,6 +519,18 @@ export class SeekDbIndexStore implements IndexStore {
       : new HashSearchEmbeddingProvider(this.#vectorDimension));
     this.#legacyHashCompatible = !config.embedding && !config.embeddingProvider;
     this.#persistEmbeddings = Boolean(config.embedding);
+    // Every pooled session gets the raised ceiling: a recall can wait behind an
+    // indexing COMMIT, and the 10 s server default then fails the whole search
+    // ("query has reached the maximum query timeout").  Registered before the
+    // first statement, so no query runs under the default.
+    const registerSessionCeiling = (this.pool as unknown as {
+      on?: (event: 'connection', listener: (connection: PoolConnection) => void) => unknown;
+    }).on;
+    if (typeof registerSessionCeiling === 'function') {
+      registerSessionCeiling.call(this.pool, 'connection', (connection: PoolConnection) => {
+        void connection.query(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`).catch(() => undefined);
+      });
+    }
     this.#embeddingIdentity = createHash('sha256').update(JSON.stringify({
       dimension: this.#vectorDimension,
       provider: config.embedding ? 'model-v1' : config.embeddingProvider ? config.embeddingProvider.identity : 'hash-v1',

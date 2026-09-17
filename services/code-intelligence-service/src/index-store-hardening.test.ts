@@ -11,6 +11,7 @@ import { AnalysisCoordinator, type StructuralScanner } from './analysis-coordina
 import { InMemoryIndexStore } from './index-store.js';
 import { RepositoryRegistry } from './repository-registry.js';
 import { SeekDbIndexStore, seekDbIndexStoreInternals } from './seekdb-index-store.js';
+import { seekDbQueryTimeoutMs } from './seekdb-timeouts.js';
 import { SeekDbProjection } from './seekdb-projection.js';
 
 const hash = (character: string): string => character.repeat(64);
@@ -364,6 +365,26 @@ describe('SeekDbIndexStore pre-write validation', () => {
     query.mockRejectedValueOnce(new Error('write failed'));
     await expect(seekDbIndexStoreInternals.insertBatches(connection, 'INSERT INTO test (value)', rows))
       .rejects.toThrow('write failed');
+  });
+
+  it('raises the SeekDB session ceiling on every pooled connection', async () => {
+    // The 10 s server default is reached when a recall waits behind an indexing
+    // transaction, so each pooled connection is raised before its first query.
+    const listeners: Array<(connection: unknown) => void> = [];
+    const pool = { on: vi.fn((event: string, listener: (connection: unknown) => void) => {
+      if (event === 'connection') listeners.push(listener);
+      return pool;
+    }), query: vi.fn(), getConnection: vi.fn(), end: vi.fn() } as unknown as Pool;
+    new SeekDbIndexStore({ host: 'localhost', port: 2881, user: 'root', password: '',
+      database: 'code_intelligence_test' }, pool);
+
+    expect(listeners).toHaveLength(1);
+    const query = vi.fn(async () => [[{}]]);
+    listeners[0]!({ query });
+    expect(query).toHaveBeenCalledWith(`SET SESSION ob_query_timeout = ${seekDbQueryTimeoutMs * 1_000}`);
+    // A pool without an event emitter (test doubles) must not break construction.
+    expect(() => new SeekDbIndexStore({ host: 'localhost', port: 2881, user: 'root', password: '',
+      database: 'code_intelligence_test' }, { query: vi.fn() } as unknown as Pool)).not.toThrow();
   });
 
   it('rejects malformed structural and search projection input before issuing a database query', async () => {

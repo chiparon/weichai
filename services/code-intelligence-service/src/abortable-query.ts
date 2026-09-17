@@ -1,4 +1,5 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
+import { seekDbClientQueryTimeoutMs } from './seekdb-timeouts.js';
 
 /** Cancel pool waits as well as active SQL, without returning a busy connection to the pool. */
 export async function queryRows<T extends RowDataPacket[]>(pool: Pool, sql: string, values: unknown[], signal?: AbortSignal): Promise<T> {
@@ -17,7 +18,7 @@ export async function queryRows<T extends RowDataPacket[]>(pool: Pool, sql: stri
       connection = acquired;
       if (aborted) { acquired.release(); return; }
       try {
-        const [rows] = await acquired.query<T>({ sql, timeout: 10_000 }, values);
+        const [rows] = await acquired.query<T>({ sql, timeout: seekDbClientQueryTimeoutMs }, values);
         resolve(rows);
       } catch (error) {
         reject(error);

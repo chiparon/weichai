@@ -5,6 +5,7 @@ import type { IndexStore } from './index-store.js';
 import { projectPlanHash } from './project-analysis.js';
 import type { ModuleReranker } from './module-reranker.js';
 import { RecallKernel } from './recall-kernel.js';
+import { moduleSearchBudgetMs } from './seekdb-timeouts.js';
 
 export interface ModuleMatchRequest {
   target: ModuleTarget;
@@ -47,7 +48,7 @@ async function mapBounded<T, R>(items: readonly T[], concurrency: number, work: 
 /** Module metadata is fetched only for recalled IDs; no full structural index is hydrated. */
 export async function searchModules(store: IndexStore, request: ModuleMatchRequest, parentSignal?: AbortSignal, reranker?: ModuleReranker, recall = new RecallKernel(store)): Promise<SearchCandidate[]> {
   const controller = new AbortController();
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000), ...(parentSignal ? [parentSignal] : [])]);
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(moduleSearchBudgetMs), ...(parentSignal ? [parentSignal] : [])]);
   try {
     return await searchModuleSnapshot(store, request, signal, reranker, recall);
   } finally {

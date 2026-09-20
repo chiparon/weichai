@@ -54,6 +54,11 @@ await esbuild.build({
 });
 
 const nativeModulesDirectory = path.join(extensionOutputDirectory, 'node_modules');
+for (const [source, output] of [
+  [path.join(workspaceDirectory, 'services/adaptation-service/src/server.ts'), 'adaptation-server.cjs'],
+  [path.join(extensionDirectory, 'src/workspace-compile.ts'), 'workspace-compile.cjs'],
+]) await esbuild.build({ entryPoints: [source], bundle: true, outfile: path.join(extensionOutputDirectory, output),
+  format: 'cjs', platform: 'node', target: 'node18', external: nativeRuntimePackages, logLevel: 'info' });
 const indexerRequire = createRequire(path.join(workspaceDirectory, 'services', 'code-indexer', 'package.json'));
 
 /**

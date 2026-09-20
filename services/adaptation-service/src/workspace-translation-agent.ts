@@ -1,4 +1,5 @@
 import type { WorkspaceTranslationPlan, WorkspaceTranslationRequest } from "@forexplore/contracts";
+import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 import {
   completeWithDeepSeekTools, type DeepSeekClientOptions, type DeepSeekToolCompletion,
   type DeepSeekToolDefinition, type DeepSeekToolMessage,
@@ -104,8 +105,8 @@ export function validateWorkspaceTranslationRequest(value: unknown): asserts val
     !input.writeFiles.length || input.writeFiles.length > 128 || input.workspaceFiles.length > 256 ||
     !Array.isArray(input.context) || input.context.length > 256) throw new Error("Invalid workspace translation request.");
   if (input.evidenceScopes !== undefined) {
-    if (!Array.isArray(input.evidenceScopes) || input.evidenceScopes.length > 8) {
-      throw new Error("At most eight history revisions may be in evidence scope.");
+    if (!Array.isArray(input.evidenceScopes) || input.evidenceScopes.length > MAX_RETRIEVAL_SCOPES) {
+      throw new Error(`At most ${MAX_RETRIEVAL_SCOPES} history revisions may be in evidence scope.`);
     }
     const scopes = new Set<string>();
     for (const raw of input.evidenceScopes) {

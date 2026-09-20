@@ -8,6 +8,11 @@
     "services/*"
   ],
   "scripts": {
+    "dev:extension:enterprise": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-enterprise-extension.ps1",
+    "dataset:enterprise": "python experiments/enterprise-history/build.py --git-history",
+    "test:enterprise": "python -m unittest discover -s experiments/enterprise-history -v",
+    "evaluate:enterprise": "python experiments/enterprise-history/benchmark.py",
+    "evaluate:enterprise:recast": "tsx scripts/evaluate-enterprise-history.mts",
     "dev": "npm run dev:extension",
     "dev:code-workbench": "tsx scripts/serve-code-workbench.mts",
     "services:up": "node scripts/start-recast-services.mjs",

@@ -33,6 +33,15 @@ const targetModule = {
 };
 
 describe('module translation scope', () => {
+  it('widens read-only evidence without widening target writes and refuses scope overflow', () => {
+    const evidenceScopes = Array.from({ length: 9 }, (_, i) => ({ repositoryId: `history-${i}`, analysisRevision: 'v1' }));
+    const input = { workspaceRoot, targetModule, candidates: [candidate()], requirement: 'upload', evidenceScopes };
+    const scope = buildModuleTranslationScope(input);
+    expect(scope.evidenceScopes).toHaveLength(10);
+    expect(scope.profile.writeFiles).toEqual(targetModule.sourceFiles);
+    expect(scope.context.some(c => c.content.includes('history-8@v1'))).toBe(true);
+    expect(() => buildModuleTranslationScope({ ...input, evidenceScopes: Array.from({ length: 65 }, (_, i) => ({ repositoryId: `history-${i}`, analysisRevision: 'v1' })) })).toThrow('64');
+  });
   it('derives the write set from the target module and the context from history candidates', () => {
     const scope = buildModuleTranslationScope({
       workspaceRoot,

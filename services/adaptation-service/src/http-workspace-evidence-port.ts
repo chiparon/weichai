@@ -1,4 +1,5 @@
 import type { ContextPacket, TaskRetrievalRequest, WorkspaceEvidenceScope } from "@forexplore/contracts";
+import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 import type {
   WorkspaceEvidenceExcerpt,
   WorkspaceEvidencePort,
@@ -47,7 +48,8 @@ export class HttpWorkspaceEvidencePort implements WorkspaceEvidencePort {
   }
 
   async query(request: WorkspaceEvidenceQueryRequest, signal?: AbortSignal): Promise<WorkspaceEvidenceResult> {
-    const scopes = request.scopes.slice(0, 8);
+    if (request.scopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`At most ${MAX_RETRIEVAL_SCOPES} evidence scopes are supported; no repositories were dropped.`);
+    const scopes = request.scopes;
     if (scopes.length === 0) return { evidence: [], characters: 0, notes: ["No history revision is in scope."] };
     const body: TaskRetrievalRequest = {
       requestId: `evidence-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,

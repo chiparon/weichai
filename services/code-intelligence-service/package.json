@@ -9,6 +9,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./task-reranker": "./src/task-reranker.ts",
     "./module-hierarchy-planner": "./src/module-hierarchy-planner.ts"
   },
   "types": "./src/index.ts",

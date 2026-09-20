@@ -30,6 +30,8 @@ import { LocalModuleReranker, type ModuleRerankerConfig } from './module-reranke
 import { ProjectAnalysisCoordinator, type ProjectAnalysisOptions } from './project-analysis.js';
 import { TaskRetrievalService } from './task-retrieval.js';
 import type { QueryExpansionPort } from './query-expansion.js';
+import type { TaskCandidateReranker } from './task-reranker.js';
+import type { ModuleReranker } from './module-reranker.js';
 
 export { LocalModuleReranker, type ModuleReranker, type ModuleRerankerConfig } from './module-reranker.js';
 
@@ -88,6 +90,8 @@ export interface CreateCodeIntelligenceRuntimeOptions {
   store?: IndexStore;
   seekdb?: SeekDbIndexStoreConfig;
   moduleReranker?: ModuleRerankerConfig;
+  taskCandidateReranker?: TaskCandidateReranker;
+  moduleCandidateReranker?: ModuleReranker;
   languageRegistry?: LanguageRegistry;
   scanner?: StructuralScanner;
   projection?: SearchProjection;
@@ -137,7 +141,7 @@ export async function createCodeIntelligenceRuntime(
   if (options.store && options.seekdb) {
     throw new Error('Choose an injected IndexStore or a SeekDB configuration, not both.');
   }
-  const moduleReranker = options.moduleReranker ? new LocalModuleReranker(options.moduleReranker) : undefined;
+  const moduleReranker = options.moduleCandidateReranker ?? (options.moduleReranker ? new LocalModuleReranker(options.moduleReranker) : undefined);
   const ownsStore = !options.store;
   const store: IndexStore = options.store ?? (
     options.seekdb ? new SeekDbIndexStore(options.seekdb) : new InMemoryIndexStore()
@@ -166,7 +170,7 @@ export async function createCodeIntelligenceRuntime(
   });
   const moduleImplementationSearch = new ModuleImplementationSearchService(store, moduleReranker);
   const projectAnalysis = new ProjectAnalysisCoordinator({ store, ...options.projectAnalysis });
-  const taskRetrieval = new TaskRetrievalService(store, options.queryExpansion === undefined ? {} : { expansion: options.queryExpansion });
+  const taskRetrieval = new TaskRetrievalService(store, { expansion: options.queryExpansion, reranker: options.taskCandidateReranker });
   const coordinator = new AnalysisCoordinator(
     registry,
     store,

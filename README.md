@@ -15,6 +15,8 @@ The [guochuang implementation guide](docs/guochuang-implementation.zh-CN.md) cov
 evidence handoff, multi-file generation, behavioral verification, and labeled retrieval evaluation.
 The [module translation guide](docs/module-pipeline-repair.zh-CN.md) covers selecting a retrieved module,
 preparing its file scope, running translation and write-back, and reviewing or rolling back the changes.
+The [enterprise history benchmark](docs/enterprise-history-benchmark.zh-CN.md) provides eight connected,
+executable business repositories, synthetic version history, bilingual tasks and reproducible retrieval controls.
 
 ## Repository layout
 

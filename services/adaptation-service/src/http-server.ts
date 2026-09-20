@@ -1,4 +1,6 @@
 import { modelSettingsScope, requestModelSettings } from './model-request';
+import { isLocalIdeRequest } from './model-request';
+import { parseRetrievalRerank, rankRetrieval, type RetrievalRerankInput } from './retrieval-rerank';
 import { modelCredentialScope, requestModelCredential } from './model-credential';
 import {
   createServer,
@@ -33,6 +35,7 @@ export interface StaticAnalysisSnapshotStore {
 }
 
 export interface HttpServerOptions {
+  retrievalRerank?: (input: RetrievalRerankInput, signal: AbortSignal) => Promise<string[]>;
   adapter: CodeAdaptationPort;
   /** Optional read-only module-planning endpoint. It has no write-back path. */
   architecturePort?: RepositoryArchitecturePort;
@@ -352,6 +355,24 @@ export function createHttpServer(options: HttpServerOptions): Server {
     }
 
     try {
+      if (request.method === 'POST' && request.url === '/v1/retrieval-rerank') {
+        if (!isLocalIdeRequest(request)) throw new HttpError(403, 'Reranking is available only to the local IDE host.');
+        requireJson(request);
+        let input: RetrievalRerankInput;
+        try { input = parseRetrievalRerank(await readBody(request)); }
+        catch { throw new HttpError(400, 'Invalid bounded rerank request.'); }
+        const order = await (options.retrievalRerank ?? rankRetrieval)(input, requestSignal(request));
+        json(response, 200, { order, provider: modelSettingsScope.getStore()?.provider ?? 'deepseek',
+          model: modelSettingsScope.getStore()?.model ?? 'environment' }, options.corsOrigin);
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/v1/capabilities') {
+        json(response, 200, { service: 'recast-adaptation', version: 1, retrievalRerank: true,
+          semanticPlanning: Boolean(options.semanticArchitecturePort), moduleHierarchy: Boolean(options.moduleHierarchyPlanner),
+          workspaceTranslation: Boolean(options.workspaceTranslation),
+          ...(options.workspaceTranslation ? { workspaceRoot: options.workspaceTranslation.runtime.configuration().workspaceRoot } : {}) }, options.corsOrigin);
+        return;
+      }
       if (request.url?.startsWith("/v1/workspace-translations")) {
         const translation = options.workspaceTranslation;
         if (!translation) throw new HttpError(404, "Workspace translation is not configured.");

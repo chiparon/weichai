@@ -389,7 +389,7 @@ export function compileTaskContextAdaptive(request: TaskRetrievalRequest, input:
   }
   for (const edge of input.relations) {
     packet.relations.push(edge);
-    const cost = contextTokenCount(`- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`);
+    const cost = contextTokenCount(`- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetRepositoryId ? `${edge.targetRepositoryId}@${edge.targetAnalysisRevision}: ` : ''}${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`);
     if (Number.isFinite(maxTokens) && budgetUsed() + cost > maxTokens) { packet.relations.pop(); omitted.push(edge.dependencyEdgeId); continue; }
     extraTokens += cost;
   }

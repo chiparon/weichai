@@ -1,5 +1,7 @@
 import { createModelCredentialProvider, modelCredentialId, modelKeyRefusalReason, validateModelKey, saveWithModelCredential } from './model-credential';
 import { setModelCredentialProvider } from './local-fetch';
+import { BackendProcess, type BackendLaunchConfiguration } from './backend-process';
+import { ConfiguredModelReranker } from './model-reranker';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 import { prepareModuleTranslationScope } from './module-translation-handoff';
 import { localFetch } from './local-fetch';
@@ -97,8 +99,9 @@ interface LastCheckpoint {
   targetPath: string;
 }
 
+let activeBackend: BackendProcess | undefined;
 const workspaceTranslation = new WorkspaceTranslationHost(() => ({ url: loadSettings().adaptationApiUrl,
-  token: process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }),
+  token: activeBackend?.translationToken ?? process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }),
   (url, init) => localFetch(String(url), init));
 let moduleSelectionVersion = 0;
 function invalidateModuleTranslation(): void { moduleSelectionVersion++; workspaceTranslation.clearModuleScope(); }
@@ -121,7 +124,19 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const output = vscode.window.createOutputChannel('RECAST');
   activeOutput = output;
-  const services = new ServiceManager(output);
+  const backend = new BackendProcess(() => {
+    const configuration = vscode.workspace.getConfiguration('forexplore');
+    const workspaceRoot = activeRun?.workspaceFolder.uri.fsPath ?? selectedTargetWorkspaceFolders()[0]?.uri.fsPath
+      ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) throw new Error('请先打开目标工程。');
+    return { url: loadSettings().adaptationApiUrl, extensionPath: context.extensionPath, workspaceRoot,
+      trusted: vscode.workspace.isTrusted, autoStart: configuration.get<boolean>('backend.autoStart', true),
+      semanticPort: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
+      compileCommand: configuration.inspect<BackendLaunchConfiguration['compileCommand']>('backend.compileCommand')?.globalValue,
+      verification: configuration.inspect<BackendLaunchConfiguration['verification']>('backend.verification')?.globalValue };
+  }, message => output.appendLine(`[RECAST] ${message}`));
+  activeBackend = backend;
+  const services = new ServiceManager(output, backend);
   const health = new RepositoryHealthCheck();
   let codeIntelligence: CodeIntelligenceHost;
   try {
@@ -130,9 +145,13 @@ export function activate(context: vscode.ExtensionContext): void {
       // an explicitly non-production VS Code development/test host.
       allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
     });
+    const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure());
+    runtimeOptions.taskCandidateReranker = reranker;
+    runtimeOptions.moduleCandidateReranker = reranker;
     codeIntelligence = new CodeIntelligenceHost({
       runtimeOptions,
       planProject: async (scope) => {
+        await backend.ensure();
         await codeIntelligence.startSemanticQueryServer({
           port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
           bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
@@ -140,7 +159,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return requestSemanticModuleMigrationProposal(loadSettings().adaptationApiUrl, scope, undefined, AbortSignal.timeout(300_000));
       },
       hierarchyPlanner: new HttpModuleHierarchyPlanner(() =>
-        process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() || loadSettings().adaptationApiUrl),
+        process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() || loadSettings().adaptationApiUrl,
+        async (url, init) => { await backend.ensure(); return localFetch(url, init); }),
       onChange: () => { void publishProjectView(codeIntelligence).catch((error) => output.appendLine(String(error))); },
       modelKeyRefusal: () => modelKeyRefusalReason(context.secrets, loadSettings().adaptationApiUrl, loadSettings().llm),
       onModelRefusal: (reason) => reportModelRefusal(context, reason),
@@ -183,6 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
       publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: await codeIntelligence.presentation() });
     },
     semanticPlan: async ({ workspaceFolder, objective, immutableConstraints }) => {
+      await backend.ensure();
       const scope = await codeIntelligence.activeScopeForPath(workspaceFolder.uri.fsPath);
       const projectId = await codeIntelligence.selectedProjectForPath(workspaceFolder.uri.fsPath);
       await codeIntelligence.startSemanticQueryServer({
@@ -403,8 +424,10 @@ function ensureCodeIntelligenceStarted(
   output: vscode.OutputChannel,
 ): Promise<void> {
   codeIntelligenceStartup ??= Promise.all([
-    host.services.refresh(),
-    synchronizeCodeIntelligence(host.codeIntelligence),
+    host.services.ensureStarted().catch(error => {
+      output.appendLine(`[RECAST] ${errorMessage(error, '后端启动失败')}`);
+      publish({ type: 'SERVICE_STATUS', status: host.services.serviceStatus });
+    }).then(() => synchronizeCodeIntelligence(host.codeIntelligence)).then(() => host.services.setRetrievalReady(true)),
     host.codeIntelligence.startSemanticQueryServer({
       port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
       bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
@@ -414,6 +437,7 @@ function ensureCodeIntelligenceStarted(
     .then(() => undefined)
     .catch((error) => {
       output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
+      host.services.setRetrievalReady(false);
       codeIntelligenceStartup = undefined;
     });
   return codeIntelligenceStartup;
@@ -503,6 +527,8 @@ async function handlePanelMessage(
     case 'WORKSPACE_TRANSLATION': {
       const panel = TranslationPanel.current;
       if (!vscode.workspace.isTrusted) { panel?.post({ type: 'WORKSPACE_TRANSLATION_ERROR', requestId: message.requestId, message: '请先信任工作区。' }); return; }
+      try { await host.services.ensureStarted(); }
+      catch (error) { panel?.post({ type: 'WORKSPACE_TRANSLATION_ERROR', requestId: message.requestId, message: errorMessage(error, '后端启动失败') }); return; }
       if (message.action === 'start' && message.moduleScopeId) {
         try { assertModuleDocumentsSaved(requireActiveRun()); }
         catch (error) { panel?.post({ type: 'WORKSPACE_TRANSLATION_ERROR', requestId: message.requestId, message: errorMessage(error, '请先保存模块文件。') }); return; }
@@ -912,8 +938,10 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
       await assertTargetUnchanged(run);
       assertModuleDocumentsSaved(run);
       const selectionVersion = moduleSelectionVersion;
+      await host.services.ensureStarted();
+      const evidenceScopes = await host.codeIntelligence.historyEvidenceScopes(candidate.sourceModule!);
       const scope = await prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
-        target: run.target, candidate, requirement: run.requirement, decisionNotes });
+        target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes });
       if (activeRun !== run || selectionVersion !== moduleSelectionVersion) {
         // A silent return here leaves the panel waiting for a reply that will
         // never come, which is indistinguishable from a running translation.

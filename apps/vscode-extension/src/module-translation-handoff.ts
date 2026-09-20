@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import type { ModuleTarget, SearchCandidate } from '@forexplore/contracts';
+import type { ModuleTarget, SearchCandidate, WorkspaceEvidenceScope } from '@forexplore/contracts';
 import { buildModuleTranslationScope } from './module-translation-scope';
 import type { WorkspaceTranslationModuleScope } from './workspace-translation-host';
 
@@ -10,6 +10,7 @@ export async function prepareModuleTranslationScope(input: {
   workspaceRoot: string; target: ModuleTarget; candidate: SearchCandidate;
   requirement: string; decisionNotes: string;
   includeCandidateContext?: boolean;
+  evidenceScopes?: WorkspaceEvidenceScope[];
 }): Promise<WorkspaceTranslationModuleScope> {
   const { target, candidate } = input;
   if (target.kind !== 'module' || !target.module || candidate.kind !== 'module' || !candidate.sourceModule) {
@@ -21,6 +22,7 @@ export async function prepareModuleTranslationScope(input: {
     targetModule: { ...target.module, name: target.name, language: target.language },
     requirement: [input.requirement.trim(), input.decisionNotes.trim()].filter(Boolean).join('\n补充约束：'),
     includeCandidateContext: input.includeCandidateContext,
+    evidenceScopes: input.evidenceScopes,
     candidates: [{ repositoryId: source.repositoryId, repositoryName: candidate.repository,
       analysisRevision: source.analysisRevision, projectId: source.projectId, moduleId: source.moduleId,
       name: source.name, purpose: source.purpose, language: candidate.language,

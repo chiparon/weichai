@@ -717,6 +717,20 @@ it('retrieves the selected historical snapshot and visible references without wa
   host.dispose();
 });
 
+it('pins all nine visible history repositories for module evidence and rejects hidden candidates', async () => {
+  const histories = await Promise.all(Array.from({ length: 9 }, (_, i) => temporaryRepository(`evidence-${i}`)));
+  const runtime = createRuntime();
+  const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
+  try {
+    await host.synchronize({ repositories: histories.map(localPath => ({ localPath, role: 'history' as const })) });
+    const selected = await host.activeScopeForPath(histories[0]!);
+    const scopes = await host.historyEvidenceScopes(selected);
+    expect(scopes).toHaveLength(9); expect(scopes[0]).toEqual(selected);
+    await expect(host.historyEvidenceScopes({ ...selected, repositoryId: 'hidden' })).rejects.toThrow('参考范围');
+    await expect(host.historyEvidenceScopes({ ...selected, analysisRevision: 'missing' })).rejects.toThrow('不可查询');
+  } finally { host.dispose(); }
+});
+
 it('rejects invisible repositories and mismatched projects before starting task retrieval', async () => {
   const target = await temporaryRepository('task-scope');
   const runtime = createRuntime();

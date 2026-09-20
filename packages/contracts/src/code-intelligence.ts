@@ -231,6 +231,9 @@ export interface DependencyEdgeRecord extends RepositoryRevisionScope {
   targetSymbolKey?: SymbolKey;
   sourceRelativePath: string;
   targetRelativePath?: string;
+  /** Present only for a dependency resolved across explicitly authorized snapshots. */
+  targetRepositoryId?: RepositoryId;
+  targetAnalysisRevision?: AnalysisRevisionId;
   targetReference?: string;
   internal: boolean;
   resolution: IndexDependencyResolution;

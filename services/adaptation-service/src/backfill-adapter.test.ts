@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FilePatch } from "@forexplore/contracts";
@@ -148,6 +149,41 @@ describe("BackfillAdapter", () => {
     const lock = path.join(root, ".forexplore", "locks", "backfill.lock");
     await mkdir(lock, { recursive: true });
     await writeFile(path.join(lock, "owner"), "another-process", "utf8");
+
+    await expect(adapter.apply([modified("src/Service.cs", original, "new implementation")]))
+      .rejects.toThrow("backfill transaction is active");
+    expect(await readFile(target, "utf8")).toBe(original);
+  });
+
+  it("reclaims a lease whose holder process on this host has exited", async () => {
+    const original = "old implementation";
+    const target = path.join(root, "src", "Service.cs");
+    await writeFile(target, original);
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+    const lock = path.join(root, ".forexplore", "locks", "backfill.lock");
+    await mkdir(lock, { recursive: true });
+    await writeFile(
+      path.join(lock, "owner"),
+      JSON.stringify({ token: "crashed", pid: deadPid, hostname: hostname(), acquiredAt: new Date(0).toISOString() }),
+      "utf8",
+    );
+
+    await adapter.apply([modified("src/Service.cs", original, "new implementation")]);
+
+    expect(await readFile(target, "utf8")).toBe("new implementation");
+  });
+
+  it("keeps a lease held by a live process", async () => {
+    const original = "old implementation";
+    const target = path.join(root, "src", "Service.cs");
+    await writeFile(target, original);
+    const lock = path.join(root, ".forexplore", "locks", "backfill.lock");
+    await mkdir(lock, { recursive: true });
+    await writeFile(
+      path.join(lock, "owner"),
+      JSON.stringify({ token: "live", pid: process.pid, hostname: hostname(), acquiredAt: new Date().toISOString() }),
+      "utf8",
+    );
 
     await expect(adapter.apply([modified("src/Service.cs", original, "new implementation")]))
       .rejects.toThrow("backfill transaction is active");

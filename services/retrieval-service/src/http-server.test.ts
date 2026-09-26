@@ -21,7 +21,7 @@ function store(): SearchStore {
   return {
     ping: vi.fn(async () => undefined),
     initialize: vi.fn(async () => undefined),
-    clear: vi.fn(async () => undefined),
+    deleteExcept: vi.fn(async () => 0),
     upsert: vi.fn(async () => undefined),
     refreshIndex: vi.fn(async () => undefined),
     semanticSearch: vi.fn(async () => []),

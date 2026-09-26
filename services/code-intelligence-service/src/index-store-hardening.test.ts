@@ -172,6 +172,24 @@ describe('revision store hardening', () => {
     expect((await store.getRepository(active.repositoryId))?.activeRevision).toBe(active.analysisRevision);
   });
 
+  it('deletes a superseded revision with its contents but refuses the active one', async () => {
+    const store = new InMemoryIndexStore();
+    await store.putRepository(repository());
+    const superseded = structural();
+    await persistReady(store, superseded);
+    await store.activateRevision(superseded);
+    const active = structural(superseded.repositoryId, 'second', hash('e'));
+    await persistReady(store, active);
+    await store.activateRevision(active);
+
+    await expect(store.deleteRevision(active)).rejects.toThrow('active analysis revision');
+    await store.deleteRevision(superseded);
+    expect(await store.getRevision(superseded)).toBeNull();
+    expect(await store.getStructuralIndex(superseded)).toBeNull();
+    expect((await store.listRevisions(superseded.repositoryId)).map((revision) => revision.analysisRevision)).toEqual(['second']);
+    expect(await store.getStructuralIndex(active)).toMatchObject({ analysisRevision: 'second' });
+  });
+
   it('rejects malformed structural child paths/source text before replacing the revision contents', async () => {
     const store = new InMemoryIndexStore();
     const index = structural();

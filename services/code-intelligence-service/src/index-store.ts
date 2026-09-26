@@ -111,6 +111,11 @@ export interface IndexStore {
   putRevision(revision: AnalysisRevisionRecord): Promise<void>;
   getRevision(scope: RepositoryRevisionScope, signal?: AbortSignal): Promise<AnalysisRevisionRecord | null>;
   listRevisions(repositoryId: RepositoryId): Promise<AnalysisRevisionRecord[]>;
+  /**
+   * Deletes one non-active revision and every record scoped to it. Refuses the
+   * repository's active revision; retention policy belongs to the caller.
+   */
+  deleteRevision(scope: RepositoryRevisionScope): Promise<void>;
 
   /** Replaces only records in this revision; it never clears another repository. */
   putStructuralIndex(index: StructuralIndex, sourceTexts?: ReadonlyMap<string, string>): Promise<void>;
@@ -564,6 +569,15 @@ export class InMemoryIndexStore implements IndexStore {
     for (const key of [...this.#contents.keys()]) {
       if (key.startsWith(prefix)) this.#contents.delete(key);
     }
+  }
+
+  async deleteRevision(scope: RepositoryRevisionScope): Promise<void> {
+    if (this.#repositories.get(scope.repositoryId)?.activeRevision === scope.analysisRevision) {
+      throw new Error('Cannot delete the active analysis revision.');
+    }
+    const key = scopeKey(scope);
+    this.#revisions.delete(key);
+    this.#contents.delete(key);
   }
 
   async putRevision(revision: AnalysisRevisionRecord): Promise<void> {

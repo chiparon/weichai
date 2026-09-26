@@ -157,8 +157,21 @@ export class SeekDbStore implements SearchStore {
     `);
   }
 
-  async clear(): Promise<void> {
-    await this.pool.query(`DELETE FROM ${this.qualifiedTable}`);
+  async deleteExcept(keepIds: readonly string[]): Promise<number> {
+    const keep = new Set(keepIds);
+    const [rows] = await this.pool.query<RowDataPacket[]>(`SELECT id FROM ${this.qualifiedTable}`);
+    const stale = rows
+      .map((row) => (Buffer.isBuffer(row.id) ? row.id.toString('utf8') : String(row.id)))
+      .filter((id) => !keep.has(id));
+    let deleted = 0;
+    for (let offset = 0; offset < stale.length; offset += 500) {
+      const [result] = await this.pool.query<ResultSetHeader>(
+        `DELETE FROM ${this.qualifiedTable} WHERE id IN (?)`,
+        [stale.slice(offset, offset + 500)],
+      );
+      deleted += result.affectedRows;
+    }
+    return deleted;
   }
 
   async upsert(documents: Array<IndexedCodeDocument & { embedding: number[] }>): Promise<void> {

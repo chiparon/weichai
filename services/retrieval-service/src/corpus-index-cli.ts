@@ -40,10 +40,6 @@ try {
   if (documents.length === 0) {
     throw new Error(`No code symbols were extracted from ${corpusRoots.join(', ')}.`);
   }
-  if (replace) {
-    await store.clear();
-    console.log(`Cleared ${config.seekdb.database}.${config.seekdb.table}.`);
-  }
   const batchSize = 32;
   for (let offset = 0; offset < documents.length; offset += batchSize) {
     const batch = documents.slice(offset, offset + batchSize);
@@ -61,6 +57,12 @@ try {
       }),
     );
     console.log(`Indexed ${Math.min(offset + batch.length, documents.length)}/${documents.length}`);
+  }
+  // Replace only after every new document is stored, so a failed run keeps the
+  // previous corpus and readers never see an empty table.
+  if (replace) {
+    const deleted = await store.deleteExcept(documents.map((document) => document.id));
+    console.log(`Removed ${deleted} stale documents from ${config.seekdb.database}.${config.seekdb.table}.`);
   }
   await store.refreshIndex();
   console.log(`Indexed ${documents.length} extracted symbols.`);

@@ -12,6 +12,7 @@ coverage/
 .vscode-test-user/
 *.vsix
 .forexplore/
+backups/
 
 # Local environment files
 .env

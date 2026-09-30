@@ -20,7 +20,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { mkdirSync, openSync } from 'node:fs';
+import { mkdirSync, openSync, renameSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -32,6 +32,7 @@ const tools = process.env.FOREXPLORE_EMBEDDING_TOOLS ?? path.join(tmpdir(), 'rec
 const cache = process.env.FOREXPLORE_MODEL_CACHE ?? path.join(homedir(), '.cache', 'forexplore-model-cache');
 const logDir = process.env.RECAST_SERVICES_LOG_DIR ?? path.join(tmpdir(), 'recast-services');
 const waitMs = Number(process.env.RECAST_SERVICES_WAIT_MS ?? 180_000);
+const maxLogBytes = 10 * 1024 * 1024;
 
 const listening = (port) => new Promise((resolve) => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -50,10 +51,18 @@ async function waitFor(port, label) {
   return false;
 }
 
-/** Detached so the service outlives this command; logs go to a file, never a pipe. */
+/**
+ * Detached so the service outlives this command; logs go to a file, never a pipe.
+ * A log over 10 MiB moves to `<label>.log.1` (replacing the older one) first.
+ */
 function launch(label, script, env) {
   mkdirSync(logDir, { recursive: true });
   const log = path.join(logDir, `${label}.log`);
+  try {
+    if (statSync(log).size > maxLogBytes) renameSync(log, `${log}.1`);
+  } catch {
+    // No log yet, or it is still held open; keep appending.
+  }
   const handle = openSync(log, 'a');
   const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', handle, handle], cwd: process.cwd(),
     env: { ...process.env, ...env } });

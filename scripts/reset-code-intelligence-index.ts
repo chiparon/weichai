@@ -6,7 +6,7 @@ import { codeIntelligenceRuntimeOptionsFromEnvironment } from '../apps/vscode-ex
 
 const ownedTables = new Set(['repositories', 'analysis_revisions', 'projects', 'files', 'symbols',
   'dependency_edges', 'module_artifacts', 'search_documents', 'index_diagnostics',
-  'search_embedding_configuration', 'search_embedding_cache']);
+  'search_embedding_configuration', 'search_embedding_cache', 'schema_migrations']);
 
 async function main() {
   const { values } = parseArgs({ options: { database: { type: 'string' }, apply: { type: 'boolean' } } });

@@ -10,8 +10,11 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -20,6 +23,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
   ApplyResult,
@@ -81,6 +85,14 @@ interface RestoreFile {
 interface WorkspaceLock {
   path: string;
   token: string;
+}
+
+/** Contents of `backfill.lock/owner`; lets a later process prove the holder died. */
+interface LockOwner {
+  token: string;
+  pid: number;
+  hostname: string;
+  acquiredAt: string;
 }
 
 export class BackfillAdapter implements CodeBackfillPort {
@@ -370,10 +382,9 @@ export class BackfillAdapter implements CodeBackfillPort {
   }
 
   private persistCheckpoint(checkpoint: StoredCheckpoint): void {
-    writeFileSync(this.checkpointPath(checkpoint.id), JSON.stringify(checkpoint, null, 2), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    // A torn checkpoint would make the only copy of the pre-change content
+    // unreadable, so publish it with write-temp, fsync, rename.
+    durableReplace(this.checkpointPath(checkpoint.id), JSON.stringify(checkpoint, null, 2));
   }
 
   private acquireWorkspaceLock(): WorkspaceLock {
@@ -383,25 +394,17 @@ export class BackfillAdapter implements CodeBackfillPort {
       throw new Error("Backfill lock directory resolves outside the configured project root.");
     }
     const path = join(realLockRoot, "backfill.lock");
-    const token = randomUUID();
-    let created = false;
     try {
-      mkdirSync(path, { mode: 0o700 });
-      created = true;
-      writeFileSync(join(path, "owner"), token, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      return { path, token };
+      return createLock(path);
     } catch (error) {
-      // If creating the marker failed after mkdir, the empty directory is ours
-      // and can be cleaned safely. A non-empty/existing lock belongs to another
-      // process and must remain untouched.
-      const ownerPath = join(path, "owner");
-      if (created && existsSync(path) && !existsSync(ownerPath)) {
-        try {
-          rmSync(path, { force: true, recursive: true });
-        } catch {
-          // Preserve the lock when its ownership cannot be established.
-        }
+      if (!breakStaleLock(path)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Another backfill transaction is active or its lock is unavailable: ${detail}`);
       }
+    }
+    try {
+      return createLock(path);
+    } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Another backfill transaction is active or its lock is unavailable: ${detail}`);
     }
@@ -410,7 +413,7 @@ export class BackfillAdapter implements CodeBackfillPort {
   private releaseWorkspaceLock(lock: WorkspaceLock): void {
     const ownerPath = join(lock.path, "owner");
     try {
-      if (!existsSync(ownerPath) || readFileSync(ownerPath, "utf8") !== lock.token) return;
+      if (!existsSync(ownerPath) || readLockOwner(ownerPath)?.token !== lock.token) return;
       rmSync(lock.path, { force: true, recursive: true });
     } catch {
       // Keeping an uncertain lock is safer than deleting another process's
@@ -488,6 +491,104 @@ function assertDistinctPaths(files: PreparedFile[]): void {
 
 function temporarySibling(filePath: string, transactionId: string): string {
   return join(dirname(filePath), `.${basename(filePath)}.${transactionId}.tmp`);
+}
+
+function durableReplace(filePath: string, content: string): void {
+  const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    const fd = openSync(temporaryPath, "wx", 0o600);
+    try {
+      writeFileSync(fd, content, "utf8");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporaryPath, filePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+function createLock(path: string): WorkspaceLock {
+  const owner: LockOwner = {
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+    acquiredAt: new Date().toISOString(),
+  };
+  let created = false;
+  try {
+    mkdirSync(path, { mode: 0o700 });
+    created = true;
+    writeFileSync(join(path, "owner"), JSON.stringify(owner), { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return { path, token: owner.token };
+  } catch (error) {
+    // If creating the marker failed after mkdir, the empty directory is ours
+    // and can be cleaned safely. A non-empty/existing lock belongs to another
+    // process and must remain untouched.
+    if (created && existsSync(path) && !existsSync(join(path, "owner"))) {
+      try {
+        rmSync(path, { force: true, recursive: true });
+      } catch {
+        // Preserve the lock when its ownership cannot be established.
+      }
+    }
+    throw error;
+  }
+}
+
+function readLockOwner(ownerPath: string): LockOwner | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(ownerPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const owner = parsed as Partial<LockOwner>;
+    return typeof owner.token === "string" &&
+      Number.isInteger(owner.pid) &&
+      typeof owner.hostname === "string" &&
+      typeof owner.acquiredAt === "string"
+      ? (owner as LockOwner)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * Removes a lease whose holder provably died: same host and its pid no longer
+ * exists. Unreadable owners, other hosts and live pids are left untouched, so
+ * an uncertain lock still needs an operator. Returns whether the lock is gone.
+ */
+function breakStaleLock(path: string): boolean {
+  const owner = readLockOwner(join(path, "owner"));
+  if (!owner || owner.hostname !== hostname() || isProcessAlive(owner.pid)) return false;
+  // Move the lease aside first so a competing breaker cannot delete a lock
+  // another process created in the meantime; put it back if it changed hands.
+  const tombstone = `${path}.stale-${randomUUID()}`;
+  try {
+    renameSync(path, tombstone);
+  } catch {
+    return false;
+  }
+  if (readLockOwner(join(tombstone, "owner"))?.token !== owner.token) {
+    try {
+      renameSync(tombstone, path);
+    } catch {
+      // The slot was taken again; the displaced live lease cannot be restored.
+    }
+    return false;
+  }
+  rmSync(tombstone, { force: true, recursive: true });
+  return true;
 }
 
 function atomicWrite(filePath: string, content: Buffer, transactionId: string): void {

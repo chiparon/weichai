@@ -24,7 +24,8 @@ export interface SearchFilters {
 export interface SearchStore {
   ping(): Promise<void>;
   initialize(): Promise<void>;
-  clear(): Promise<void>;
+  /** Deletes every document whose id is not in `keepIds`; returns the number deleted. */
+  deleteExcept(keepIds: readonly string[]): Promise<number>;
   upsert(documents: Array<IndexedCodeDocument & { embedding: number[] }>): Promise<void>;
   refreshIndex(): Promise<void>;
   semanticSearch(

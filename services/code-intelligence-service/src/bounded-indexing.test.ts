@@ -123,8 +123,7 @@ describe('bounded indexing and local reads', () => {
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ searchDocumentId: 'shared', text: 'actual code', retrievalScore: { lexical: 4, semantic: 0.8 } });
     expect(query.mock.calls[0]![0]).not.toContain('document_text');
-    expect(query.mock.calls[0]![0]).toContain('JOIN `bounded_test`.`files` f');
-    expect(query.mock.calls[0]![1]).toEqual(['matching implementation', 'project', 'repository', 'revision', 'source-fragment', 'matching implementation', 24]);
+    expect(query.mock.calls[0]![1]).toEqual(['matching implementation', 'repository', 'revision', 'source-fragment', 'project', 'matching implementation', 24]);
     expect(query.mock.calls[1]![0]).not.toContain('document_text');
     expect(query.mock.calls[2]![1]).toEqual(['repository', 'revision', 'shared', 1]);
   });

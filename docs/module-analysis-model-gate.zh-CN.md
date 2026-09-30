@@ -38,8 +38,6 @@
 - **不拦建库**（见 §1）；**不替代检索侧解耦**：模块摘要会随 revision 变化而 stale，
   所以"配一次就永远有摘要"不可能成立，符号检索必须继续不依赖它
   （见 `docs/recall-kernel-acceptance.zh-CN.md` §11）。
-- **无头脚本路径未覆盖**：`scripts/serve-code-workbench.mts` 不走插件设置，其 Key 来自服务侧/环境变量，
-  且已有自己的前置（`--adaptation-url` 缺失即无 plan port），建库循环在项目未就绪时直接抛错。
 
 ## 5. 测试
 

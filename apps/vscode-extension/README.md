@@ -127,15 +127,12 @@ export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
 
 顶部提供“任务检索 / 复用迁移”切换，左侧共用工程选择器与模块树，解析详情位于主操作区下方。复用迁移沿用已有需求、候选、翻译和回填流程。
 
-任务检索页已通过 Host 消息通道连接真实 `TaskRetrievalPort`，直接查询当前选中工程、项目和代码版本，不等待整个项目的 Agent 分析。支持“自动、函数 / 方法、类 / 接口、功能模块、子系统”五种粒度；尚未发布模块索引时模块选项禁用，当前子系统选项显示未建索引。显式粒度不会静默切换成其他粒度。历史 `ready/superseded` 快照可只读查询，参考范围由 Host 限定为本窗口可见工程。
 
 返回内容复用证据列表与源码预览，显示快照、部分结果和证据缺口。页面只需填写需求并选择范围与粒度，不提供 token 预算控件或用量计数；Host 使用内部默认预算。复制与下载默认使用服务端生成的同一份 Markdown；手动筛选证据后标记“已筛选”。修改需求、范围、粒度或取消检索都会撤销当前请求，迟到响应不会覆盖新结果。“复用迁移”携带开发需求进入原有流程，尚不向翻译后端传递选定证据。
 
 模块建模继续发布现有 `ProjectAnalysisRecord`，因此离线分组结果直接进入原有模块树、Summary、覆盖与依赖视图。界面分别标明“离线结构分析”或“Agent 分析”来源；基础源码检索可在模块说明发布前使用。
 
 大仓模块树初始只传模块摘要，展开后通过当前工程、项目和版本的节点 ID 每次读取 80 个子节点，可继续分页到最后一项。左侧搜索覆盖宿主的完整节点索引，包括未展开的符号；统计保留全量值。依赖、诊断和未归属文件的展示明细最多 200 条，页面同时标明展示数量与总量。函数和类粒度仅在当前检索范围已有对应符号时启用。
-
-在仓库根目录运行 `node scripts/preview-workbench.mjs`，生成可直接打开的 `logs/workbench-preview.html`。预览使用独立的示例消息桥和本地 FileUpload 源码片段，可体验检索、选择、预算、下载及工作流切换，不调用模型或数据库。`FOREXPLORE_UI_TOOLS` 可指向含本机可用 esbuild 的工具目录。
 
 ### 本机 Agent 查询
 
@@ -145,7 +142,6 @@ export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
 SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexplore/semantic-index-mcp-server
 ```
 
-`search_task_context` 接收 `requestId`、`requirement`、`granularity`、固定 `scopes` 和 `budget`。内容上限为可选项：`budget: {}` 保留全部已选上下文，前端宿主默认只设置 30 秒时限；需要适配模型窗口时可显式设置 `budget.maxTokens`。Agent 先用已有 `list_repositories`、`list_projects` 获取身份，再调用任务检索；补查仍可使用 `get_symbol`、`get_dependencies`、`read_source_excerpt` 等原有工具。任务工具只返回一次已计量的 Markdown，不重复传输包含相同源码的 JSON。HTTP `POST /v1/task-search` 返回完整 `ContextPacket`，其中 `evidence` 为源码、`declarations` 为辅助声明签名；`usage.tokens` 计量 `markdown`，未设置 Token 上限时 `usage.maxTokens` 为 `null`。
 
 新增任务 HTTP 适配器仅接受 `http://127.0.0.1` 或 `http://[::1]`，不接受远端主机、DNS 名称、URL 凭据或重定向；MCP 不注册或扫描工程。Host 在每次查询中核验窗口可见工程及可读版本。配置 `SEMANTIC_QUERY_PORT_TOKEN` 时，扩展和 MCP 使用相同本机 token。
 
@@ -221,9 +217,7 @@ npm run test:integration --workspace forexplore-vscode
 
 ## 消息协议
 
-Webview → 宿主：`READY`、`START_TASK_SEARCH`、`CANCEL_TASK_SEARCH`、`START_SEARCH`、`SELECT_CANDIDATE`、`START_ADAPT`、`APPLY_CURRENT_RUN`、`CHECK_REPOSITORIES`、`REFRESH_MODULE_EXPLORER`、`SAVE_SETTINGS`、`SELECT_CODE_INTELLIGENCE_REVISION`、`SELECT_WORKSPACE_TARGET`、`OPEN_TARGET`。任务检索携带请求 ID、需求、粒度、预算及 Host 已发布的工程/版本/项目 ID；模块树目标切换和 revision 查看只提交受限 ID，不提交路径或源码；设置保存只提交经过严格数量与长度校验的 Top K 和本地仓库路径列表。
 
-宿主 → Webview：`INIT`、`MODULE_EXPLORER`、`TARGET_SELECTED`、`TARGET_WORKSPACE_PROGRESS`、`TARGET_WORKSPACE_RESULT`、`SETTINGS_UPDATED`、`TASK_SEARCH_RESULT`、`TASK_SEARCH_ERROR`、`SEARCH_RESULT`、`ADAPT_RESULT`、`APPLY_RESULT`、`REPOSITORY_STATUS`、`CODE_INTELLIGENCE_STATUS`、`SERVICE_STATUS`、`ERROR`。任务响应按请求 ID 配对。
 
 共享类型和状态机在 monorepo 的 `@forexplore/contracts`、`@forexplore/workflow-core` 中维护；打包时 Webview 与扩展宿主会将所需代码纳入 VSIX 构建产物。
 

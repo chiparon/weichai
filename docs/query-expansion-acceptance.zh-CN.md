@@ -166,7 +166,6 @@
 2. **HTTP 检索**：`POST /v1/task-search` 返回 200，包含 `results/evidence/snapshots/usage`。
 3. **来源可核验**：`verify-task-context-live.mts` 通过，证明返回源码与磁盘文件哈希、行列范围逐字节一致。
 4. **MCP 一致**：MCP `search_task_context` 对同一请求返回与 HTTP 一致的主要结果集合。
-5. **宿主一致**：浏览器工作台（`/v1/workbench` 链路）使用同一扩展路径，行为一致。
 6. **版本钉住**：扩展前后 `snapshots[].analysisRevision` 不变；跨版本结果被拒绝的行为不变。
 7. **开关可关**：关闭开关后逐题复现基线（见 4.3）。
 8. **诊断可读**：包中可见词表版本与扩展词（见 4.5）。
@@ -196,7 +195,6 @@
 # 0. 环境
 docker compose -f services/retrieval-service/docker-compose.yml up -d      # SeekDB healthy
 node scripts/serve-local-embeddings.mjs                                     # 端口 4021 ready
-npm run dev:code-workbench -- --target fixtures/code-corpus/commons-fileupload-ts `
   --reference "E:\CS\文章\x2cangjie\x2cangjie\projects\original_projects\commons-fileupload" `
   --database forexplore_recast_live_20260912 --structural-baseline          # /health = ready
 

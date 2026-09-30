@@ -41,7 +41,7 @@ SyntacticDependencyResolver 处理显式 import/export、project reference 和�
 
 ### 2.3 界面与存储
 
-产品入口是 apps/vscode-extension 的 Webview，独立 web/ 原型不属于本次交付要求。生产模式使用 SeekDB 持久化；内存实现仅用于开发和测试，界面应明确其非持久性质。
+产品入口是 apps/vscode-extension 的 Webview。生产模式使用 SeekDB 持久化；内存实现仅用于开发和测试，界面应明确其非持久性质。
 
 文件监听可在后续增加。v1 必须支持保存配置后处理变更、手动刷新、失败重试和重新打开面板后的状态恢复，不要求用户重启扩展才能更新路径。
 

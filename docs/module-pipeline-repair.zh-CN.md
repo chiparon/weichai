@@ -10,11 +10,11 @@
 4. 点击“开始模块翻译并回填”，启动多文件翻译。服务直接写入限定文件，并执行配置的编译与行为验证。
 5. 在同一页面查看计划、文件修改前后内容、编译输出、测试输出及运行编号；必要时点击“回滚本次修改”。
 
-该流程同时接入 VS Code 扩展和本地浏览器工作台。任务检索页在仅选中目标模块、尚无证据包时，会引导用户先选择历史模块候选。
+该流程接入 VS Code 扩展。任务检索页在仅选中目标模块、尚无证据包时，会引导用户先选择历史模块候选。
 
 ## 实现与保护
 
-- 新增共享 `prepareModuleTranslationScope`，两种宿主均从自身保存的目标和明确选中的候选建立翻译范围；网页不能指定写入路径、历史版本或源码。
+- 新增共享 `prepareModuleTranslationScope`，扩展宿主从自身保存的目标和明确选中的候选建立翻译范围；Webview 不能指定写入路径、历史版本或源码。
 - 模块路径通过真实路径解析检查，准备时记录每个目标文件的 SHA-256，开始前复核；VS Code 还检查模块内所有未保存的文档。
 - 目标、候选或检索结果改变后，旧作用域失效；异步返回后再次检查选择版本，避免旧请求覆盖新选择。
 - 模块操作显式携带 `moduleScopeId`，任务证据翻译继续使用原静态配置；两条流程不会隐式借用对方的模块上下文。
@@ -36,9 +36,9 @@
 | `ADAPTATION_WORKSPACE_COMPILE_COMMAND` | 固定编译命令 JSON，按实际目标工程配置 |
 | `ADAPTATION_WORKSPACE_VERIFICATION` | 行为测试命令及 `protectedFiles`；未配置时不能得到行为验收通过结论 |
 | 模型凭据 | 服务 `.env` 中的模型 Key，或 VS Code 中已保存的模型凭据 |
-| `SEMANTIC_QUERY_PORT_URL` | 启用按需历史查询时，指向相应宿主的查询端口；浏览器默认 4041，扩展默认 8790 |
+| `SEMANTIC_QUERY_PORT_URL` | 启用按需历史查询时，指向扩展宿主的查询端口，默认 8790 |
 
-浏览器工作台通过 `--adaptation-url` 连接服务；VS Code 使用已有的 `forexplore.adaptationApiUrl` 设置。服务仍然只接受配置工作区内的写入，选中其他根目录时会给出不一致错误。
+VS Code 使用已有的 `forexplore.adaptationApiUrl` 设置。服务仍然只接受配置工作区内的写入，选中其他根目录时会给出不一致错误。
 
 服务启动参考现有 README 和 `services/adaptation-service/.env.example`。原有任务证据翻译仍使用 `FOREXPLORE_TRANSLATION_PROFILE`；仅模块流程免去这项重复配置。
 

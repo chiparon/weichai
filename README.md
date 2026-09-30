@@ -1,15 +1,9 @@
 # RECAST
 
 RECAST is the competition-facing product name for the ForeXplore codebase. It
-combines task-driven code context retrieval and code reuse/migration in a VS
-Code workbench, backed by shared offline repository indexes. A local browser
-workbench runs the same UI and real indexing/query services. See the
-[offline modeling and Context guide](docs/task-code-context-implementation.zh-CN.md)
-for `npm run dev:code-workbench`. Both product chains (ForeXplore reuse/migration
-and RECAST retrieval) now live in the VS Code extension; the earlier standalone
-React prototype under `web/` was removed on 2026-09-12 together with its
-`mock-adapters`, `seekdb-adapter` and `workspace-adapters` packages (still
-recoverable from git history).
+combines task-driven code context retrieval and code reuse/migration in the VS
+Code extension, backed by shared offline repository indexes. Both product chains
+(ForeXplore reuse/migration and RECAST retrieval) are hosted by the extension.
 
 The [guochuang implementation guide](docs/guochuang-implementation.zh-CN.md) covers
 evidence handoff, multi-file generation, behavioral verification, and labeled retrieval evaluation.
@@ -48,14 +42,12 @@ The checked-in examples use these local endpoints:
 
 | Component | Address | Environment file |
 | --- | --- | --- |
-| Browser workbench | `http://127.0.0.1:4040` (query port 4041) | `services/*/.env` |
 | Retrieval API | `http://127.0.0.1:8787` | `services/retrieval-service/.env` |
 | Adaptation API | `http://127.0.0.1:8788` | `services/adaptation-service/.env` |
 | SeekDB | `127.0.0.1:2881` | `services/retrieval-service/.env` |
 
-Browser-facing configuration comes from the workbench command line; embedding and
-DeepSeek API keys stay in server-side `.env` files and are never exposed to the
-browser.
+Embedding and DeepSeek API keys stay in server-side `.env` files and are never
+exposed to the extension Webview.
 
 ### Configure retrieval
 
@@ -157,30 +149,30 @@ the tool boundary.
 
 ### Start the application
 
-Start retrieval, the browser workbench and adaptation:
+Start retrieval and adaptation:
 
 ```bash
 npm run dev:retrieval
-npm run dev:code-workbench -- --target <target> --reference <reference>
 npm run dev:adaptation
 ```
 
-On Windows, start SeekDB, both backend dev processes, build the extension, and
-open the Extension Development Host with one command:
+On Windows, Linux, or macOS, start SeekDB, both backend dev processes, build the
+extension, and open the Extension Development Host with one command:
 
-```powershell
+```bash
 npm run dev:extension
 ```
 
-The wrapper is [`scripts/run-vscode-extension.ps1`](scripts/run-vscode-extension.ps1).
+The cross-platform launcher is [`scripts/run-vscode-extension.mjs`](scripts/run-vscode-extension.mjs).
 It assumes dependencies are already installed and does not run `npm install`.
-Use `npm run dev:extension -- -SkipSeekDb` when SeekDB is already running.
+Use `npm run dev:extension -- --skip-seek-db` when SeekDB is already running.
+The legacy PowerShell path remains a compatibility wrapper on Windows.
 
 `npm run dev` is an alias for `npm run dev:extension`. Do not append
 `adaptation` to it; start `npm run dev:adaptation` separately when needed.
 
-To run each layer independently, use `npm run dev:retrieval`,
-`npm run dev:adaptation`, and `npm run dev:code-workbench`. Verify the backend services:
+To run each layer independently, use `npm run dev:retrieval` and
+`npm run dev:adaptation`. Verify the backend services:
 
 ```bash
 curl http://127.0.0.1:8787/health
@@ -191,7 +183,6 @@ curl http://127.0.0.1:8788/health
 
 ```bash
 npm run dev
-npm run dev:code-workbench
 npm run dev:retrieval
 npm run dev:adaptation
 npm run dev:extension
@@ -209,6 +200,4 @@ service and Claude Code workflow themselves are language-neutral.
 ## Development guide
 
 See the complete Chinese handoff guide for the workspace, indexing, retrieval,
-and module-tree changes:
-
-- [`docs/seekdb-retrieval-development-guide.zh-CN.md`](docs/seekdb-retrieval-development-guide.zh-CN.md)
+and module-tree changes in `apps/vscode-extension/README.md`.

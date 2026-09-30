@@ -174,9 +174,6 @@ cp services/retrieval-service/.env.example services/retrieval-service/.env
 
 `.env` 可能包含数据库密码或 API Key，不应提交到 Git。
 
-> 说明（2026-09-12）：旧的 `web/` 独立原型及其 `VITE_RETRIEVAL_API_URL`
-> 配置已随前端迁移到 VS Code 扩展而删除；当前浏览器入口是
-> `npm run dev:code-workbench`。
 
 ## 9. 初始化检索表和代码索引
 
@@ -224,16 +221,13 @@ curl http://127.0.0.1:8787/health
 
 该响应证明 HTTP service 和 SeekDB 两层连接都正常。
 
-## 11. 启动工作台（原 Web 原型）
-
-旧的独立 Web 原型已于 2026-09-12 删除，前端全部迁移到 VS Code 扩展。浏览器入口改为
-同一个工作台服务：
+## 11. 启动 VS Code 扩展
 
 ```bash
-npm run dev:code-workbench -- --target <目标工程> --reference <参考工程>
+npm run dev:extension
 ```
 
-默认页面端口 4040、查询端口 4041；启动参数决定工程范围，端口占用时自动递增并打印实际地址。
+扩展会连接本机的 retrieval service、adaptation service 和 SeekDB.
 
 ## 12. 日常启停命令
 

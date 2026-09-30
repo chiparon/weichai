@@ -11,7 +11,7 @@
 | 4、5：版本化建库、资源背压、模块分层、增量更新 | 保留最新基线的源码快照、分批解析、进程及在途字节限制、同级模块并行、检查点恢复和全量/增量等价回归 |
 | 5.4：跨语言连接 | 保留 C/C++、Kotlin、ArkTS 前端和 JNI/N-API/KMP 保守绑定；新增 JNI 重载长名称、基本类型和数组参数描述符；短导出名冲突和无法确定的类型保持未解析 |
 | 6：任务检索、上下文编译 | 保留多视图召回、版本/粒度约束、依赖补充、覆盖选择及最终文本预算；新增互不重叠的阶段耗时 |
-| 7：证据交接与开发协同 | 浏览器工作台和 VS Code 使用相同宿主交接；所选证据、来源快照、关系、缺口进入多文件翻译；展示计划、差异、编译/测试结果，支持取消、继续、按编号恢复和回滚 |
+| 7：证据交接与开发协同 | VS Code 使用相同宿主交接；所选证据、来源快照、关系、缺口进入多文件翻译；展示计划、差异、编译/测试结果，支持取消、继续、按编号恢复和回滚 |
 | 8：评测 | 新增带人工标注的 HTTP 评测命令，输出 Recall@K、MRR、nDCG@K、必要证据覆盖、任务成功率、平均/P95 延迟、源码行重复率和源码读取放大率 |
 
 ## 生成与验收配置
@@ -25,7 +25,7 @@
 - `ADAPTATION_WORKSPACE_VERIFICATION`：行为测试命令及只读验收文件，格式见 `huawei-implementation.zh-CN.md`。
 - 远程模型沿用 `DEEPSEEK_API_KEY` 等服务配置。
 
-启动扩展或浏览器工作台的进程设置同一 `ADAPTATION_WORKSPACE_TRANSLATION_TOKEN`，并设置 `FOREXPLORE_TRANSLATION_PROFILE` 为以下格式的 JSON。示例路径需要替换为实际工作区；建议使用用于审阅的独立 worktree：
+启动扩展和适配服务的进程设置同一 `ADAPTATION_WORKSPACE_TRANSLATION_TOKEN`，并设置 `FOREXPLORE_TRANSLATION_PROFILE` 为以下格式的 JSON。示例路径需要替换为实际工作区；建议使用用于审阅的独立 worktree：
 
 ```json
 {
@@ -37,10 +37,10 @@
 }
 ```
 
-扩展读取已有的 `forexplore.adaptationApiUrl` 设置；浏览器使用 `--adaptation-url`。例如：
+扩展读取已有的 `forexplore.adaptationApiUrl` 设置。例如：
 
-```powershell
-npm run dev:code-workbench -- --target D:/CodeProjects/translation-review --reference D:/CodeProjects/reference --adaptation-url http://127.0.0.1:8788
+```bash
+npm run dev:extension
 ```
 
 检索并勾选证据后，点击“生成与验收”。面板先显示实际写入目录、允许修改的文件及是否配置行为测试，再由用户点击“使用所选证据生成代码”。这是现有服务的原地修改流程；审阅标记只保存在当前页面，不会另行提交 Git。运行编号可用于刷新页面或重启宿主后的读取、继续与回滚。

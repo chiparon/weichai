@@ -30,7 +30,7 @@ export function createModelCredentialProvider(storage: CredentialStorage, endpoi
     const prefix = base.pathname.replace(/\/+$/, '');
     if (url.origin !== base.origin || url.username || url.password || !url.pathname.startsWith(`${prefix}/`)) return undefined;
     const route = url.pathname.slice(prefix.length);
-    if (!/^\/(?:module-hierarchy\/decision|v1\/(?:adapt|module-plan|semantic-module-plan|module-generation\/turn|workspace-translations(?:\/[a-f0-9-]{36}(?:\/(?:resume|cancel|rollback))?)?))$/.test(route)) return undefined;
+    if (!/^\/(?:module-hierarchy\/decision|v1\/(?:retrieval-rerank|adapt|module-plan|semantic-module-plan|module-generation\/turn|workspace-translations(?:\/[a-f0-9-]{36}(?:\/(?:resume|cancel|rollback))?)?))$/.test(route)) return undefined;
     const apiKey = await storage.get(id);
     return model ? { settings: model, ...(apiKey ? { apiKey } : {}) } : apiKey;
   };

@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import type { WorkspaceCompileCommand } from "@forexplore/contracts";
 import { validateWorkspaceCompileCommand } from "./workspace-compiler";
 
-const defaultProjectPath = fileURLToPath(
+const defaultProjectPath = process.env.ADAPTATION_PROJECT_ROOT || fileURLToPath(
   new URL("../../../fixtures/target-system/commons-fileupload-java-skeleton", import.meta.url),
 );
 

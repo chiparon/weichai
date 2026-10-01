@@ -103,7 +103,9 @@ async function main(): Promise<void> {
   });
 }
 
-async function shutdown(): Promise<void> {
+let shutdownPromise: Promise<void> | undefined;
+function shutdown(): Promise<void> { return shutdownPromise ??= closeRuntime(); }
+async function closeRuntime(): Promise<void> {
   await workspaceTranslationRuntime?.shutdown();
   const activeServer = server;
   if (!activeServer) return;
@@ -122,6 +124,10 @@ function requestShutdown(): void {
 
 process.once('SIGINT', requestShutdown);
 process.once('SIGTERM', requestShutdown);
+process.once('disconnect', requestShutdown);
+process.on('message', message => { if (message && typeof message === 'object' && 'type' in message && message.type === 'shutdown') {
+  void shutdown().catch(() => { process.exitCode = 1; }).finally(() => { if (process.connected) process.disconnect?.(); });
+} });
 
 void main().catch((error) => {
   console.error('Adaptation service failed to start:', error);

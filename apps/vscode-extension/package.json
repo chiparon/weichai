@@ -237,6 +237,80 @@
               ]
             }
           }
+        },
+        "forexplore.backend.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "打开 RECAST 工作台时，在可信工作区自动启动打包的本地模型后端；关闭窗口时停止本窗口启动的进程。"
+        },
+        "forexplore.backend.compileCommand": {
+          "type": "object",
+          "required": [
+            "executable",
+            "args"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "executable": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "scope": "machine",
+          "description": "目标工程编译命令，仅使用用户设置。默认自动识别 Python、Go、Rust、.NET；其他工程请配置 executable、args。"
+        },
+        "forexplore.backend.verification": {
+          "type": "object",
+          "scope": "machine",
+          "required": [
+            "command",
+            "protectedFiles"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "object",
+              "required": [
+                "executable",
+                "args"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "protectedFiles": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "可选的业务验收命令与受保护测试文件，仅使用用户设置。未配置时不会声称通过行为验收。"
         }
       }
     },

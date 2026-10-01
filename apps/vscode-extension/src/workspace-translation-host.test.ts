@@ -122,7 +122,9 @@ describe('workspace translation host', () => {
         workspaceFiles: ['src/main/java/a/MultipartStream.java'], writeFiles: ['src/main/java/a/MultipartStream.java'] },
       context: [{ id: 'module-target', kind: 'summary', content: '目标模块：Multipart 流解析' }],
     });
-    instance.remember(packetWithEvidence());
+    const packet = packetWithEvidence();
+    packet.snapshots = [{ repositoryId: 'repo-history', analysisRevision: 'analysis-1', role: 'reference', repositoryName: 'History', analysisHash: 'hash' }];
+    instance.remember(packet);
 
     const stale = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-4', action: 'start',
       profileId: 'f'.repeat(64), moduleScopeId: 'a'.repeat(64) });
@@ -137,6 +139,7 @@ describe('workspace translation host', () => {
     const posted = requests.filter((request) => request.method === 'POST' && request.url.endsWith('/v1/workspace-translations')).at(-1);
     expect(posted!.body!.context.map((item: { id: string }) => item.id)).toEqual(['module-target', 'source-a', 'packet-1:provenance']);
     expect(posted!.body!.spec).toContain('补充需求：任务需求');
+    expect(posted!.body!.evidenceScopes).toEqual([{ repositoryId: 'repo-history', analysisRevision: 'analysis-1' }]);
 
     instance.clearModuleScope();
     expect(instance.activeModuleScopeId).toBeUndefined();

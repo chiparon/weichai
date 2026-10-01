@@ -5,6 +5,7 @@ import { checkServiceHealth } from './service-health';
 import { localFetch } from './local-fetch';
 import { loadSettings } from './settings';
 import type { ExecutionMode, ServiceStatus } from './ui-types';
+import type { BackendProcess } from './backend-process';
 
 export interface RuntimePorts {
   searchProvider: 'SeekDB';
@@ -24,10 +25,13 @@ export class ServiceManager implements vscode.Disposable {
     executionMode: 'real',
   };
 
-  constructor(private readonly output: vscode.OutputChannel) {}
+  constructor(private readonly output: vscode.OutputChannel, private readonly backend?: BackendProcess) {}
 
   get serviceStatus(): ServiceStatus {
     return { ...this.status };
+  }
+  setRetrievalReady(ready: boolean): void {
+    this.status = { ...this.status, retrieval: ready ? 'connected' : 'error' };
   }
 
   /** Display-only provider labels that do not create or replace any port. */
@@ -43,7 +47,7 @@ export class ServiceManager implements vscode.Disposable {
     const settings = loadSettings();
     const adaptation = await checkServiceHealth(settings.adaptationApiUrl, localFetch);
     this.status = {
-      retrieval: 'connected',
+      retrieval: this.status.retrieval,
       adaptation: adaptation.healthy ? 'connected' : 'error',
       executionMode: 'real',
       message: !adaptation.healthy ? `翻译：${adaptation.detail}` : undefined,
@@ -55,6 +59,11 @@ export class ServiceManager implements vscode.Disposable {
   }
 
   async ensureStarted(): Promise<ServiceStatus> {
+    try { await this.backend?.ensure(); }
+    catch (error) {
+      this.status = { ...this.status, adaptation: 'error', message: error instanceof Error ? error.message : String(error) };
+      throw error;
+    }
     return this.refresh();
   }
 
@@ -69,6 +78,6 @@ export class ServiceManager implements vscode.Disposable {
   }
 
   dispose(): void {
-    // The extension owns no child processes.
+    this.backend?.dispose();
   }
 }

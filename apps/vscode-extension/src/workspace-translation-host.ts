@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { moduleFileHash } from './module-translation-handoff';
+import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 import { formatContextMarkdown, type ContextPacket, type WorkspaceEvidenceScope, type WorkspaceTranslationContext, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
 import type { HostToWebviewMessage, WebviewToHostMessage } from './protocol/messages';
 
@@ -103,10 +104,14 @@ export class WorkspaceTranslationHost {
         if (intent.profileId !== profileId) throw new Error('翻译配置已变化，请重新打开生成与验收面板。');
         if (intent.moduleScopeId !== undefined && intent.moduleScopeId !== this.moduleScope?.id) throw new Error('模块翻译范围已变化，请重新选择候选。');
         const context: WorkspaceTranslationRequest['context'] = scope ? structuredClone(scope.context) : [];
+        let evidenceScopes = [...(scope?.evidenceScopes ?? [])];
         let evidenceKey = '';
         if (intent.packetId !== undefined) {
           const packet = this.packets.get(intent.packetId);
           if (!packet || packet.status === 'unavailable') throw new Error('任务证据已失效，请重新检索。');
+          evidenceScopes.push(...packet.snapshots.filter(snapshot => snapshot.role === 'reference').map(snapshot => ({
+            repositoryId: snapshot.repositoryId, analysisRevision: snapshot.analysisRevision,
+            ...(snapshot.projectId ? { projectId: snapshot.projectId } : {}) })));
           const selected = new Set(intent.evidenceIds ?? []);
           const evidence = packet.evidence.filter(item => selected.has(item.evidenceId));
           if (!evidence.length || evidence.length !== selected.size) throw new Error('选择的证据不属于当前任务。');
@@ -119,10 +124,19 @@ export class WorkspaceTranslationHost {
         }
         if (context.length === 0) throw new Error('模块翻译缺少可用上下文：请选择历史候选模块，或先做一次任务检索并勾选证据。');
         const packetRequirement = intent.packetId === undefined ? undefined : this.packets.get(intent.packetId)?.requirement;
+        const mergedScopes = new Map<string, WorkspaceEvidenceScope>();
+        for (const next of evidenceScopes) {
+          const key = JSON.stringify([next.repositoryId, next.analysisRevision]);
+          const previous = mergedScopes.get(key);
+          if (previous?.projectId && next.projectId && previous.projectId !== next.projectId) throw new Error('同一历史版本选择了不同项目，请先按整个参考仓库重新检索。');
+          if (!previous || !next.projectId) mergedScopes.set(key, next);
+        }
+        evidenceScopes = [...mergedScopes.values()];
+        if (evidenceScopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`取证范围超过 ${MAX_RETRIEVAL_SCOPES} 个版本，请缩小参考工程范围。`);
         const input = { spec: scope ? moduleSpec(scope, packetRequirement) : (packetRequirement ?? ''),
           sourceLanguage: profile!.sourceLanguage, targetLanguage: profile!.targetLanguage,
           workspaceFiles: profile!.workspaceFiles, writeFiles: profile!.writeFiles, context,
-          ...(scope?.evidenceScopes?.length ? { evidenceScopes: scope.evidenceScopes } : {}) };
+          ...(evidenceScopes.length ? { evidenceScopes } : {}) };
         // Do not repeat a write request if the UI delivers the same operation twice.
         const startKey = JSON.stringify([url, profile, intent.packetId ?? '', evidenceKey, intent.moduleScopeId ?? '']);
         let pending = this.starts.get(startKey);

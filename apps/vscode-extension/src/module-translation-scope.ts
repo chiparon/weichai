@@ -1,5 +1,6 @@
 import type { ModuleTarget, WorkspaceEvidenceScope, WorkspaceTranslationContext } from '@forexplore/contracts';
 import type { TranslationProfile } from './workspace-translation-host';
+import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 
 /**
  * A reviewed history module offered as translation context. Only the host
@@ -36,6 +37,8 @@ export interface ModuleTranslationScopeInput {
    * implementation should be fetched by the agent rather than pushed.
    */
   includeCandidateContext?: boolean;
+  /** Visible, revision-pinned history repositories supplied by the trusted host. */
+  evidenceScopes?: WorkspaceEvidenceScope[];
 }
 
 export interface ModuleTranslationScope {
@@ -152,7 +155,7 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
   } else if (input.includeCandidateContext === false) {
     warnings.push('候选模块只提供按需查询范围，其清册与源码不会预先注入上下文；请用 query_evidence 取回所需实现。');
   }
-  const evidenceScopes: WorkspaceEvidenceScope[] = [...new Map(input.candidates.map((candidate) => [
+  const evidenceScopes: WorkspaceEvidenceScope[] = [...new Map([...input.candidates, ...(input.evidenceScopes ?? [])].map((candidate) => [
     `${candidate.repositoryId}@${candidate.analysisRevision}`,
     {
       repositoryId: candidate.repositoryId,
@@ -160,6 +163,9 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
       ...(candidate.projectId ? { projectId: candidate.projectId } : {}),
     },
   ])).values()];
+  if (evidenceScopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`历史取证范围超过 ${MAX_RETRIEVAL_SCOPES} 个版本，请缩小参考工程范围。`);
+  if (input.evidenceScopes?.length) push({ id: 'history-evidence-scopes', kind: 'summary', content:
+    `query_evidence 可查询以下固定历史版本（只读）；跨仓依赖请在此范围取证：\n${evidenceScopes.map(s => `${s.repositoryId}@${s.analysisRevision}`).join('\n')}` });
 
   return {
     label: `模块 ${input.targetModule.name}`,

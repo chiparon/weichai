@@ -29,6 +29,9 @@ import type {
 } from './ui-types';
 import type { TaskSearchIntent, TaskSearchTargetScope } from './protocol/messages';
 import { projectAnalysisPresentation } from './project-analysis-presentation';
+import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope } from '@forexplore/contracts';
+import type { TaskCandidateReranker } from '../../../services/code-intelligence-service/src/task-reranker';
+import type { ModuleReranker } from '../../../services/code-intelligence-service/src/module-reranker';
 
 /** Local-only SeekDB configuration; credentials never cross a UI boundary. */
 export interface SeekDbRuntimeConfig {
@@ -45,6 +48,8 @@ export interface SeekDbRuntimeConfig {
 export interface CreateCodeIntelligenceRuntimeOptions {
   seekdb?: SeekDbRuntimeConfig;
   moduleReranker?: { url: string; model: string; timeoutMs?: number };
+  taskCandidateReranker?: TaskCandidateReranker;
+  moduleCandidateReranker?: ModuleReranker;
 }
 
 export interface CodeIntelligenceEnvironmentOptions {
@@ -508,7 +513,7 @@ export class CodeIntelligenceHost {
       queryPort: await this.semanticQueryPort(),
       ...(runtime.taskRetrieval ? { taskRetrieval: {
         search: async (request: TaskRetrievalRequest, signal?: AbortSignal) => {
-          if (!Array.isArray(request.scopes) || request.scopes.length < 1 || request.scopes.length > 8 ||
+          if (!Array.isArray(request.scopes) || request.scopes.length < 1 || request.scopes.length > MAX_RETRIEVAL_SCOPES ||
             request.scopes.some((scope) => !this.#visibleRepositoryIds.has(scope.repositoryId))) {
             throw new Error('Requested repositories are outside this window.');
           }
@@ -589,6 +594,25 @@ export class CodeIntelligenceHost {
       .filter((repository) => repository.role === 'history' && this.#visibleRepositoryIds.has(repository.repositoryId))
       .map((repository) => repository.repositoryId);
     return runtime.moduleImplementationSearch.search({ ...request, repositoryIds }, signal);
+  }
+
+  async historyEvidenceScopes(selected: RepositoryRevisionScope): Promise<WorkspaceEvidenceScope[]> {
+    const runtime = await this.runtime();
+    if (!selected || !this.#visibleRepositoryIds.has(selected.repositoryId)) throw new Error('候选仓库不在当前窗口的参考范围。');
+    const repository = await runtime.registry.get(selected.repositoryId);
+    const revision = await runtime.store.getRevision(selected);
+    if (repository?.role !== 'history' || !revision || !['ready', 'superseded'].includes(revision.status)) throw new Error('历史候选版本已不可查询，请重新检索。');
+    const scopes: WorkspaceEvidenceScope[] = [{ repositoryId: selected.repositoryId, analysisRevision: selected.analysisRevision }];
+    for (const reference of await runtime.registry.list?.() ?? []) {
+      if (!this.#visibleRepositoryIds.has(reference.repositoryId) || reference.role !== 'history' ||
+          reference.repositoryId === selected.repositoryId) continue;
+      if (!reference.activeRevision) throw new Error(`参考工程 ${reference.displayName} 尚未完成索引，无法准备完整跨仓取证范围。`);
+      const scope = { repositoryId: reference.repositoryId, analysisRevision: reference.activeRevision };
+      if ((await runtime.store.getRevision(scope))?.status !== 'ready') throw new Error(`参考工程 ${reference.displayName} 尚未完成索引，无法准备完整跨仓取证范围。`);
+      scopes.push(scope);
+    }
+    if (scopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`历史范围超过 ${MAX_RETRIEVAL_SCOPES} 个版本，请缩小参考工程范围。`);
+    return scopes;
   }
 
   async searchTaskContext(requestId: string, targetScope: TaskSearchTargetScope, request: TaskSearchIntent,

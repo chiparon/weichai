@@ -1,4 +1,4 @@
-import { formatContextMarkdown, isStableRepositoryIdentifier, type ContextPacket, type TaskRetrievalRequest } from "@forexplore/contracts";
+import { formatContextMarkdown, isStableRepositoryIdentifier, MAX_RETRIEVAL_SCOPES, type ContextPacket, type TaskRetrievalRequest } from "@forexplore/contracts";
 import type { SemanticQueryPort, TaskRetrievalPort } from "@forexplore/workflow-core";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
@@ -162,7 +162,7 @@ const taskSearchSchema = z.object({
   requestId: repositoryIdSchema,
   requirement: z.string().trim().min(1).max(MAX_QUERY_CHARS),
   granularity: z.enum(["auto", "function", "class", "module", "subsystem"]).optional(),
-  scopes: z.array(scopeSchema.extend({ projectId: repositoryIdSchema.optional(), role: z.enum(["target", "reference"]).optional() }).strict()).min(1).max(8),
+  scopes: z.array(scopeSchema.extend({ projectId: repositoryIdSchema.optional(), role: z.enum(["target", "reference"]).optional() }).strict()).min(1).max(MAX_RETRIEVAL_SCOPES),
   budget: z.object({
     maxTokens: z.number().int().min(256).max(Number.MAX_SAFE_INTEGER).optional(),
     maxLatencyMs: z.number().int().min(100).max(60000).optional(),

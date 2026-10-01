@@ -83,6 +83,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 describe("semantic-index MCP server", () => {
+  it('accepts nine repository scopes and rejects overflow before retrieval', async () => {
+    const search = vi.fn(async () => taskPacket());
+    const { client } = await connectedClient(createQueryPort(), { search });
+    const scopes = [scope, ...Array.from({ length: 8 }, (_, i) => ({ ...scope, repositoryId: `history-${i}` }))];
+    const request = { requestId: 'request-1', requirement: 'quote service', scopes, budget: {} };
+    expect(isToolError(await client.callTool({ name: 'search_task_context', arguments: request }))).toBe(false);
+    expect(search).toHaveBeenCalledWith(request, expect.any(AbortSignal));
+    expect(isToolError(await client.callTool({ name: 'search_task_context', arguments: { ...request, scopes: Array(65).fill(scope) } }))).toBe(true);
+    expect(search).toHaveBeenCalledOnce();
+  });
   it('returns the measured task Markdown once and preserves explicit granularity and scope', async () => {
     const request = { requestId: 'request-1', requirement: 'quote service', granularity: 'function' as const, scopes: [scope], budget: { maxTokens: 4000 } };
     const packet = taskPacket();

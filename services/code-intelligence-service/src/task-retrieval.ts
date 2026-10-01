@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { indexModuleHierarchy } from '@forexplore/contracts';
+import { indexModuleHierarchy, MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 import type {
   ContextPacket, ConcreteRetrievalGranularity, DependencyEdgeRecord, ProjectAnalysisRecord, ProjectModule,
   SearchDocumentRecord, SourceRange, SymbolRecord, TaskContextDeclaration, TaskContextEvidence, TaskRetrievalGap, TaskRetrievalRequest,
@@ -9,9 +9,10 @@ import type { TaskRetrievalPort } from '@forexplore/workflow-core';
 import type { IndexStore } from './index-store.js';
 import { compileTaskContext, sourceContentHash } from './context-compiler.js';
 import { RecallKernel } from './recall-kernel.js';
+import { resolvePythonImport } from './cross-repository-imports';
 import { projectAnalysisProfile, projectPlanHash } from './project-analysis.js';
 import { queryExpansionFromEnvironment, type QueryExpansionPort, type QueryExpansionResult } from './query-expansion.js';
-import { RERANK_CANDIDATE_LIMIT, RERANK_PREVIEW_CHARS, rerankCandidateId, rerankTaskCandidates, taskRerankConfigFromEnvironment, type TaskRerankCandidate, type TaskRerankConfig } from './task-reranker.js';
+import { RERANK_CANDIDATE_LIMIT, RERANK_PREVIEW_CHARS, rerankCandidateId, rerankTaskCandidates, taskRerankConfigFromEnvironment, type TaskRerankCandidate, type TaskRerankConfig, type TaskCandidateReranker } from './task-reranker.js';
 
 const functionKinds = ['function', 'method', 'constructor'];
 const classKinds = ['class', 'interface', 'struct', 'record', 'trait', 'enum'];
@@ -90,8 +91,8 @@ export function baselineRecallWeightFromEnvironment(environment: NodeJS.ProcessE
 export function validateTaskRetrievalRequest(value: unknown): asserts value is TaskRetrievalRequest {
   if (!record(value) || !identifier(value.requestId) || typeof value.requirement !== 'string' || !value.requirement.trim() || value.requirement.length > 8000) throw new Error('Task retrieval requires requestId and a requirement of 1..8000 characters.');
   if (value.granularity !== undefined && (typeof value.granularity !== 'string' || !granularities.includes(value.granularity))) throw new Error('Invalid retrieval granularity.');
-  if (!Array.isArray(value.scopes) || value.scopes.length < 1 || value.scopes.length > 8 || value.scopes.some((scope) =>
-    !record(scope) || !identifier(scope.repositoryId) || !identifier(scope.analysisRevision) || scope.projectId !== undefined && !identifier(scope.projectId) || scope.role !== undefined && !['target', 'reference'].includes(String(scope.role)))) throw new Error('Task retrieval requires 1..8 revision-scoped repositories.');
+  if (!Array.isArray(value.scopes) || value.scopes.length < 1 || value.scopes.length > MAX_RETRIEVAL_SCOPES || value.scopes.some((scope) =>
+    !record(scope) || !identifier(scope.repositoryId) || !identifier(scope.analysisRevision) || scope.projectId !== undefined && !identifier(scope.projectId) || scope.role !== undefined && !['target', 'reference'].includes(String(scope.role)))) throw new Error(`Task retrieval requires 1..${MAX_RETRIEVAL_SCOPES} revision-scoped repositories.`);
   if (!record(value.budget) || value.budget.maxTokens !== undefined && !integer(value.budget.maxTokens, 256, Number.MAX_SAFE_INTEGER) ||
     value.budget.maxLatencyMs !== undefined && !integer(value.budget.maxLatencyMs, 100, 60000) ||
     value.budget.maxFiles !== undefined && !integer(value.budget.maxFiles, 1, Number.MAX_SAFE_INTEGER) ||
@@ -104,13 +105,15 @@ export class TaskRetrievalService implements TaskRetrievalPort {
   readonly #expansion: QueryExpansionPort | null;
   readonly #baselineRecallWeight: number;
   readonly #rerank: TaskRerankConfig | null;
+  readonly #reranker?: TaskCandidateReranker;
   /** Shared multi-view recall; this projection keeps resolution, expansion and compilation. */
   readonly #recall: RecallKernel;
   /** `expansion: undefined` follows RECAST_QUERY_EXPANSION; `null` disables it explicitly. */
-  constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number; rerank?: TaskRerankConfig | null } = {}) {
+  constructor(private readonly store: IndexStore, options: { expansion?: QueryExpansionPort | null; baselineRecallWeight?: number; rerank?: TaskRerankConfig | null; reranker?: TaskCandidateReranker } = {}) {
     this.#expansion = options.expansion === undefined ? queryExpansionFromEnvironment() : options.expansion;
     this.#baselineRecallWeight = options.baselineRecallWeight ?? baselineRecallWeightFromEnvironment();
-    this.#rerank = options.rerank === undefined ? taskRerankConfigFromEnvironment() : options.rerank;
+    this.#reranker = options.reranker;
+    this.#rerank = options.reranker ? null : options.rerank === undefined ? taskRerankConfigFromEnvironment() : options.rerank;
     this.#recall = new RecallKernel(store);
   }
 
@@ -299,9 +302,10 @@ export class TaskRetrievalService implements TaskRetrievalPort {
     let unique = [...new Map(hits.map((hit) => [hit.result.id, hit])).values()];
     // Behavioural rerank over the head of the candidate list; see task-reranker.ts.
     // A null result leaves the fused order untouched: reranking must never fail a request.
-    if (this.#rerank && unique.length > 1) {
+    if ((this.#reranker || this.#rerank) && unique.length > 1) {
       try {
-        const head = unique.slice(0, this.#rerank.candidateLimit);
+        const limit = this.#rerank?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
+        const head = unique.slice(0, limit);
         const candidates: TaskRerankCandidate[] = [];
         const byId = new Map<string, (typeof head)[number]>();
         for (const [index, hit] of head.entries()) {
@@ -311,11 +315,13 @@ export class TaskRetrievalService implements TaskRetrievalPort {
           candidates.push({ id, name: hit.result.name, granularity: hit.result.granularity,
             relativePath: hit.result.relativePath ?? '', signature: hit.symbol?.signature, preview: slice?.text });
         }
-        const reranked = await rerankTaskCandidates(this.#rerank, request.requirement, candidates, signal);
+        const reranked = this.#reranker ? await this.#reranker.rerank(request.requirement, candidates, signal)
+          : await rerankTaskCandidates(this.#rerank!, request.requirement, candidates, signal);
+        if (reranked && (reranked.length !== candidates.length || new Set(reranked.map(item => item.id)).size !== candidates.length || reranked.some(item => !byId.has(item.id)))) throw new Error('Invalid reranker candidate identities');
         if (!reranked) gaps.push({ code: 'CONTEXT_RERANK_UNAVAILABLE',
-          message: `检索排序未生效（${this.#rerank.provider}），已按融合顺序交付这 ${candidates.length} 条候选。` });
+          message: `检索排序未生效（${this.#reranker ? 'configured-model' : this.#rerank!.provider}），已按融合顺序交付这 ${candidates.length} 条候选。` });
         if (reranked) {
-          const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(this.#rerank.candidateLimit)];
+          const ordered = [...reranked.flatMap((candidate) => byId.get(candidate.id) ?? []), ...unique.slice(limit)];
           // The delivery is sorted by `score` downstream, so the model's order has to
           // be carried by the score itself; reordering the array alone is discarded.
           // The reranked head keeps a strictly decreasing score above every other
@@ -329,6 +335,8 @@ export class TaskRetrievalService implements TaskRetrievalPort {
           unique = ordered;
         }
       } catch (error) {
+        signal.throwIfAborted();
+        gaps.push({ code: 'CONTEXT_RERANK_UNAVAILABLE', message: '配置的模型重排未成功，已回退到融合排序；请检查后端和模型配置。' });
         // Reranking is an enhancement: any failure keeps the fused order.
         if (process.env.RECAST_RETRIEVAL_RERANK_DEBUG === '1') console.error(JSON.stringify({ rerankFailed: error instanceof Error ? error.message : String(error) }));
       }
@@ -374,7 +382,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
         if (hit.modulePathsTruncated || hit.modulePaths!.length > representatives.length || symbols.length > representatives.length || found.truncated || exact.truncated) gaps.push({ code: 'MODULE_CONTEXT_PARTIAL', message: `Only bounded representative implementation excerpts from ${hit.module.name} were included; this is not its complete source subtree.`, repositoryId: hit.scope.repositoryId });
       }
     }
-    await this.expandContext(seeds, evidence, declarations, relations, gaps, signal);
+    await this.expandContext(seeds, evidence, declarations, relations, gaps, signal, scopes);
     for (const scope of [...new Map(selected.filter((hit) => hit.scope.projectId).map((hit) => [key(hit.scope), hit.scope])).values()]) {
       const project = await this.store.getProject(scope, scope.projectId!, signal);
       for (const path of project?.manifestPaths ?? []) await this.readEvidence(scope, path, undefined, 'configuration', 'Project build and dependency configuration.', evidence, gaps, signal, 'configuration');
@@ -408,9 +416,10 @@ export class TaskRetrievalService implements TaskRetrievalPort {
   }
 
   private async expandContext(seeds: Array<{ scope: TaskRetrievalScope; symbol: SymbolRecord }>, evidence: TaskContextEvidence[],
-    declarations: TaskContextDeclaration[], relations: DependencyEdgeRecord[], gaps: TaskRetrievalGap[], signal: AbortSignal): Promise<void> {
+    declarations: TaskContextDeclaration[], relations: DependencyEdgeRecord[], gaps: TaskRetrievalGap[], signal: AbortSignal, scopes: TaskRetrievalScope[]): Promise<void> {
     const queue = [...seeds];
     const visited = new Set<string>();
+    await this.expandImports(evidence, relations, gaps, signal, scopes);
     const outlined = new Set<string>();
     const fileEdges = new Map<string, Awaited<ReturnType<NonNullable<IndexStore['queryDependencies']>>>>();
     const fileSymbols = new Map<string, Awaited<ReturnType<NonNullable<IndexStore['querySymbols']>>>>();
@@ -461,6 +470,7 @@ export class TaskRetrievalService implements TaskRetrievalPort {
       const targets = new Map<string, DependencyEdgeRecord>();
       for (const edge of edges) {
         if (edge.repositoryId !== scope.repositoryId || edge.analysisRevision !== scope.analysisRevision) throw new Error('Dependency belongs to another revision.');
+        if (relations.some(item => identity(item, item.dependencyEdgeId) === identity(edge, edge.dependencyEdgeId) && item.targetRepositoryId)) continue;
         if (!relations.some(item => identity(item, item.dependencyEdgeId) === identity(edge, edge.dependencyEdgeId))) relations.push(edge);
         if (edge.resolution !== 'resolved') {
           if (edge.internal) gaps.push({ code: 'UNRESOLVED_DEPENDENCY', message: `${symbol.qualifiedName}: ${edge.targetReference ?? edge.kind} is ${edge.resolution}.`, repositoryId: scope.repositoryId });
@@ -494,6 +504,43 @@ export class TaskRetrievalService implements TaskRetrievalPort {
               queue.push({ scope, symbol: target });
             }
           } else await this.readEvidence(scope, target.relativePath, target, 'interface', reason, evidence, gaps, signal, 'symbol');
+        }
+      }
+    }
+  }
+
+  /** File traversal also follows imports in modules that contain constants/initializers but no symbols. */
+  private async expandImports(evidence: TaskContextEvidence[], relations: DependencyEdgeRecord[], gaps: TaskRetrievalGap[],
+    signal: AbortSignal, scopes: TaskRetrievalScope[]): Promise<void> {
+    const queue = evidence.flatMap(item => scopes.filter(scope => scope.repositoryId === item.repositoryId && scope.analysisRevision === item.analysisRevision)
+      .map(scope => ({ scope, path: item.relativePath })));
+    const visited = new Set<string>();
+    const cache = new Map<string, Awaited<ReturnType<typeof resolvePythonImport>>>();
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      signal.throwIfAborted();
+      const current = queue[cursor]!;
+      const fileId = JSON.stringify([key(current.scope), current.path]);
+      if (visited.has(fileId) || !current.path.endsWith('.py')) continue;
+      if (visited.size >= 256) { gaps.push({ code: 'IMPORT_EXPANSION_LIMIT', message: 'Import traversal reached its 256-file limit.' }); break; }
+      visited.add(fileId);
+      const found = await this.store.queryDependencies!(current.scope, { relativePaths: [current.path], direction: 'outgoing', limit: 200 }, signal);
+      if (found.truncated) gaps.push({ code: 'DEPENDENCY_QUERY_PARTIAL', message: 'Import edges reached their page limit.', repositoryId: current.scope.repositoryId, relativePath: current.path });
+      for (const edge of found.dependencies.filter(edge => edge.kind === 'import')) {
+        if (edge.repositoryId !== current.scope.repositoryId || edge.analysisRevision !== current.scope.analysisRevision || edge.sourceRelativePath !== current.path) throw new Error('Import escaped its source snapshot.');
+        const cacheKey = JSON.stringify([key(current.scope), edge.targetReference]);
+        let matches = cache.get(cacheKey);
+        if (!matches) { matches = await resolvePythonImport(this.store, current.scope, edge, scopes, signal); cache.set(cacheKey, matches); }
+        if (matches.length === 1) {
+          const target = matches[0]!;
+          if (!relations.some(item => key(item) === key(edge) && item.dependencyEdgeId === edge.dependencyEdgeId)) relations.push({ ...edge,
+            resolution: 'resolved', targetRelativePath: target.path, targetRepositoryId: target.scope.repositoryId, targetAnalysisRevision: target.scope.analysisRevision });
+          await this.readEvidence(target.scope, target.path, undefined, 'dependency',
+            `Structural import ${edge.targetReference} from ${current.scope.repositoryId}:${current.path}; runtime resolution is not verified.`, evidence, gaps, signal, 'dependency');
+          queue.push(target);
+        } else if (matches.length > 1) {
+          gaps.push({ code: 'AMBIGUOUS_CROSS_REPOSITORY_IMPORT', message: `Import ${edge.targetReference} matches multiple authorized modules; no target was selected.`, repositoryId: current.scope.repositoryId });
+        } else if (edge.resolution !== 'resolved') {
+          gaps.push({ code: 'IMPORT_TARGET_UNAVAILABLE', message: `Import ${edge.targetReference ?? ''} has no exact module path in the authorized snapshots.`, repositoryId: current.scope.repositoryId });
         }
       }
     }

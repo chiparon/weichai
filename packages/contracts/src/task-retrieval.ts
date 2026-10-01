@@ -1,6 +1,8 @@
 import type { DependencyEdgeRecord, EvidenceLevel, EvidenceProvider, RepositoryRevisionScope, SourceRange } from './code-intelligence';
 
 export type RetrievalGranularity = 'auto' | 'function' | 'class' | 'module' | 'subsystem';
+/** Shared ceiling for UI, query transport and Agent evidence scopes. Never truncate silently. */
+export const MAX_RETRIEVAL_SCOPES = 64;
 export type ConcreteRetrievalGranularity = Exclude<RetrievalGranularity, 'auto'>;
 export interface TaskRetrievalScope extends RepositoryRevisionScope { projectId?: string; role?: 'target' | 'reference' }
 export interface TaskRetrievalRequest {
@@ -108,7 +110,7 @@ export function formatContextMarkdown(packet: Pick<ContextPacket, 'requirement' 
   if (packet.results.length) sections.push('## Relevant Implementations', ...packet.results.map((result) =>
     `- ${result.name} [${result.granularity}] ${result.repositoryId}@${result.analysisRevision}${result.relativePath ? `:${result.relativePath}` : ''}\n  ${clamp(result.reason, CONTEXT_MARKDOWN_LIMITS.resultReason)}`));
   if (packet.relations.length) sections.push('## Relations', ...packet.relations.slice(0, CONTEXT_MARKDOWN_LIMITS.relations).map((edge) =>
-    `- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`),
+    `- ${edge.repositoryId}@${edge.analysisRevision}: ${edge.sourceSymbolKey ?? edge.sourceRelativePath} --${edge.kind} (${edge.resolution}, ${edge.evidenceLevel})--> ${edge.targetRepositoryId ? `${edge.targetRepositoryId}@${edge.targetAnalysisRevision}: ` : ''}${edge.targetSymbolKey ?? edge.targetRelativePath ?? edge.targetReference ?? 'unknown'}`),
   ...(packet.relations.length > CONTEXT_MARKDOWN_LIMITS.relations ? [`- … 另有 ${packet.relations.length - CONTEXT_MARKDOWN_LIMITS.relations} 条关系未在此列出（结构化字段 relations 中完整保留）`] : []));
   const titles = { implementation: 'Core Implementations', interface: 'Type Definitions', dependency: 'Supporting Implementations', configuration: 'Build Configuration' };
   for (const role of ['implementation', 'interface', 'dependency', 'configuration'] as const) {

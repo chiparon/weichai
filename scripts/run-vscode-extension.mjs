@@ -33,14 +33,19 @@ Options:
   --skip-seek-db       Do not run docker compose for SeekDB.
   --skip-services      Do not start retrieval or adaptation services.
   --folder <path>      Folder to open in the Extension Development Host.
+  --wait-services      Open the host only after every dependency reports ready.
   --help               Show this help.
+
+The Extension Development Host opens as soon as the extension is built; the
+dependency services keep starting in parallel and report their status in this
+terminal. Use --wait-services for the old strict order.
 
 The legacy PowerShell spellings (-SkipSeekDb, -SkipServices and -Folder) are
 also accepted so existing Windows command lines remain compatible.`);
 }
 
 function parseArgs(argv) {
-  const options = { skipSeekDb: false, skipServices: false, folder: undefined };
+  const options = { skipSeekDb: false, skipServices: false, waitServices: false, folder: undefined };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const normalized = argument.toLowerCase();
@@ -54,6 +59,10 @@ function parseArgs(argv) {
     }
     if (['--skip-services', '--skipservices', '-skipservices'].includes(normalized)) {
       options.skipServices = true;
+      continue;
+    }
+    if (['--wait-services', '--waitservices', '-waitservices'].includes(normalized)) {
+      options.waitServices = true;
       continue;
     }
     if (normalized === '--folder' || normalized === '-folder') {
@@ -160,6 +169,7 @@ function configureEnvironment() {
   // ADAPTATION_PROJECT_ROOT and FOREXPLORE_TRANSLATION_PROFILE are optional.
   // Module migration supplies a host-owned profile after the user selects a
   // target and candidate; an invented temporary path would block startup.
+  // configureWorkspaceTranslation() derives the root from --folder once it is known.
 
   // The adaptation process receives only the host's loopback query port. The
   // extension binds this port when the workbench is first opened.
@@ -173,10 +183,8 @@ function configureEnvironment() {
     args: ['tools/compile.mjs'],
     timeoutMs: 900_000,
   });
-  process.env.ADAPTATION_WORKSPACE_VERIFICATION = JSON.stringify({
-    command: { executable: 'node', args: ['tools/verify.mjs'], timeoutMs: 900_000 },
-    protectedFiles: ['tools/verify.mjs', 'tools/compile.mjs', 'tools/jdk.mjs'],
-  });
+  // ADAPTATION_WORKSPACE_VERIFICATION is set by configureWorkspaceTranslation
+  // below, once the workspace root is known.
 }
 
 function listening(port) {
@@ -294,6 +302,84 @@ async function startServices(options) {
   }
 }
 
+/**
+ * SeekDB must be up before the services use it, but an unavailable Docker is not
+ * a reason to withhold the development host: the extension reports the missing
+ * index itself, and this terminal keeps the reason.
+ */
+async function startSeekDb(options) {
+  if (options.skipSeekDb) return true;
+  if (!existsSync(composeFile)) {
+    console.warn(`SeekDB compose file does not exist: ${composeFile}. Retrieval will report fetch failures.`);
+    return false;
+  }
+  try {
+    ensureCommand('docker', ['--version']);
+  } catch (error) {
+    console.warn(`${error.message} SeekDB stays down; retrieval will report fetch failures.`);
+    return false;
+  }
+  const status = runSync('docker', ['compose', '-f', composeFile, 'up', '-d']);
+  if (status !== 0) {
+    console.warn(`SeekDB startup failed with exit code ${status}. Retrieval will report fetch failures.`);
+    return false;
+  }
+  return true;
+}
+
+const verificationCriteria = ['tools/verify.mjs', 'tools/compile.mjs', 'tools/jdk.mjs'];
+
+/**
+ * Behavioral verification is optional and host-owned, but the service reads every
+ * criteria file from the workspace root while it starts: declaring criteria for a
+ * workspace that does not contain them is what kept the translation endpoint from
+ * ever listening under `npm run dev:extension` (the default root is the skeleton
+ * fixture, which carries no tools/). Derive the root from the opened folder, keep
+ * the criteria only where they exist, and let translation serve without them.
+ */
+function configureWorkspaceTranslation(options) {
+  if (!process.env.ADAPTATION_PROJECT_ROOT?.trim() && options.folder) {
+    process.env.ADAPTATION_PROJECT_ROOT = options.folder;
+  }
+  const projectRoot = process.env.ADAPTATION_PROJECT_ROOT?.trim();
+  if (!projectRoot) {
+    delete process.env.ADAPTATION_WORKSPACE_VERIFICATION;
+    console.warn('No ADAPTATION_PROJECT_ROOT and no --folder: workspace translation starts without behavioral verification.');
+    return;
+  }
+  const missing = verificationCriteria.filter((relative) => !existsSync(path.join(projectRoot, relative)));
+  if (missing.length) {
+    delete process.env.ADAPTATION_WORKSPACE_VERIFICATION;
+    console.warn(`Workspace ${projectRoot} has no ${missing.join(', ')}: workspace translation starts without behavioral verification.`);
+    return;
+  }
+  process.env.ADAPTATION_WORKSPACE_VERIFICATION = JSON.stringify({
+    command: { executable: 'node', args: ['tools/verify.mjs'], timeoutMs: 900_000 },
+    protectedFiles: verificationCriteria,
+  });
+  console.log(`Workspace translation root: ${projectRoot} (behavioral verification enabled).`);
+}
+
+/** Open the Extension Development Host and settle when its launcher process exits. */
+function launchHost(options) {
+  const args = [`--extensionDevelopmentPath=${extensionRoot}`];
+  if (options.folder) args.push(options.folder);
+  const vscode = spawn(vscodeCommand, shellArgs(args), {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+  return new Promise((resolve, reject) => {
+    vscode.once('error', reject);
+    vscode.once('exit', (code, signal) => {
+      if (signal) reject(new Error(`VS Code exited due to signal ${signal}.`));
+      else if (code !== 0) reject(new Error(`VS Code exited with code ${code}.`));
+      else resolve();
+    });
+  });
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   process.chdir(repoRoot);
@@ -305,18 +391,11 @@ async function main() {
   if (!options.skipServices && process.env.ADAPTATION_PROJECT_ROOT && !existsSync(process.env.ADAPTATION_PROJECT_ROOT)) {
     throw new Error(`ADAPTATION_PROJECT_ROOT does not exist: ${process.env.ADAPTATION_PROJECT_ROOT}`);
   }
-  if (!options.skipSeekDb && !existsSync(composeFile)) {
-    throw new Error(`SeekDB compose file does not exist: ${composeFile}`);
-  }
 
   ensureVsCodeExtension('redhat.java');
-  if (!options.skipSeekDb) {
-    ensureCommand('docker', ['--version']);
-    requireSuccess('docker', ['compose', '-f', composeFile, 'up', '-d'], 'SeekDB startup');
-  }
+  await startSeekDb(options);
 
   requireSuccess(npmCommand, ['run', 'build:extension'], 'Extension build');
-  await startServices(options);
 
   if (options.folder) {
     const folderRoot = resolveFolder(options.folder);
@@ -325,23 +404,24 @@ async function main() {
     }
     options.folder = folderRoot;
   }
+  configureWorkspaceTranslation(options);
 
-  const args = [`--extensionDevelopmentPath=${extensionRoot}`];
-  if (options.folder) args.push(options.folder);
-  const vscode = spawn(vscodeCommand, shellArgs(args), {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-  await new Promise((resolve, reject) => {
-    vscode.once('error', reject);
-    vscode.once('exit', (code, signal) => {
-      if (signal) reject(new Error(`VS Code exited due to signal ${signal}.`));
-      else if (code !== 0) reject(new Error(`VS Code exited with code ${code}.`));
-      else resolve();
-    });
-  });
+  // The host opens as soon as the extension is built. Waiting for every service
+  // first made a working launch look like nothing happened: a cold start spent
+  // the full readiness budget of each dependency (minutes) before any window
+  // appeared, and a single broken dependency consumed the whole budget.
+  if (options.waitServices) {
+    await startServices(options);
+    await launchHost(options);
+    return;
+  }
+
+  const host = launchHost(options);
+  const services = startServices(options);
+  console.log('The development host is opening; dependency services continue in this terminal.');
+  console.log('VS Code keeps one development host per extension path: close the existing window to get a new one.');
+  await host;
+  await services;
 }
 
 main().catch((error) => {

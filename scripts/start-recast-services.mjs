@@ -14,25 +14,107 @@
 //   FOREXPLORE_EMBEDDING_PORT   4021
 //   FOREXPLORE_RERANK_PORT      4022
 //   FOREXPLORE_EMBEDDING_TOOLS  directory holding @huggingface/transformers
+//                               (default: <LOCALAPPDATA>/recast/embed-tools)
 //   FOREXPLORE_MODEL_CACHE      model cache directory
+//   FOREXPLORE_MODEL_HOST       model host for downloads (default: a mirror,
+//                               because Node's fetch ignores the proxy here)
 //   SEEKDB_CONTAINER            forexplore-seekdb
 //   RECAST_SERVICES_LOG_DIR     where child logs go (default: <tmp>/recast-services)
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { mkdirSync, openSync, renameSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const runtimePackage = '@huggingface/transformers';
+// Pinned to the version the service scripts assume: they rely on `env.cacheDir`,
+// `env.allowRemoteModels` and `dtype: 'q8'`.
+const runtimeVersion = '3.8.1';
+const defaultModelHost = 'https://hf-mirror.com';
 const embeddingPort = Number(process.env.FOREXPLORE_EMBEDDING_PORT ?? 4021);
 const rerankPort = Number(process.env.FOREXPLORE_RERANK_PORT ?? 4022);
 const seekdbPort = Number(process.env.SEEKDB_PORT ?? 2881);
 const container = process.env.SEEKDB_CONTAINER ?? 'forexplore-seekdb';
-const tools = process.env.FOREXPLORE_EMBEDDING_TOOLS ?? path.join(tmpdir(), 'recast-embed-tools');
+
+/**
+ * A durable per-user location, never `os.tmpdir()`: the system cleans the temp
+ * directory, and when the runtime disappeared with it every start burned its full
+ * readiness budget and then failed with a bare MODULE_NOT_FOUND, which reached the
+ * workbench as an unexplained "fetch failed".
+ */
+function defaultToolsDirectory() {
+  const base = process.platform === 'win32'
+    ? process.env.LOCALAPPDATA ?? path.join(homedir(), 'AppData', 'Local')
+    : path.join(homedir(), '.cache');
+  return path.join(base, 'recast', 'embed-tools');
+}
+
+const tools = process.env.FOREXPLORE_EMBEDDING_TOOLS ?? defaultToolsDirectory();
 const cache = process.env.FOREXPLORE_MODEL_CACHE ?? path.join(homedir(), '.cache', 'forexplore-model-cache');
 const logDir = process.env.RECAST_SERVICES_LOG_DIR ?? path.join(tmpdir(), 'recast-services');
-const waitMs = Number(process.env.RECAST_SERVICES_WAIT_MS ?? 180_000);
+let waitMs = Number(process.env.RECAST_SERVICES_WAIT_MS ?? 180_000);
 const maxLogBytes = 10 * 1024 * 1024;
+
+const runtimeResolvable = (directory) => {
+  try {
+    createRequire(path.join(directory, 'package.json')).resolve(runtimePackage);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The inference runtime carries native ONNX binaries, so it lives outside the
+ * workspace instead of in every install. A fresh machine — or one whose cache was
+ * cleaned — therefore has nothing to launch: install it on demand rather than
+ * reporting a probe timeout.
+ */
+function ensureEmbeddingRuntime() {
+  if (runtimeResolvable(tools)) return true;
+  if (process.env.FOREXPLORE_EMBEDDING_SKIP_INSTALL === '1') {
+    console.error(`Embedding runtime ${runtimePackage} is missing from ${tools} and FOREXPLORE_EMBEDDING_SKIP_INSTALL=1.`);
+    return false;
+  }
+  console.log(`Embedding runtime ${runtimePackage} is missing from ${tools}; installing ${runtimeVersion}.`);
+  mkdirSync(tools, { recursive: true });
+  const manifest = path.join(tools, 'package.json');
+  if (!existsSync(manifest)) {
+    writeFileSync(manifest, `${JSON.stringify({ name: 'recast-embed-tools', private: true, version: '1.0.0' }, null, 2)}\n`);
+  }
+  const installed = spawnSync(npmCommand, ['install', '--prefix', tools, '--ignore-scripts', '--no-audit', '--no-fund',
+    `${runtimePackage}@${runtimeVersion}`], { stdio: 'inherit', shell: process.platform === 'win32' });
+  if (installed.status !== 0 || !runtimeResolvable(tools)) {
+    console.error(`Unable to install ${runtimePackage} into ${tools}.`);
+    console.error('Install it by hand, or point FOREXPLORE_EMBEDDING_TOOLS at a directory that already contains it.');
+    return false;
+  }
+  console.log(`Embedding runtime ready in ${tools}.`);
+  return true;
+}
+
+const modelCachePopulated = () => {
+  try {
+    return existsSync(cache) && readdirSync(cache).length > 0;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The library downloads from huggingface.co, which Node on this machine cannot
+ * always reach (its fetch ignores the configured proxy). The mirror is therefore
+ * the default whenever no host is set; a complete cache loads offline, and the
+ * host is then never consulted.
+ */
+function modelHostEnvironment() {
+  if (process.env.FOREXPLORE_MODEL_HOST) return { FOREXPLORE_MODEL_HOST: process.env.FOREXPLORE_MODEL_HOST };
+  if (!modelCachePopulated()) console.log(`Model cache ${cache} is empty; downloading through ${defaultModelHost}.`);
+  return { FOREXPLORE_MODEL_HOST: defaultModelHost };
+}
 
 const listening = (port) => new Promise((resolve) => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -105,11 +187,20 @@ const seekdb = await step('SeekDB', seekdbPort, () => {
   return null;
 });
 
+const runtimeReady = ensureEmbeddingRuntime();
+if (!runtimeReady) {
+  // Both local servers exit immediately without the runtime, so probing the full
+  // readiness budget would only postpone the report.
+  waitMs = Math.min(waitMs, 5_000);
+  console.error('Local embedding and rerank servers cannot start without the inference runtime.');
+}
+const modelHost = modelHostEnvironment();
+
 const embedding = await step('embedding', embeddingPort, () => launch('embedding', path.join('scripts', 'serve-local-embeddings.mjs'),
-  { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_EMBEDDING_PORT: String(embeddingPort) }));
+  { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_EMBEDDING_PORT: String(embeddingPort), ...modelHost }));
 
 const rerank = await step('rerank', rerankPort, () => launch('rerank', path.join('scripts', 'serve-local-rerank.mjs'),
-  { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_RERANK_PORT: String(rerankPort) }));
+  { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_RERANK_PORT: String(rerankPort), ...modelHost }));
 
 console.log('\nservice    port   status');
 for (const [label, port, status] of results) console.log(`${label.padEnd(10)} ${String(port).padEnd(6)} ${status}`);

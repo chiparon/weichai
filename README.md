@@ -167,8 +167,17 @@ npm run dev:extension
 
 The cross-platform launcher is [`scripts/run-vscode-extension.mjs`](scripts/run-vscode-extension.mjs).
 It assumes dependencies are already installed and does not run `npm install`.
-Use `npm run dev:extension -- --skip-seek-db` when SeekDB is already running.
+The host opens as soon as the extension is built; the dependency services keep
+starting in parallel and report their status in the same terminal. Add
+`--wait-services` to open the host only after every dependency is ready,
+`--skip-services` to open it without starting them, or `--folder <path>` to choose
+the opened folder; `--help` lists every option. Use
+`npm run dev:extension -- --skip-seek-db` when SeekDB is already running.
 The legacy PowerShell path remains a compatibility wrapper on Windows.
+
+VS Code keeps one Extension Development Host per extension path, so running the
+launcher again while that window is open reloads the extension inside the existing
+window instead of opening a new one. Close that window to get a fresh one.
 
 `npm run dev` is an alias for `npm run dev:extension`. Do not append
 `adaptation` to it; start `npm run dev:adaptation` separately when needed.

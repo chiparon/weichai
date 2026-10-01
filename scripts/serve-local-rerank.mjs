@@ -21,6 +21,7 @@
 //   FOREXPLORE_RERANK_DEVICE     default: probe dml, then webgpu, then cpu
 //   FOREXPLORE_EMBEDDING_TOOLS   directory holding @huggingface/transformers
 //   FOREXPLORE_MODEL_CACHE       model cache directory
+//   FOREXPLORE_MODEL_HOST        model host for a first download
 
 import { createServer } from 'node:http';
 
@@ -31,6 +32,10 @@ if (!moduleDir) throw new Error('Set FOREXPLORE_EMBEDDING_TOOLS to the directory
 const { AutoTokenizer, AutoModelForSequenceClassification, env } = await import(
   `file://${moduleDir.replaceAll('\\', '/')}/node_modules/@huggingface/transformers/dist/transformers.node.mjs`);
 env.cacheDir = process.env.FOREXPLORE_MODEL_CACHE ?? env.cacheDir;
+// Node's fetch ignores the configured proxy, so huggingface.co is unreliable on
+// this machine; the embeddings server already honours this override, and without
+// it a first reranker download failed while the cache stayed empty.
+if (process.env.FOREXPLORE_MODEL_HOST) env.remoteHost = process.env.FOREXPLORE_MODEL_HOST;
 
 const tokenizer = await AutoTokenizer.from_pretrained(modelId);
 const requested = process.env.FOREXPLORE_RERANK_DEVICE?.trim();

@@ -80,3 +80,9 @@ logs/
 fixtures/code-corpus/**/obj/
 # 4) 临时截图
 apps/vscode-extension/webview/image.png
+# 5) 资产升级数据集：原始仓库与冻结清单体积过大，由 materialize.py 复现
+experiments/enterprise-asset-upgrade/source-repositories/
+experiments/enterprise-asset-upgrade/asset-manifest.json
+# 6) 实验工程的 .NET 构建产物（本地编译产生，不属于数据集）
+experiments/**/obj/
+experiments/**/bin/

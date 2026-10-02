@@ -34,6 +34,8 @@ python3 experiments/enterprise-asset-upgrade/materialize.py --depth 1
 
 目标模块围绕 `AssetUpgradeGateway`，组合租户校验、附件隔离、工作流投递、队列重试、周期补偿和审计幂等等企业约束。
 
+目标工程的规模要求已提高：Agent 完成实现后，生产代码、策略/适配器和验收测试合计应达到约 **3,000–4,000 行 C#**。这部分规模用于逼近企业代码资产升级的真实工作量，要求代码承载可复用策略、状态转换、错误恢复、租户隔离和审计证据；单纯增加无行为代码不计入完成度。Java 参考工程位于 `reference-project-java/`，当前约 3,100 行，提供同一需求边界下的完整实现和测试。
+
 ## 数据集原则
 
 1. 历史仓库使用固定 release 或 commit，不能随运行自动更新。

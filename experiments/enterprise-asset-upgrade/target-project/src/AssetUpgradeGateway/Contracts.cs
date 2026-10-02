@@ -1,12 +1,20 @@
 namespace AssetUpgradeGateway;
 
+public enum DeliveryStatus { Accepted, Rejected, Retryable, Duplicate, Quarantined }
+
+public enum OrderStatus { Accepted, Rejected, RolledBack }
+
 public sealed record AssetEvent(
     string EventId,
     string TenantId,
     string AssetId,
     string EventType,
     DateTimeOffset CreatedAt,
-    string? AttachmentId = null);
+    string? AttachmentId = null)
+{
+    // Kept as an init property so existing six-argument fixtures remain valid.
+    public WorkflowState State { get; init; } = WorkflowState.Approved;
+}
 
 public sealed record AttachmentInput(
     string AttachmentId,
@@ -16,47 +24,41 @@ public sealed record AttachmentInput(
     ReadOnlyMemory<byte> Content,
     bool Scanned);
 
-public sealed record DeliveryResult(bool Accepted, string Status, string? Detail = null);
+public sealed record DeliveryResult(bool Accepted, DeliveryStatus Status, string? Detail = null);
 
-public interface ITenantAuthorizer
-{
-    bool CanAccess(string tenantId, string actorId);
-}
+public sealed record PendingEvent(
+    AssetEvent Event,
+    DateTimeOffset RetryAfter,
+    int Attempts,
+    bool Retryable);
 
-public interface IAttachmentQuarantine
-{
-    bool IsSafe(AttachmentInput attachment);
-}
+public sealed record ReconciliationReport(
+    int Examined,
+    int Retried,
+    int Succeeded,
+    int Failed,
+    IReadOnlyList<string> EventIds);
 
-public interface IWorkflowDispatcher
-{
-    Task<DeliveryResult> DispatchAsync(AssetEvent assetEvent, CancellationToken cancellationToken);
-}
+public sealed record OrderRequest(
+    string OrderId,
+    string TenantId,
+    string ActorId,
+    IReadOnlyList<OrderLine> Lines,
+    string Currency);
 
-public interface IIdempotencyStore
-{
-    bool HasCompleted(string tenantId, string eventId);
-    void MarkCompleted(string tenantId, string eventId);
-}
+public sealed record OrderLine(string Sku, int Quantity, long UnitPriceMinor);
 
-public interface IAuditSink
-{
-    void Record(string tenantId, string eventId, string action, string status);
-}
+public sealed record ReservationResult(bool Reserved, string? ReservationId, string? Detail = null);
 
-public sealed class AssetUpgradeService(
-    ITenantAuthorizer authorizer,
-    IAttachmentQuarantine quarantine,
-    IWorkflowDispatcher dispatcher,
-    IIdempotencyStore idempotency,
-    IAuditSink audit)
-{
-    public async Task<DeliveryResult> SubmitAsync(
-        string actorId,
-        AssetEvent assetEvent,
-        AttachmentInput? attachment,
-        CancellationToken cancellationToken = default)
-    {
-        throw new NotImplementedException("The benchmark agent must implement this workflow.");
-    }
-}
+public sealed record OrderResult(
+    bool Accepted,
+    OrderStatus Status,
+    string? ReservationId = null,
+    string? Detail = null);
+
+public sealed record AuditRecord(
+    string TenantId,
+    string SubjectId,
+    string Action,
+    string Status,
+    DateTimeOffset At);

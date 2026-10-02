@@ -11,8 +11,36 @@ import {
   parseModuleWaveValidationCommands,
   type ModuleWaveValidationCommand,
 } from './module-wave-validation';
+import path from 'node:path';
 
 export const DEFAULT_ADAPTATION_API_URL = 'http://127.0.0.1:8788';
+
+/**
+ * Resolve the VS Code workspace-folder variable used by the dataset's
+ * portable `.code-workspace` file. VS Code does not expand this variable for
+ * every extension configuration shape, especially arrays, so the host keeps
+ * the expansion deterministic and local to path settings.
+ */
+export function resolveWorkspaceConfiguredPath(value: string): string | undefined {
+  const configured = normaliseConfiguredPath(value);
+  if (configured === undefined) return undefined;
+  const match = /^\$\{workspaceFolder(?::([^}]+))?\}(.*)$/.exec(configured);
+  if (!match) return configured;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const folder = match[1]
+    ? folders.find((candidate) => candidate.name === match[1])
+    : folders[0];
+  if (!folder || folder.uri.scheme !== 'file') return undefined;
+  const suffix = match[2] ?? '';
+  return path.resolve(folder.uri.fsPath, suffix.replace(/^[/\\]+/, ''));
+}
+
+export function resolveWorkspaceConfiguredPaths(values: readonly unknown[]): string[] {
+  const resolved = values
+    .map((value) => typeof value === 'string' ? resolveWorkspaceConfiguredPath(value) : undefined)
+    .filter((value): value is string => value !== undefined);
+  return normaliseConfiguredPaths(resolved);
+}
 
 export interface ExtensionSettings {
   executionMode: ExecutionMode;
@@ -29,7 +57,7 @@ export function loadSettings(): ExtensionSettings {
     llm: parseLlmSettings(config.inspect<LlmSettings>('llm')?.globalValue ?? DEFAULT_LLM_SETTINGS),
     // A hand-written array can hold quoted or empty entries; an empty one would
     // otherwise resolve to this extension host's working directory.
-    repositoryPaths: normaliseConfiguredPaths(config.get<unknown[]>('repositoryPaths', [])),
+    repositoryPaths: resolveWorkspaceConfiguredPaths(config.get<unknown[]>('repositoryPaths', [])),
     topK: boundedTopK(config.get<number>('topK', 4)),
     adaptationApiUrl:
       normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL)) ??

@@ -20,6 +20,12 @@
 
 当前本地冻结结果为 7 个仓库、约 249 万行源码、约 1.9 万个源码文件。原始仓库保存在被忽略的 `source-repositories/` 目录；脚本使用浅克隆和稀疏检出，只展开任务相关目录，Git 对象仍保留在各仓库中。
 
+## 直接在 RECAST Extension 中操作
+
+已经提供可直接打开的多根工作区：[`AssetUpgradeGateway.code-workspace`](./AssetUpgradeGateway.code-workspace)。在 VS Code 中打开该文件后，工作区会同时挂载 C# 目标工程、Java 参考工程和 7 个历史资产仓库；`forexplore.targetRepositoryPaths` 自动选择 C# 目标，`forexplore.repositoryPaths` 自动登记 Java 参考工程和历史资产。
+
+打开工作区后点击活动栏的 **RECAST** 图标，等待目标和参考工程完成结构索引，即可在工作台中选择目标模块、检索历史资产并执行后续适配流程。若本地还没有 `source-repositories/`，先运行下面的 `materialize.py` 命令下载冻结版本，再打开工作区文件。
+
 重新下载或在另一台机器复现：
 
 ```bash

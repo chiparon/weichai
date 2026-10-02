@@ -2,8 +2,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LLM_SETTINGS, normaliseConfiguredPaths } from '@forexplore/contracts';
 const config = vi.hoisted(() => ({ get: vi.fn((_key: string, fallback: unknown) => fallback), inspect: vi.fn(), update: vi.fn() }));
-vi.mock('vscode', () => ({ workspace: { getConfiguration: () => config }, ConfigurationTarget: { Global: 1, Workspace: 2 } }));
-import { loadSettings, savePanelSettings } from './settings';
+const workspaceFolders = vi.hoisted(() => [] as Array<{ name: string; uri: { scheme: string; fsPath: string } }>);
+vi.mock('vscode', () => ({ workspace: {
+  getConfiguration: () => config,
+  get workspaceFolders() { return workspaceFolders; },
+}, ConfigurationTarget: { Global: 1, Workspace: 2 } }));
+import { loadSettings, resolveWorkspaceConfiguredPath, savePanelSettings } from './settings';
 
 describe('AI user settings', () => {
   it('updates existing repository workspace overrides while keeping model configuration user-scoped', async () => {
@@ -46,6 +50,16 @@ describe('AI user settings', () => {
     // An empty entry must never resolve to the extension host's own directory.
     expect(settings.repositoryPaths).toEqual(['D:/reference']);
     expect(settings.adaptationApiUrl).toBe('http://127.0.0.1:9999');
+    config.get.mockImplementation((_key: string, fallback: unknown) => fallback);
+  });
+
+  it('expands named workspace folders in array settings', () => {
+    workspaceFolders.push({ name: 'asset-upgrade-target', uri: { scheme: 'file', fsPath: '/datasets/asset-upgrade/target-project' } });
+    expect(resolveWorkspaceConfiguredPath('${workspaceFolder:asset-upgrade-target}/src')).toBe('/datasets/asset-upgrade/target-project/src');
+    config.get.mockImplementation((key: string, fallback: unknown) => key === 'repositoryPaths'
+      ? ['${workspaceFolder:asset-upgrade-target}/src'] : fallback);
+    expect(loadSettings().repositoryPaths).toEqual(['/datasets/asset-upgrade/target-project/src']);
+    workspaceFolders.length = 0;
     config.get.mockImplementation((_key: string, fallback: unknown) => fallback);
   });
 });

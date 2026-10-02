@@ -4,6 +4,7 @@ import path from 'node:path';
 import * as vscode from 'vscode';
 import { normaliseConfiguredPath, normaliseConfiguredPaths } from '@forexplore/contracts';
 import type { TargetWorkspaceAddMode, TargetWorkspacePhase } from './protocol/messages';
+import { resolveWorkspaceConfiguredPaths } from './settings';
 
 /** Phases this module can observe while applying an explicit directory choice. */
 export type TargetWorkspaceProgressPhase = Extract<TargetWorkspacePhase, 'resolving' | 'attaching'>;
@@ -93,7 +94,7 @@ export function sameTargetPath(left: string, right: string): boolean {
 export function selectedTargetWorkspaceFolders(): readonly vscode.WorkspaceFolder[] {
   // Quoted and empty entries are decoration or noise: they must never widen the
   // match against real workspace folders.
-  const selected = normaliseConfiguredPaths(
+  const selected = resolveWorkspaceConfiguredPaths(
     vscode.workspace.getConfiguration('forexplore').get<unknown[]>('targetRepositoryPaths', []),
   );
   if (selected.length === 0) return [];
@@ -144,8 +145,9 @@ export async function addTargetWorkspace(
   // Read the existing selection through the same normalisation that decides the
   // match, so a quoted duplicate is recognised instead of being appended twice.
   const previous = normaliseConfiguredPaths(config.get<unknown[]>('targetRepositoryPaths', []));
+  const previousResolved = resolveWorkspaceConfiguredPaths(previous);
   const remember = async (workspacePath = resolved) => {
-    if (!previous.some((entry) => sameTargetPath(entry, workspacePath))) {
+    if (!previousResolved.some((entry) => sameTargetPath(entry, workspacePath))) {
       await config.update('targetRepositoryPaths', [...previous, workspacePath], vscode.ConfigurationTarget.Global);
     }
   };

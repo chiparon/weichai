@@ -89,6 +89,55 @@ it('shows a live index state for a target the host is still indexing', async () 
   expect(empty.querySelector('.is-spinning')).not.toBeNull();
 });
 
+it('settles an import from the durable ready state when the final result message was lost', async () => {
+  const { container, post } = await mountPanel();
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'added', mode: 'browse',
+    message: '目标目录已加入工作区，正在建立索引…' }));
+  expect(container.querySelector('.target-add-status .is-spinning')).not.toBeNull();
+
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: { status: 'ready', storage: 'seekdb',
+    repositories: [{ repositoryId: 'new-target', displayName: 'target', role: 'target', analysisStatus: 'ready',
+      activeRevision: 'analysis-1', selectedRevision: 'analysis-1', revisions: [], languages: [], projects: [],
+      selectedProjectId: null, summary: { status: 'missing' } }] } }));
+  expect(container.querySelector('.target-add-status .is-spinning')).toBeNull();
+  expect(container.querySelector('.target-add-status')?.textContent).toContain('目标工程已导入并完成索引');
+});
+
+it('shows an index failure when the durable repository state reports failed', async () => {
+  const { container, post } = await mountPanel();
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'added', mode: 'browse' }));
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: { status: 'error', storage: 'seekdb',
+    repositories: [{ repositoryId: 'new-target', displayName: 'target', role: 'target', analysisStatus: 'failed',
+      activeRevision: null, selectedRevision: null, revisions: [], languages: [], projects: [],
+      selectedProjectId: null, summary: { status: 'missing' } }], message: '部分仓库索引失败' } }));
+  const failure = container.querySelector('.target-add-status.is-error')!;
+  expect(failure.textContent).toContain('目标工程索引失败');
+  expect(failure.querySelector('.is-spinning')).toBeNull();
+});
+
+it('does not settle a new import from another ready target repository', async () => {
+  const { container, post } = await mountPanel();
+  const repository = (repositoryId: string, analysisStatus: 'indexing' | 'ready') => ({
+    repositoryId, displayName: repositoryId, role: 'target' as const, analysisStatus,
+    activeRevision: analysisStatus === 'ready' ? `${repositoryId}-revision` : null,
+    selectedRevision: analysisStatus === 'ready' ? `${repositoryId}-revision` : null,
+    revisions: [], languages: [], projects: [], selectedProjectId: null, summary: { status: 'missing' as const },
+  });
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: { status: 'ready', storage: 'seekdb',
+    repositories: [repository('existing-target', 'ready')] } }));
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="选择目标工程"]')!.click());
+  const addPath = [...container.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('输入项目路径'))!;
+  await act(async () => addPath.click());
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'added', mode: 'input' }));
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: { status: 'ready', storage: 'seekdb',
+    repositories: [repository('existing-target', 'ready'), repository('new-target', 'indexing')] } }));
+  expect(container.querySelector('.target-add-status .is-spinning')).not.toBeNull();
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: { status: 'ready', storage: 'seekdb',
+    repositories: [repository('existing-target', 'ready'), repository('new-target', 'ready')] } }));
+  expect(container.querySelector('.target-add-status .is-spinning')).toBeNull();
+});
+
 it('rejects an unknown target phase instead of trusting the message name', async () => {
   const { container, postRaw } = await mountPanel();
   await act(async () => postRaw({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'queued', message: 'x' }));

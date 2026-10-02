@@ -96,7 +96,8 @@ export function ModuleWorkspace({
   // A freshly chosen target is only visible through the host presentation while
   // it is being indexed, and that state must survive a Webview rebuild.
   const targetRepositories = repositories.filter((repository) => repository.role === 'target');
-  const indexingTarget = targetRepositories.find((repository) => repository.analysisStatus === 'indexing');
+  const indexingTarget = targetRepositories.find((repository) => repository.analysisStatus === 'indexing' || repository.analysisStatus === 'registered');
+  const failedTarget = targetRepositories.find((repository) => repository.analysisStatus === 'failed');
   const selectableTarget = targetRepositories.find((repository) => repository.projects.length > 0);
   const addPending = targetAdd?.status === 'pending' ? targetAdd : undefined;
   const filteredTree = useMemo(
@@ -285,11 +286,16 @@ export function ModuleWorkspace({
             {addPending || indexingTarget
               ? <RefreshCw size={32} strokeWidth={1.25} className="is-spinning" />
               : <FolderOpen size={32} strokeWidth={1.25} />}
-            <h1>{addPending ? '正在添加目标工程' : indexingTarget ? '正在建立项目索引' : '选择目标工程'}</h1>
+            <h1>{addPending ? '正在添加目标工程' : indexingTarget ? '正在建立项目索引' : failedTarget ? '目标工程索引失败' : '选择目标工程'}</h1>
             {addPending ? <p className="target-empty-detail" role="status">{targetAddMessage(addPending)}</p> : null}
             {!addPending && indexingTarget ? (
               <p className="target-empty-detail" role="status">
                 正在解析 {indexingTarget.displayName} 的目录结构、依赖与模块，完成后即可选择项目。
+              </p>
+            ) : null}
+            {!addPending && !indexingTarget && failedTarget ? (
+              <p className="target-empty-detail" role="alert">
+                {failedTarget.displayName} 的索引没有完成，请在左侧目标工程列表中点击重试。
               </p>
             ) : null}
             {!addPending && !indexingTarget && selectableTarget ? (

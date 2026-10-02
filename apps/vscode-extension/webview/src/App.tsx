@@ -32,6 +32,64 @@ import { createMessageBus, type MessageBus } from './vscode-api';
 import { createTaskSearchProvider } from './task-search-provider';
 import { createModuleChildrenProvider } from './module-children-provider';
 
+/**
+ * A workspace-folder update can recreate the extension host between the
+ * `added` notification and the final `completed` notification. In that case
+ * the Webview still receives the durable index presentation, but never sees
+ * the transient result message. Reconcile the local progress state from the
+ * host-owned repository lifecycle so an old spinner cannot mask a ready tree.
+ */
+function reconcileTargetAddFromIndex(
+  current: TargetAddUiState,
+  presentation: CodeIntelligencePresentation,
+  knownTargetIds: ReadonlySet<string> = new Set(),
+): TargetAddUiState {
+  if (current.status !== 'pending') return current;
+  // A window can remember more than one target directory. During an import,
+  // an already-ready target must not settle the spinner for a different target
+  // that is still being registered or indexed.
+  const candidates = presentation.repositories
+    .filter((repository) => repository.role === 'target' && !knownTargetIds.has(repository.repositoryId));
+  const allCandidatesReady = candidates.length > 1 && candidates.every((repository) =>
+    (repository.analysisStatus === 'ready' || repository.analysisStatus === 'degraded') && Boolean(repository.activeRevision));
+  const target = candidates.find((repository) => repository.analysisStatus === 'failed')
+    ?? candidates.find((repository) => repository.analysisStatus === 'indexing' || repository.analysisStatus === 'registered')
+    ?? (candidates.length === 1 ? candidates[0]
+      : allCandidatesReady ? candidates[0] : undefined);
+  if (!target) return current;
+  if (target.analysisStatus === 'failed') {
+    return {
+      status: 'failed',
+      ...(current.mode ? { mode: current.mode } : {}),
+      message: '目标工程索引失败，请查看 RECAST 输出日志后重试。',
+    };
+  }
+  if ((target.analysisStatus === 'ready' || target.analysisStatus === 'degraded') && target.activeRevision) {
+    return {
+      status: 'notice',
+      ...(current.mode ? { mode: current.mode } : {}),
+      message: '目标工程已导入并完成索引。',
+    };
+  }
+  return current;
+}
+
+function reconcileTargetAddFromExplorer(
+  current: TargetAddUiState,
+  explorer: PanelInitPayload['moduleExplorer'],
+  knownTargetIds: ReadonlySet<string> = new Set(),
+): TargetAddUiState {
+  if (current.status !== 'pending' || explorer.target.id === 'target:unselected' || !explorer.target.revision) return current;
+  if (explorer.target.repositoryId
+    ? knownTargetIds.has(explorer.target.repositoryId)
+    : knownTargetIds.size > 0) return current;
+  return {
+    status: 'notice',
+    ...(current.mode ? { mode: current.mode } : {}),
+    message: '目标工程已导入并完成索引。',
+  };
+}
+
 export default function App({ taskSearch, initialMode = 'search' }: { taskSearch?: TaskSearchProvider; initialMode?: 'search' | 'migration' } = {}) {
   const [taskMode, setTaskMode] = useState(initialMode);
   const bus: MessageBus = useMemo(() => createMessageBus(), []);
@@ -77,6 +135,7 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   // The host reports phases, not the entry point that was used, so the mode is
   // remembered here to make the retry button replay the same action.
   const targetAddModeRef = useRef<TargetAddUiState['mode']>(undefined);
+  const targetAddStartTargetIdsRef = useRef<ReadonlySet<string>>(new Set());
   pendingRef.current = state.pending;
   targetIdRef.current = state.target?.id ?? null;
   candidateIdRef.current = state.selectedCandidateId;
@@ -95,6 +154,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           setCodeIntelligence(message.payload.codeIntelligence);
           setServiceStatus(message.payload.serviceStatus);
           setModuleExplorer(message.payload.moduleExplorer);
+          setTargetAdd((current) => reconcileTargetAddFromIndex(
+            reconcileTargetAddFromExplorer(current, message.payload.moduleExplorer, targetAddStartTargetIdsRef.current),
+            message.payload.codeIntelligence,
+            targetAddStartTargetIdsRef.current,
+          ));
           setHistoryId((current) => current ?? message.payload.moduleExplorer.history[0]?.id ?? null);
           setError(null);
           if (message.payload.target && targetIdRef.current !== message.payload.target.id) {
@@ -131,12 +195,14 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
           break;
         case 'CODE_INTELLIGENCE_STATUS':
           setCodeIntelligence(message.presentation);
+          setTargetAdd((current) => reconcileTargetAddFromIndex(current, message.presentation, targetAddStartTargetIdsRef.current));
           break;
         case 'SERVICE_STATUS':
           setServiceStatus(message.status);
           break;
         case 'MODULE_EXPLORER':
           setModuleExplorer(message.explorer);
+          setTargetAdd((current) => reconcileTargetAddFromExplorer(current, message.explorer, targetAddStartTargetIdsRef.current));
           setHistoryId((current) =>
             message.explorer.history.some((repository) => repository.id === current)
               ? current
@@ -301,6 +367,11 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
   function handleAddTarget(mode: 'browse' | 'input' | 'workspace'): void {
     setError(null);
     targetAddModeRef.current = mode;
+    targetAddStartTargetIdsRef.current = new Set(
+      (codeIntelligence?.repositories ?? [])
+        .filter((repository) => repository.role === 'target')
+        .map((repository) => repository.repositoryId),
+    );
     // A click must produce feedback immediately; the host's first phase only
     // arrives after the native dialog is already being opened.
     setTargetAdd({ status: 'pending', mode, phase: 'selecting' });

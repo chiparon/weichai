@@ -344,7 +344,10 @@ function isPanelSettings(value: unknown): value is PanelSettingsPresentation {
     Array.isArray(settings.repositoryPaths) &&
     settings.repositoryPaths.length <= 20 &&
     settings.repositoryPaths.every(
-      (path) => typeof path === 'string' && path.trim().length > 0 && path.length <= 1_000,
+      // An emptied draft row and a pasted "Copy as path" value are both ordinary
+      // input, not malformed messages: the host unquotes them and drops what is
+      // left empty, so refusing the whole save here would silently lose the edit.
+      (path) => typeof path === 'string' && path.length <= 1_000 && !/[\u0000-\u001f\u007f]/.test(path),
     ) &&
     typeof settings.topK === 'number' &&
     Number.isInteger(settings.topK) &&

@@ -57,6 +57,7 @@ import {
   type PendingTargetImport,
 } from './target-workspace';
 import type { CodeIntelligencePresentation, RepositoryStatus } from './ui-types';
+import { targetImportVerdict } from './target-import-outcome';
 
 // Keep the transaction implementation bundled by esbuild without making the
 // extension's strict typecheck re-check the service's broader source tree.
@@ -479,11 +480,21 @@ function primeWorkbench(
   output: vscode.OutputChannel,
 ): void {
   // Opening the workbench is the explicit use that starts the indexing chain.
-  void ensureCodeIntelligenceStarted(host, output);
   void (async () => {
     try {
+      // A workspace-folder change can revive this panel while the startup
+      // synchronization is still running.  Reading the explorer first would
+      // publish the transient `indexing` state and, if the host was revived
+      // after the final result was emitted, leave the Webview with no later
+      // message to settle that state.
+      const startup = ensureCodeIntelligenceStarted(host, output);
       // Published indexing results are readable while another repository scans.
       // Opening a panel must not enqueue a status read behind that scan.
+      await publishProjectView(host.codeIntelligence);
+      // The first publication may have raced the workspace change or revival.
+      // Publish once more after startup so a completed or failed target scan
+      // always reaches a panel that was attached a moment later.
+      await startup;
       await publishProjectView(host.codeIntelligence);
       const [status, statuses] = await Promise.all([
         host.services.refresh(),
@@ -728,13 +739,21 @@ async function refreshModuleExplorer(
   options: { scanNewOnly?: boolean; throwErrors?: boolean } = {},
 ): Promise<boolean> {
   try {
-    const presentation = await synchronizeCodeIntelligence(codeIntelligence, options);
+    const { throwErrors = false, ...synchronizationOptions } = options;
+    const synchronization = await synchronizeCodeIntelligenceResult(codeIntelligence, synchronizationOptions);
+    const presentation = synchronization.presentation;
     const result = await buildProjectExplorer(codeIntelligence, activeRun?.target);
     moduleExplorerTargets = result.targets;
     moduleExplorerChildren = result.childrenByNodeId;
     publish({ type: 'MODULE_EXPLORER', explorer: result.presentation });
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation });
-    return true;
+    if (throwErrors) {
+      // The verdict lives in one tested place: the panel's success, failure and
+      // "no project in this directory" wording must not drift apart per caller.
+      const verdict = targetImportVerdict(presentation, synchronization.failedRepositoryIds);
+      if (verdict.status === 'failed') throw new Error(verdict.message);
+    }
+    return synchronization.failedRepositoryIds.length === 0 && presentation.status !== 'error';
   } catch (error) {
     // A caller that owns a visible progress surface reports the failure itself
     // so the user sees one message beside the control that failed.
@@ -1258,11 +1277,17 @@ async function synchronizeCodeIntelligence(
   host: CodeIntelligenceHost,
   options: { forceFull?: boolean; scan?: boolean; scanRepositoryIds?: readonly string[]; scanNewOnly?: boolean; scanRoles?: readonly ('history' | 'target')[] } = {},
 ): Promise<CodeIntelligencePresentation> {
-  const result = await host.synchronize({
+  return (await synchronizeCodeIntelligenceResult(host, options)).presentation;
+}
+
+async function synchronizeCodeIntelligenceResult(
+  host: CodeIntelligenceHost,
+  options: { forceFull?: boolean; scan?: boolean; scanRepositoryIds?: readonly string[]; scanNewOnly?: boolean; scanRoles?: readonly ('history' | 'target')[] } = {},
+): Promise<Awaited<ReturnType<CodeIntelligenceHost['synchronize']>>> {
+  return host.synchronize({
     repositories: codeIntelligenceRepositoryInputs(),
     ...options,
   });
-  return result.presentation;
 }
 
 function publish(message: HostToWebviewMessage): void {

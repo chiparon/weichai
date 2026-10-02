@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LLM_SETTINGS } from '@forexplore/contracts';
+import { DEFAULT_LLM_SETTINGS, normaliseConfiguredPaths } from '@forexplore/contracts';
 const config = vi.hoisted(() => ({ get: vi.fn((_key: string, fallback: unknown) => fallback), inspect: vi.fn(), update: vi.fn() }));
 vi.mock('vscode', () => ({ workspace: { getConfiguration: () => config }, ConfigurationTarget: { Global: 1, Workspace: 2 } }));
 import { loadSettings, savePanelSettings } from './settings';
@@ -24,5 +24,28 @@ describe('AI user settings', () => {
     config.update.mockClear();
     await expect(savePanelSettings({ repositoryPaths: [], topK: 4, llm: { ...llm, maxOutputTokens: 0 } })).rejects.toThrow();
     expect(config.update).not.toHaveBeenCalled();
+  });
+
+  it('stores pasted paths without their quotes and drops empty entries', async () => {
+    // Windows' "Copy as path" wraps the value in double quotes, and a cleared row
+    // arrives as an empty string; neither denotes a directory the user chose.
+    expect(normaliseConfiguredPaths(['  "D:/reference"  ', '""', '   ', "'D:/other'", 'D:/reference']))
+      .toEqual(['D:/reference', 'D:/other']);
+    const saved = await savePanelSettings({ repositoryPaths: ['"D:/reference"', ''], topK: 4 });
+    expect(saved.repositoryPaths).toEqual(['D:/reference']);
+    expect(config.update).toHaveBeenCalledWith('repositoryPaths', ['D:/reference'], expect.anything());
+  });
+
+  it('reads quoted and empty settings entries as the directories they denote', () => {
+    config.get.mockImplementation((key: string, fallback: unknown) => {
+      if (key === 'repositoryPaths') return ['"D:/reference"', '', '   '];
+      if (key === 'adaptationApiUrl') return ' "http://127.0.0.1:9999" ';
+      return fallback;
+    });
+    const settings = loadSettings();
+    // An empty entry must never resolve to the extension host's own directory.
+    expect(settings.repositoryPaths).toEqual(['D:/reference']);
+    expect(settings.adaptationApiUrl).toBe('http://127.0.0.1:9999');
+    config.get.mockImplementation((_key: string, fallback: unknown) => fallback);
   });
 });

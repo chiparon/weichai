@@ -1,3 +1,4 @@
+import { normaliseConfiguredPath } from '@forexplore/contracts';
 import type { MessageBus } from './vscode-api';
 
 export function browseReferenceFolders(bus: MessageBus): Promise<string[]> {
@@ -19,8 +20,10 @@ export function mergeReferencePaths(current: string[], selected: string[]): stri
   const result: string[] = [];
   const keys = new Set<string>();
   for (const value of [...current, ...selected]) {
-    const path = value.trim();
-    if (!path) continue;
+    // Windows' "Copy as path" pastes a quoted value, and an emptied input row
+    // arrives as an empty string: neither is a directory the user chose.
+    const path = normaliseConfiguredPath(value);
+    if (path === undefined) continue;
     const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
     const key = /^(?:[A-Za-z]:|\/\/)/.test(normalized) ? normalized.toLowerCase() : normalized;
     if (!keys.has(key)) { keys.add(key); result.push(path); }

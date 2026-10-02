@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import { normaliseConfiguredPath, normaliseConfiguredPaths } from '@forexplore/contracts';
 import type { TargetWorkspaceAddMode, TargetWorkspacePhase } from './protocol/messages';
 
 /** Phases this module can observe while applying an explicit directory choice. */
@@ -63,13 +64,17 @@ export function readPendingTargetImport(
  */
 function targetPathKeys(value: string): string[] {
   const keys = new Set<string>();
+  // An empty or quoted-to-empty entry denotes nothing; resolving it would name
+  // this process's working directory and silently match a real workspace folder.
+  const configured = normaliseConfiguredPath(value);
+  if (configured === undefined) return [];
   const add = (candidate: string) => {
     const normalized = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
     keys.add(normalized);
     // VS Code may report a Windows path with either separator.
     if (process.platform === 'win32') keys.add(normalized.replaceAll('\\', '/'));
   };
-  const resolved = path.resolve(value);
+  const resolved = path.resolve(configured);
   add(resolved);
   try {
     add(realpathSync(resolved));
@@ -86,8 +91,11 @@ export function sameTargetPath(left: string, right: string): boolean {
 }
 
 export function selectedTargetWorkspaceFolders(): readonly vscode.WorkspaceFolder[] {
-  const selected = vscode.workspace.getConfiguration('forexplore')
-    .get<string[]>('targetRepositoryPaths', []);
+  // Quoted and empty entries are decoration or noise: they must never widen the
+  // match against real workspace folders.
+  const selected = normaliseConfiguredPaths(
+    vscode.workspace.getConfiguration('forexplore').get<unknown[]>('targetRepositoryPaths', []),
+  );
   if (selected.length === 0) return [];
   return (vscode.workspace.workspaceFolders ?? []).filter((folder) =>
     folder.uri.scheme === 'file' && selected.some((entry) => sameTargetPath(entry, folder.uri.fsPath)));
@@ -97,29 +105,33 @@ export async function addTargetWorkspace(
   mode: TargetWorkspaceAddMode,
   options: { onProgress?(progress: TargetWorkspaceProgress): void } = {},
 ): Promise<TargetWorkspaceAddResult> {
-  let directory: string | undefined;
+  let picked: string | undefined;
   if (mode === 'workspace') {
     const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => folder.uri.scheme === 'file');
     const selected = await vscode.window.showQuickPick(folders.map((folder) => ({
       label: folder.name, description: folder.uri.fsPath, directory: folder.uri.fsPath,
     })), { title: '选择目标工程', placeHolder: '选择已打开的工程目录' });
-    directory = selected?.directory;
+    picked = selected?.directory;
   } else if (mode === 'browse') {
     const selected = await vscode.window.showOpenDialog({
       title: '添加目标工程', openLabel: '添加目标目录',
       canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
     });
-    directory = selected?.[0]?.fsPath;
+    picked = selected?.[0]?.fsPath;
   } else {
-    directory = await vscode.window.showInputBox({
+    picked = await vscode.window.showInputBox({
       title: '添加目标工程', prompt: '目标工程的绝对目录路径',
       ignoreFocusOut: true,
-      validateInput: (value) => path.isAbsolute(value.trim()) ? undefined : '请输入绝对目录路径',
+      // A pasted "Copy as path" value is quoted; accept it here as well as after.
+      validateInput: (value) => {
+        const entered = normaliseConfiguredPath(value);
+        return entered !== undefined && path.isAbsolute(entered) ? undefined : '请输入绝对目录路径';
+      },
     });
   }
-  if (directory === undefined) return { status: 'cancelled' };
-  directory = directory.trim();
-  if (!path.isAbsolute(directory)) throw new Error('请输入目标工程的绝对目录路径。');
+  if (picked === undefined) return { status: 'cancelled' };
+  const directory = normaliseConfiguredPath(picked);
+  if (directory === undefined || !path.isAbsolute(directory)) throw new Error('请输入目标工程的绝对目录路径。');
   options.onProgress?.({ phase: 'resolving', message: '正在校验目标目录…' });
   let resolved: string;
   try {
@@ -129,7 +141,9 @@ export async function addTargetWorkspace(
     throw new Error('目标目录不存在或不可访问，请检查路径。');
   }
   const config = vscode.workspace.getConfiguration('forexplore');
-  const previous = config.get<string[]>('targetRepositoryPaths', []);
+  // Read the existing selection through the same normalisation that decides the
+  // match, so a quoted duplicate is recognised instead of being appended twice.
+  const previous = normaliseConfiguredPaths(config.get<unknown[]>('targetRepositoryPaths', []));
   const remember = async (workspacePath = resolved) => {
     if (!previous.some((entry) => sameTargetPath(entry, workspacePath))) {
       await config.update('targetRepositoryPaths', [...previous, workspacePath], vscode.ConfigurationTarget.Global);

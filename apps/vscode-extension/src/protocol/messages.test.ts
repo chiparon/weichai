@@ -212,6 +212,14 @@ describe('Webview message boundary', () => {
         type: 'SAVE_SETTINGS',
         settings: { topK: 4, repositoryPaths: [''] },
       }),
+    // An emptied draft row is ordinary input: the host drops it while saving
+    // instead of discarding the user's whole edit at the boundary.
+    ).toBe(true);
+    expect(
+      isWebviewToHostMessage({
+        type: 'SAVE_SETTINGS',
+        settings: { topK: 4, repositoryPaths: ['D:/ok', 'D:/bad\u0000'] },
+      }),
     ).toBe(false);
   });
 });

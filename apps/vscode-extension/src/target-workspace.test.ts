@@ -98,6 +98,36 @@ it('compares Windows targets case- and separator-insensitively', () => {
   expect(sameTargetPath(target, `${equivalent}-other`)).toBe(false);
 });
 
+/**
+ * An empty or quoted-to-empty entry used to resolve to this process's working
+ * directory, which is a real folder: the window then reported a target the user
+ * never chose. Quoted entries are a paste, not a different directory.
+ */
+it('never matches an empty entry and accepts a quoted one', async () => {
+  expect(sameTargetPath('', root)).toBe(false);
+  expect(sameTargetPath('   ', root)).toBe(false);
+  expect(sameTargetPath('""', root)).toBe(false);
+  expect(sameTargetPath(`"${root}"`, root)).toBe(true);
+  api.folders = [{ uri: { scheme: 'file', fsPath: root } }];
+  api.selectedPaths = ['""', '   '];
+  expect(selectedTargetWorkspaceFolders()).toEqual([]);
+  api.selectedPaths = [`"${root}"`];
+  expect(selectedTargetWorkspaceFolders()).toEqual(api.folders);
+});
+
+it('accepts a pasted quoted path in the input box and stores it unquoted', async () => {
+  api.showInputBox.mockResolvedValue(`"${root}"`);
+  expect(await addTargetWorkspace('input')).toEqual({ status: 'attached', directory: root });
+  expect(api.selectedPaths).toEqual([root]);
+});
+
+it('rejects an emptied input box instead of resolving it to a directory', async () => {
+  api.showInputBox.mockResolvedValue('""');
+  await expect(addTargetWorkspace('input')).rejects.toThrow('绝对目录路径');
+  expect(api.updateWorkspaceFolders).not.toHaveBeenCalled();
+  expect(api.update).not.toHaveBeenCalled();
+});
+
 it('explains that an empty window cannot accept the folder', async () => {
   api.showOpenDialog.mockResolvedValue([{ fsPath: root }]);
   api.updateWorkspaceFolders.mockReturnValue(false);

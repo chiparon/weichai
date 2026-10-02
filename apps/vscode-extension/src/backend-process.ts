@@ -55,6 +55,16 @@ export class BackendProcess {
     if (existing) {
       if (!existing.retrievalRerank || !existing.semanticPlanning) throw new Error('现有后端缺少重排或语义规划能力，请更新后端。');
       if (existing.workspaceRoot && await realpath(existing.workspaceRoot) !== root) throw new Error('该后端绑定了其他目标工程，请使用另一端口。');
+      // An existing process was started by whatever launched this window, and it
+      // accepts only its own bearer token. Reusing it without proving that this
+      // host may call it turns every later translation into an unexplained 401,
+      // so the mismatch is reported here instead of at the first model call.
+      const authorized = await this.transport(
+        `${config.url.replace(/\/+$/, '')}/v1/workspace-translations/configuration`,
+        { headers: { authorization: `Bearer ${this.translationToken}` }, signal: AbortSignal.timeout(1500) });
+      if (!authorized.ok) {
+        throw new Error('现有后端的翻译令牌与本窗口不一致：请用 npm run dev:extension 打开本窗口，或先停止该后端再重试。');
+      }
       return existing;
     }
     if (!config.autoStart) throw new Error('模型后端不可用，自动启动已关闭。');

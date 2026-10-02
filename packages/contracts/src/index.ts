@@ -1,4 +1,5 @@
 export * from './adaptation';
+export * from './configured-path';
 export * from './llm-settings';
 export * from './backfill';
 export * from './code-intelligence';

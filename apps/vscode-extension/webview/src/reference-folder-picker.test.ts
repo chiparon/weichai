@@ -19,3 +19,10 @@ it('merges selected paths into the draft without duplicating Windows slash/case 
   expect(mergeReferencePaths([' D:\\Legacy ', '/home/Project'], ['d:/legacy/', 'D:/New', '/home/project']))
     .toEqual(['D:\\Legacy', '/home/Project', 'D:/New', '/home/project']);
 });
+
+it('drops quoted and empty draft rows instead of storing them as paths', () => {
+  // "Copy as path" pastes a quoted value and an emptied row is an empty string;
+  // both used to be saved verbatim and then failed as a directory that does not exist.
+  expect(mergeReferencePaths(['""', '   ', '"D:/Pasted"', "'E:/Single'"], ['', 'd:/pasted']))
+    .toEqual(['D:/Pasted', 'E:/Single']);
+});

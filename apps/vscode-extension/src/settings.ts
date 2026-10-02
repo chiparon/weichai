@@ -1,4 +1,10 @@
-import { DEFAULT_LLM_SETTINGS, parseLlmSettings, type LlmSettings } from '@forexplore/contracts';
+import {
+  DEFAULT_LLM_SETTINGS,
+  normaliseConfiguredPath,
+  normaliseConfiguredPaths,
+  parseLlmSettings,
+  type LlmSettings,
+} from '@forexplore/contracts';
 import * as vscode from 'vscode';
 import type { ExecutionMode } from './ui-types';
 import {
@@ -21,10 +27,12 @@ export function loadSettings(): ExtensionSettings {
   return {
     executionMode: 'real',
     llm: parseLlmSettings(config.inspect<LlmSettings>('llm')?.globalValue ?? DEFAULT_LLM_SETTINGS),
-    repositoryPaths: config.get<string[]>('repositoryPaths', []),
+    // A hand-written array can hold quoted or empty entries; an empty one would
+    // otherwise resolve to this extension host's working directory.
+    repositoryPaths: normaliseConfiguredPaths(config.get<unknown[]>('repositoryPaths', [])),
     topK: boundedTopK(config.get<number>('topK', 4)),
     adaptationApiUrl:
-      config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL).trim() ||
+      normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL)) ??
       DEFAULT_ADAPTATION_API_URL,
   };
 }
@@ -35,7 +43,9 @@ export async function savePanelSettings(input: {
   llm?: LlmSettings;
 }): Promise<Pick<ExtensionSettings, 'repositoryPaths' | 'topK' | 'llm'>> {
   const llm = parseLlmSettings(input.llm ?? loadSettings().llm);
-  const repositoryPaths = [...new Set(input.repositoryPaths.map((value) => value.trim()).filter(Boolean))];
+  // Saved values are stored unquoted so the settings file stays the same shape a
+  // hand-written one takes, and so the next read cannot see a literal path.
+  const repositoryPaths = normaliseConfiguredPaths(input.repositoryPaths);
   const topK = boundedTopK(input.topK);
   const config = vscode.workspace.getConfiguration('forexplore');
   // Update an existing workspace override so the newly saved value actually takes effect.

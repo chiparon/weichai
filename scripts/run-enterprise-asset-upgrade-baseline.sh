@@ -71,7 +71,8 @@ else
 # Enterprise asset upgrade baseline
 
 Implement the requested AssetUpgradeGateway target project as a plain coding-agent baseline.
-Read the C# source under `target-project/` and every requirement under `requirements/`.
+The current directory is the copied target project; read its C# source directly and read every
+requirement from the sibling `../requirements/` directory.
 Implement all four requirements, update or add tests where useful, and run the target project's
 available tests/build commands. Record useful implementation notes in the final response.
 
@@ -116,6 +117,8 @@ else
       --no-session-persistence \
       --permission-mode bypassPermissions \
       --allow-dangerously-skip-permissions \
+      --verbose \
+      --model "${DEEPSEEK_MODEL:-deepseek-v4-flash}" \
       --output-format stream-json \
       -p "$(cat "$run_dir/task-prompt.md")"
   ) 2>&1 | tee "$run_dir/agent-stream.jsonl"

@@ -22,7 +22,7 @@
 
 ## 直接在 RECAST Extension 中操作
 
-已经提供可直接打开的多根工作区：[`AssetUpgradeGateway.code-workspace`](./AssetUpgradeGateway.code-workspace)。在 VS Code 中打开该文件后，工作区会同时挂载 C# 目标工程、Java 参考工程和 7 个历史资产仓库；`forexplore.targetRepositoryPaths` 自动选择 C# 目标，`forexplore.repositoryPaths` 自动登记 Java 参考工程和历史资产。
+已经提供可直接打开的多根工作区：[`AssetUpgradeGateway.code-workspace`](./AssetUpgradeGateway.code-workspace)。在 VS Code 中打开该文件后，工作区会同时挂载 C# 目标工程和 7 个历史资产仓库；`forexplore.targetRepositoryPaths` 自动选择 C# 目标，`forexplore.repositoryPaths` 自动登记历史资产。
 
 打开工作区后点击活动栏的 **RECAST** 图标，等待目标和参考工程完成结构索引，即可在工作台中选择目标模块、检索历史资产并执行后续适配流程。若本地还没有 `source-repositories/`，先运行下面的 `materialize.py` 命令下载冻结版本，再打开工作区文件。
 
@@ -40,7 +40,7 @@ python3 experiments/enterprise-asset-upgrade/materialize.py --depth 1
 
 目标模块围绕 `AssetUpgradeGateway`，组合租户校验、附件隔离、工作流投递、队列重试、周期补偿和审计幂等等企业约束。
 
-目标工程的规模要求已提高：Agent 完成实现后，生产代码、策略/适配器和验收测试合计应达到约 **3,000–4,000 行 C#**。这部分规模用于逼近企业代码资产升级的真实工作量，要求代码承载可复用策略、状态转换、错误恢复、租户隔离和审计证据；单纯增加无行为代码不计入完成度。Java 参考工程位于 `reference-project-java/`，当前约 3,100 行，提供同一需求边界下的完整实现和测试。
+目标工程的规模要求已提高：Agent 完成实现后，生产代码、策略/适配器和验收测试合计应达到约 **3,000–4,000 行 C#**。这部分规模用于逼近企业代码资产升级的真实工作量，要求代码承载可复用策略、状态转换、错误恢复、租户隔离和审计证据；单纯增加无行为代码不计入完成度。目标工程只保留 C# 待实现骨架，历史仓库作为跨语言迁移和同语言插件设计的证据来源。
 
 ## 数据集原则
 

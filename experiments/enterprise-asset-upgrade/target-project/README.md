@@ -24,15 +24,16 @@ their APIs or changing the historical repositories.
 
 ## Current scaffold size
 
-The production scaffold currently keeps behavior unfinished while exposing the
-public seams needed by a larger implementation. It now contains the original
-service contracts plus workflow state, policy, scanning, repository,
-transaction, dead-letter, metrics, and history ports in `ExtendedContracts.cs`.
-A completed benchmark implementation
-is now expected to grow to roughly **35–50 classes, 90–130 methods and
-3,000–4,000 lines of C#**, including policy objects, state transitions,
-replaceable adapters, telemetry, and acceptance tests. The Java reference in
-`../reference-project-java` is intentionally in that same size band.
+The production scaffold keeps the four benchmark entry points unfinished while
+exposing the public seams needed by a larger implementation. Supporting layers
+now cover attachment policy and scanning, workflow envelopes and retry state,
+order pricing and inventory, tenant quotas, reconciliation leases/checkpoints,
+plugin registration, in-memory adapters, telemetry, and scenario fixtures. The
+C# target currently contains about **3,000 lines across 30+ source and test
+files**; a completed benchmark implementation is expected to stay in the
+**3,000–4,000 line** band and add behavior at these seams rather than filler. The target deliberately
+has no completed reference implementation: its evidence comes from the mixed
+history repositories and the acceptance conditions.
 
 The size is a planning guardrail for a realistic upgrade task. Behavior is
 still graded by the acceptance conditions and hidden tests: generated filler

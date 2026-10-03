@@ -1,7 +1,6 @@
 {
   "folders": [
     { "path": "target-project", "name": "asset-upgrade-target" },
-    { "path": "reference-project-java", "name": "asset-upgrade-java-reference" },
     { "path": "source-repositories/apache-camel", "name": "history-apache-camel" },
     { "path": "source-repositories/flowable-engine", "name": "history-flowable" },
     { "path": "source-repositories/keycloak", "name": "history-keycloak" },
@@ -15,7 +14,6 @@
       "${workspaceFolder:asset-upgrade-target}"
     ],
     "forexplore.repositoryPaths": [
-      "${workspaceFolder:asset-upgrade-java-reference}",
       "${workspaceFolder:history-apache-camel}",
       "${workspaceFolder:history-flowable}",
       "${workspaceFolder:history-keycloak}",

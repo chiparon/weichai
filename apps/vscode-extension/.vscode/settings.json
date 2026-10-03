@@ -1,8 +1,17 @@
 {
   "forexplore.executionMode": "real",
-  "forexplore.retrievalApiUrl": "http://127.0.0.1:8787",
   "forexplore.adaptationApiUrl": "http://127.0.0.1:8788",
+  "forexplore.targetRepositoryPaths": [
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/target-project"
+  ],
   "forexplore.repositoryPaths": [
-    "E:/CS/devsys/weichai/fixtures/code-corpus"
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/reference-project-java",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/apache-camel",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/flowable-engine",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/keycloak",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/bullmq",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/apscheduler",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/nopcommerce",
+    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/commons-fileupload"
   ]
 }

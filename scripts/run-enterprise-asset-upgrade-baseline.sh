@@ -127,11 +127,23 @@ else
 fi
 
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-python3 - "$run_dir/run-result.json" "$run_id" "$started_at" "$finished_at" "$agent_status" <<'PY'
+python3 - "$run_dir/run-result.json" "$run_id" "$started_at" "$finished_at" "$agent_status" "$run_dir/agent-stream.jsonl" <<'PY'
 import json, pathlib, sys
-out, run_id, started, finished, status = sys.argv[1:]
+out, run_id, started, finished, status, log_path = sys.argv[1:]
 root = pathlib.Path(out).parent
 files = [p for p in (root / "target-project").rglob("*") if p.is_file() and ".git" not in p.parts]
+stream_result = {}
+for line in pathlib.Path(log_path).read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") == "result":
+        stream_result = event
+usage = stream_result.get("usage", {})
+model_usage = stream_result.get("modelUsage", {})
+model_name = next(iter(model_usage), None)
+model_stats = model_usage.get(model_name, {}) if model_name else {}
 result = {
     "runId": run_id,
     "kind": "coding-agent-baseline",
@@ -144,6 +156,17 @@ result = {
     "agentLog": str(root / "agent-stream.jsonl"),
     "historyExposed": False,
     "resultFileCount": len(files),
+    "agentSessionId": stream_result.get("session_id"),
+    "agentModel": model_name,
+    "durationApiMs": stream_result.get("duration_api_ms"),
+    "durationMs": stream_result.get("duration_ms"),
+    "totalCostUsd": stream_result.get("total_cost_usd"),
+    "inputTokens": usage.get("input_tokens"),
+    "outputTokens": usage.get("output_tokens"),
+    "cacheCreationInputTokens": usage.get("cache_creation_input_tokens"),
+    "cacheReadInputTokens": usage.get("cache_read_input_tokens"),
+    "thinkingTokens": usage.get("output_tokens_details", {}).get("thinking_tokens"),
+    "modelUsage": model_stats,
 }
 pathlib.Path(out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 PY

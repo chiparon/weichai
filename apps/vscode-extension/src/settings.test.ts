@@ -1,11 +1,29 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LLM_SETTINGS, normaliseConfiguredPaths } from '@forexplore/contracts';
 const config = vi.hoisted(() => ({ get: vi.fn((_key: string, fallback: unknown) => fallback), inspect: vi.fn(), update: vi.fn() }));
 vi.mock('vscode', () => ({ workspace: { getConfiguration: () => config }, ConfigurationTarget: { Global: 1, Workspace: 2 } }));
 import { loadSettings, savePanelSettings } from './settings';
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+  config.get.mockImplementation((_key: string, fallback: unknown) => fallback);
+  config.inspect.mockReset();
+  config.update.mockClear();
+});
+
 describe('AI user settings', () => {
+  it('uses the environment port only when no explicit endpoint is configured', () => {
+    vi.stubEnv('ADAPTATION_PORT', '9134');
+    expect(loadSettings().adaptationApiUrl).toBe('http://127.0.0.1:9134');
+    config.inspect.mockImplementation(key => key === 'adaptationApiUrl'
+      ? { globalValue: 'http://127.0.0.1:8788' } : undefined);
+    expect(loadSettings().adaptationApiUrl).toBe('http://127.0.0.1:8788');
+    config.inspect.mockReset();
+    config.get.mockImplementation((key, fallback) => key === 'adaptationApiUrl' ? 'http://127.0.0.1:9234' : fallback);
+    expect(loadSettings().adaptationApiUrl).toBe('http://127.0.0.1:9234');
+  });
+
   it('updates existing repository workspace overrides while keeping model configuration user-scoped', async () => {
     config.inspect.mockImplementation((key: string) => key === 'repositoryPaths' ? { workspaceValue: [] } : undefined);
     await savePanelSettings({ repositoryPaths: ['D:/Picked'], topK: 4, llm: DEFAULT_LLM_SETTINGS });

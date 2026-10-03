@@ -1,8 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import childProcess, { type ChildProcess } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { scanRepositoryStructuralIndex } from './repository-scan.js';
+import { indexTreeSitterFile } from './tree-sitter-indexer.js';
 
 const temporaryRoots: string[] = [];
 
@@ -11,6 +14,93 @@ afterEach(async () => {
 });
 
 describe('scanRepositoryStructuralIndex', () => {
+  it('preserves complete and incremental indexes across background assembly and the injected parser path', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'code-indexer-assembly-equality-'));
+    temporaryRoots.push(root);
+    await writeFile(path.join(root, 'main.ts'), 'export function sample() { return 1; }');
+    await writeFile(path.join(root, 'other.ts'), 'import { sample } from "./main"; export const value = sample();');
+    const request = { repositoryRoot: root, repositoryId: 'equality', analysisRevision: 'one', retainSourceTexts: false };
+    const background = await scanRepositoryStructuralIndex(request);
+    const injected = await scanRepositoryStructuralIndex({ ...request, indexFile: indexTreeSitterFile });
+    try {
+      expect(background.index).toEqual(injected.index);
+      await writeFile(path.join(root, 'main.ts'), 'export function changed() { return 2; }');
+      const next = { ...request, analysisRevision: 'two', previousIndex: background.index };
+      const incremental = await scanRepositoryStructuralIndex(next);
+      const expected = await scanRepositoryStructuralIndex({ ...next, indexFile: indexTreeSitterFile });
+      try {
+        expect(incremental.index).toEqual(expected.index);
+        expect(incremental.stats.reusedFileCount).toBe(1);
+        expect(await background.sourceReader!.read('main.ts')).toContain('sample');
+        expect(await incremental.sourceReader!.read('main.ts')).toContain('changed');
+      } finally { await incremental.sourceReader!.dispose(); await expected.sourceReader!.dispose(); }
+    } finally { await background.sourceReader!.dispose(); await injected.sourceReader!.dispose(); }
+  });
+
+  it('keeps the host event loop responsive while the real background builder processes thousands of declarations', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'code-indexer-assembly-responsive-'));
+    temporaryRoots.push(root);
+    const source = Array.from({ length: 1500 }, (_, i) => `export function sample${i}() { return ${i}; }`).join('\n');
+    await Promise.all([0, 1, 2, 3].map(i => writeFile(path.join(root, `source${i}.ts`), source)));
+    const fork = childProcess.fork;
+    let building = false;
+    let ticksWhileBuilding = 0;
+    const spy = vi.spyOn(childProcess, 'fork').mockImplementation((...args) => {
+      const child = fork(...args);
+      if (String(args[0]).includes('structural-assembly-worker')) {
+        child.on('message', (message: { type?: string }) => {
+          if (message.type === 'building') building = true;
+          if (message.type === 'complete') building = false;
+        });
+      }
+      return child;
+    });
+    syncBuiltinESMExports();
+    const timer = setInterval(() => { if (building) ticksWhileBuilding++; }, 10);
+    try {
+      const result = await scanRepositoryStructuralIndex({ repositoryRoot: root, repositoryId: 'responsive',
+        analysisRevision: 'one', retainSourceTexts: false, isolatedParsing: false });
+      try {
+        expect(result.index.symbols).toHaveLength(6000);
+        expect(ticksWhileBuilding).toBeGreaterThan(3);
+      } finally { await result.sourceReader!.dispose(); }
+    } finally {
+      clearInterval(timer); spy.mockRestore(); syncBuiltinESMExports();
+    }
+  }, 20_000);
+
+  it.each(['abort', 'exit'] as const)('stops background assembly and removes the immutable spool on %s', async (mode) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'code-indexer-assembly-stop-'));
+    temporaryRoots.push(root);
+    await writeFile(path.join(root, 'source.ts'), Array.from({ length: 5000 }, (_, i) => `export const sample${i} = ${i};`).join('\n'));
+    const controller = new AbortController();
+    const fork = childProcess.fork;
+    let worker: ChildProcess | undefined;
+    let spool = '';
+    const spy = vi.spyOn(childProcess, 'fork').mockImplementation((...args) => {
+      const child = fork(...args);
+      if (String(args[0]).includes('structural-assembly-worker')) {
+        worker = child;
+        spool = path.dirname((args[1] as string[])[0]!);
+        child.on('message', (message: { type?: string }) => {
+          if (message.type !== 'building') return;
+          if (mode === 'abort') controller.abort(new Error('assembly cancelled by test'));
+          else child.kill();
+        });
+      }
+      return child;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(scanRepositoryStructuralIndex({ repositoryRoot: root, repositoryId: 'stop', analysisRevision: 'one',
+        retainSourceTexts: false, isolatedParsing: false, signal: controller.signal }))
+        .rejects.toThrow(mode === 'abort' ? 'assembly cancelled by test' : 'Structural assembly process exited');
+      expect(worker).toBeDefined();
+      expect(worker!.exitCode !== null || worker!.signalCode !== null).toBe(true);
+      await expect(access(spool)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { spy.mockRestore(); syncBuiltinESMExports(); }
+  }, 10_000);
+
   it('keeps production source bytes on disk and reports files beyond the parsing limit', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'code-indexer-stream-'));
     temporaryRoots.push(root);

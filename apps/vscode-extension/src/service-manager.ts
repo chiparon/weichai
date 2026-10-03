@@ -30,6 +30,8 @@ export class ServiceManager implements vscode.Disposable {
   get serviceStatus(): ServiceStatus {
     return { ...this.status };
   }
+
+  get adaptationEndpoint(): string { return this.backend?.url ?? loadSettings().adaptationApiUrl; }
   setRetrievalReady(ready: boolean): void {
     this.status = { ...this.status, retrieval: ready ? 'connected' : 'error' };
   }
@@ -44,13 +46,22 @@ export class ServiceManager implements vscode.Disposable {
   }
 
   async refresh(): Promise<ServiceStatus> {
-    const settings = loadSettings();
-    const adaptation = await checkServiceHealth(settings.adaptationApiUrl, localFetch);
+    let adaptation;
+    if (this.backend) {
+      try {
+        await this.backend.ensure();
+        adaptation = { healthy: true, detail: 'ok' };
+      } catch (error) {
+        adaptation = { healthy: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+    } else {
+      adaptation = await checkServiceHealth(loadSettings().adaptationApiUrl, localFetch);
+    }
     this.status = {
       retrieval: this.status.retrieval,
       adaptation: adaptation.healthy ? 'connected' : 'error',
       executionMode: 'real',
-      message: !adaptation.healthy ? `翻译：${adaptation.detail}` : undefined,
+      message: !adaptation.healthy ? `翻译：${adaptation.detail}` : this.backend?.healthPending ? '翻译后端暂未响应健康探测，进程仍在运行，稍后重试。' : undefined,
     };
     this.output.appendLine(
       `[forexplore] runtime refreshed: retrieval=${this.status.retrieval}, adaptation=${this.status.adaptation}`,
@@ -64,7 +75,9 @@ export class ServiceManager implements vscode.Disposable {
       this.status = { ...this.status, adaptation: 'error', message: error instanceof Error ? error.message : String(error) };
       throw error;
     }
-    return this.refresh();
+    if (!this.backend) return this.refresh();
+    this.status = { ...this.status, adaptation: 'connected', message: undefined };
+    return this.serviceStatus;
   }
 
   getAdaptationPort(): WorkflowPorts['adaptation'] {
@@ -72,7 +85,7 @@ export class ServiceManager implements vscode.Disposable {
       throw new Error(this.status.message ?? '真实适配服务尚未就绪。');
     }
     return new AdaptationHttpAdapter({
-      baseUrl: loadSettings().adaptationApiUrl,
+      baseUrl: this.adaptationEndpoint,
       fetch: localFetch,
     });
   }

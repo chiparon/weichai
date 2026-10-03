@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { StructuralScanProgress } from '@forexplore/code-indexer';
 import {
   type AnalysisRevisionRecord,
   type RepositoryId,
@@ -10,6 +11,12 @@ import type { RepositoryRegistry } from './repository-registry.js';
 
 export type AnalysisMode = 'full' | 'incremental';
 
+export interface AnalysisProgress {
+  stage: StructuralScanProgress['stage'] | 'recover' | 'structural-write' | 'search-projection' | 'activation';
+  completed?: number;
+  total?: number;
+}
+
 export interface StructuralScanRequest extends RepositoryRevisionScope {
   root: string;
   mode: AnalysisMode;
@@ -18,6 +25,7 @@ export interface StructuralScanRequest extends RepositoryRevisionScope {
   /** Host-normalized repository-relative paths, when a file watcher supplied them. */
   changedPaths?: string[];
   signal?: AbortSignal;
+  onProgress?: (progress: StructuralScanProgress) => void;
 }
 
 export interface StructuralScanResult {
@@ -37,11 +45,13 @@ export interface StructuralScanner {
 }
 
 export interface SearchProjection {
-  projectFromSource?(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal): Promise<void>;
+  projectFromSource?(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal,
+    onProgress?: (progress: AnalysisProgress) => void): Promise<void>;
   project(
     index: StructuralIndex,
     sourceTexts?: ReadonlyMap<string, string>,
     signal?: AbortSignal,
+    onProgress?: (progress: AnalysisProgress) => void,
   ): Promise<void>;
 }
 
@@ -60,6 +70,9 @@ export interface RunAnalysisRequest {
   mode?: AnalysisMode;
   changedPaths?: string[];
   signal?: AbortSignal;
+  onProgress?: (progress: AnalysisProgress) => void;
+  /** Recheck current source hashes and reuse parsing from a completed failed projection. */
+  reuseFailedProjection?: boolean;
 }
 
 export interface AnalysisRunResult {
@@ -137,15 +150,21 @@ export class AnalysisCoordinator {
     if (mode === 'full' && changedPaths.length > 0) {
       throw new Error('changedPaths may only be supplied for incremental analysis.');
     }
-    const previousIndex = repository.activeRevision
-      ? await this.store.getStructuralIndex({
-        repositoryId: repository.repositoryId,
-        analysisRevision: repository.activeRevision,
-      })
+    const previousScope = repository.activeRevision
+      ? { repositoryId: repository.repositoryId, analysisRevision: repository.activeRevision }
       : null;
-    const previousRevision = previousIndex ? await this.store.getRevision(previousIndex) : null;
+    const previousRevision = previousScope ? await this.store.getRevision(previousScope) : null;
     const effectiveMode = mode === 'incremental' && previousRevision && previousRevision.indexerVersion !== this.#indexerVersion
       ? 'full' : mode;
+    const latest = request.reuseFailedProjection ? (await this.store.listRevisions(repository.repositoryId))[0] : undefined;
+    const recoverable = latest?.status === 'failed' && latest.failureStage === 'search-projection' &&
+      latest.indexerVersion === this.#indexerVersion ? latest : undefined;
+    if (recoverable) request.onProgress?.({ stage: 'recover' });
+    const reuseScope = recoverable ?? (effectiveMode === 'incremental' ? previousScope : null);
+    const previousIndex = reuseScope
+      ? await this.store.getStructuralIndex(reuseScope)
+      : null;
+    const scanMode = recoverable && previousIndex ? 'incremental' : effectiveMode;
     const analysisRevision = this.#revisionIdGenerator();
     if (!/^[-A-Za-z0-9._]+$/.test(analysisRevision)) {
       throw new Error('Analysis coordinator generated an invalid analysisRevision.');
@@ -159,16 +178,18 @@ export class AnalysisCoordinator {
     let building: AnalysisRevisionRecord | null = null;
     let ownsBuildingRevision = false;
     let sourceReader: SourceTextReader | undefined;
+    let failureStage: NonNullable<AnalysisRevisionRecord['failureStage']> = 'scan';
 
     try {
       const scanStarted = performance.now();
       const result = await this.scanner.scan({
         ...scope,
         root: repository.localPath,
-        mode: effectiveMode,
-        ...(effectiveMode === 'incremental' && previousIndex ? { previousIndex } : {}),
-        ...(effectiveMode === 'incremental' && changedPaths.length > 0 ? { changedPaths } : {}),
+        mode: scanMode,
+        ...(scanMode === 'incremental' && previousIndex ? { previousIndex } : {}),
+        ...(scanMode === 'incremental' && changedPaths.length > 0 ? { changedPaths } : {}),
         signal: request.signal,
+        onProgress: request.onProgress,
       });
       sourceReader = result.sourceReader;
       console.info('[forexplore:performance]', JSON.stringify({ stage: 'scan', ...scope,
@@ -182,14 +203,14 @@ export class AnalysisCoordinator {
       ) {
         throw new Error('Structural scanner returned an index for a different analysis revision.');
       }
-      if (previousIndex && previousRevision?.indexerVersion === this.#indexerVersion &&
-          previousIndex.analysisHash === result.index.analysisHash) {
-        const status = previousIndex.diagnostics.some((item) => item.severity === 'error')
+      if (previousRevision?.status === 'ready' && previousRevision.indexerVersion === this.#indexerVersion &&
+          previousRevision.analysisHash === result.index.analysisHash) {
+        const status = result.index.diagnostics.some((item) => item.severity === 'error')
           ? 'degraded' as const : 'ready' as const;
         await this.registry.setAnalysisStatus(repository.repositoryId, status);
         return {
-          scope: { repositoryId: repository.repositoryId, analysisRevision: previousIndex.analysisRevision },
-          analysisHash: previousIndex.analysisHash, status,
+          scope: { repositoryId: repository.repositoryId, analysisRevision: previousRevision.analysisRevision },
+          analysisHash: previousRevision.analysisHash, status,
           ...(result.sourceRevision ? { sourceRevision: result.sourceRevision } : {}),
           changedPaths: [], reusedFileCount: result.reusedFileCount ?? 0,
         };
@@ -205,9 +226,12 @@ export class AnalysisCoordinator {
       };
       await this.store.putRevision(building);
       ownsBuildingRevision = true;
+      failureStage = 'structural-write';
+      request.onProgress?.({ stage: 'structural-write', completed: 0 });
       const writeStarted = performance.now();
       if (sourceReader && this.store.putStructuralIndexFromSource) {
-        await this.store.putStructuralIndexFromSource(result.index, sourceReader, request.signal);
+        await this.store.putStructuralIndexFromSource(result.index, sourceReader, request.signal,
+          (completed, total) => request.onProgress?.({ stage: 'structural-write', completed, total }));
       } else {
         if (sourceReader) throw new Error('The index store does not support streamed source persistence.');
         await this.store.putStructuralIndex(result.index, result.sourceTexts);
@@ -215,13 +239,18 @@ export class AnalysisCoordinator {
       console.info('[forexplore:performance]', JSON.stringify({ stage: 'structural-write', ...scope,
         durationMs: Math.round(performance.now() - writeStarted) }));
       const projectionStarted = performance.now();
+      failureStage = 'search-projection';
+      request.onProgress?.({ stage: 'search-projection', completed: 0 });
       if (sourceReader && this.projection.projectFromSource) {
-        await this.projection.projectFromSource(result.index, sourceReader, request.signal);
+        await this.projection.projectFromSource(result.index, sourceReader, request.signal, request.onProgress);
       } else {
-        await this.projection.project(result.index, result.sourceTexts, request.signal);
+        await this.projection.project(result.index, result.sourceTexts, request.signal, request.onProgress);
       }
       console.info('[forexplore:performance]', JSON.stringify({ stage: 'search-projection', ...scope,
         durationMs: Math.round(performance.now() - projectionStarted) }));
+      failureStage = 'activation';
+      request.onProgress?.({ stage: 'activation' });
+      request.signal?.throwIfAborted();
       const ready: AnalysisRevisionRecord = {
         ...building,
         status: 'ready',
@@ -246,6 +275,7 @@ export class AnalysisCoordinator {
         error,
         building,
         ownsBuildingRevision,
+        failureStage,
       });
       try {
         await this.registry.setAnalysisStatus(
@@ -267,6 +297,7 @@ export class AnalysisCoordinator {
     error: unknown;
     building: AnalysisRevisionRecord | null;
     ownsBuildingRevision: boolean;
+    failureStage: NonNullable<AnalysisRevisionRecord['failureStage']>;
   }): Promise<boolean> {
     const failureReason = input.error instanceof Error ? input.error.message : String(input.error);
     let ownsBuildingRevision = input.ownsBuildingRevision;
@@ -309,6 +340,7 @@ export class AnalysisCoordinator {
         status: 'failed',
         completedAt: this.#clock.now(),
         failureReason,
+        failureStage: input.failureStage,
       });
       return true;
     } catch {

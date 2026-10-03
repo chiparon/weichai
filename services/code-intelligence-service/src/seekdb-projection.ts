@@ -8,7 +8,7 @@ import type {
   StructuralIndex,
   SymbolRecord,
 } from '@forexplore/contracts';
-import type { SearchProjection } from './analysis-coordinator.js';
+import type { AnalysisProgress, SearchProjection } from './analysis-coordinator.js';
 import type { IndexStore, SourceTextReader } from './index-store.js';
 
 const MAX_FRAGMENT_CHARS = 12_000;
@@ -193,7 +193,8 @@ function summaryDocuments(
 export class SeekDbProjection implements SearchProjection {
   constructor(private readonly store: IndexStore, private readonly batchOptions: { maxDocuments?: number; maxBytes?: number } = {}) {}
 
-  async projectFromSource(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal): Promise<void> {
+  async projectFromSource(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal,
+    onProgress?: (progress: AnalysisProgress) => void): Promise<void> {
     if (!this.store.appendSearchDocuments) throw new Error('Index store does not support bounded search projection batches.');
     const maxDocuments = this.batchOptions.maxDocuments ?? 128;
     const maxBytes = this.batchOptions.maxBytes ?? 512 * 1024;
@@ -205,10 +206,27 @@ export class SeekDbProjection implements SearchProjection {
     }
     let documents: SearchDocumentRecord[] = [];
     let bytes = 0;
+    let completed = 0;
+    let batch = 0;
+    const flush = async () => {
+      if (!documents.length) return;
+      batch++;
+      const started = performance.now();
+      try {
+        await this.store.appendSearchDocuments!(index, documents, signal);
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw new Error(`Search projection batch ${batch} failed after ${Math.round(performance.now() - started)}ms ` +
+          `(${completed} documents saved, ${documents.length} in batch): ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+      completed += documents.length;
+      onProgress?.({ stage: 'search-projection', completed });
+      documents = []; bytes = 0;
+    };
     const append = async (document: SearchDocumentRecord) => {
       const size = Buffer.byteLength(document.text, 'utf8');
       if (documents.length >= maxDocuments || (documents.length && bytes + size > maxBytes)) {
-        await this.store.appendSearchDocuments!(index, documents, signal); documents = []; bytes = 0;
+        await flush();
       }
       documents.push(document); bytes += size;
     };
@@ -219,7 +237,7 @@ export class SeekDbProjection implements SearchProjection {
       const text = await source.read(file.relativePath);
       if (text !== null) for (const document of sourceDocuments(index, file.relativePath, text, symbols)) await append(document);
     }
-    if (documents.length) await this.store.appendSearchDocuments(index, documents, signal);
+    await flush();
   }
 
   async project(

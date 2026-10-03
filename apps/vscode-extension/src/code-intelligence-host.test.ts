@@ -72,6 +72,11 @@ function createRuntime(options: { languageId?: 'typescript' | 'java' | 'csharp' 
     async get(repositoryId: string) {
       return repositories.get(repositoryId) ?? null;
     },
+    async setAnalysisStatus(repositoryId: string, analysisStatus: string) {
+      const repository = { ...repositories.get(repositoryId), analysisStatus };
+      repositories.set(repositoryId, repository);
+      return repository;
+    },
     async register(input: any) {
       const samePath = [...repositories.values()].find((repository) => repository.localPath === input.localPath);
       const current = samePath ?? {
@@ -256,8 +261,8 @@ async function availablePort(): Promise<number> {
   return address.port;
 }
 
-function semanticQueryTestServer(options: { bearerToken?: string }) {
-  return createServer((request, response) => {
+function semanticQueryTestServer(options: { bearerToken?: string; queryPort: CodeIntelligenceRuntime['queryPort'] }) {
+  return createServer(async (request, response) => {
     const authorization = request.headers.authorization;
     if (options.bearerToken && authorization !== `Bearer ${options.bearerToken}`) {
       response.writeHead(401, { 'content-type': 'application/json' });
@@ -265,7 +270,7 @@ function semanticQueryTestServer(options: { bearerToken?: string }) {
       return;
     }
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ repositories: [] }));
+    response.end(JSON.stringify(await options.queryPort.listRepositories()));
   });
 }
 
@@ -333,7 +338,7 @@ describe('CodeIntelligenceHost', () => {
     const pendingTarget = result.presentation.repositories.find((repository) => repository.role === 'target')!;
     expect(indexedHistory.analysisStatus).toBe('ready');
     expect(pendingTarget.activeRevision).toBeNull();
-    expect(scan).toHaveBeenCalledExactlyOnceWith({ repositoryId: indexedHistory.repositoryId, mode: 'full' });
+    expect(scan).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ repositoryId: indexedHistory.repositoryId, mode: 'full' }));
     const refreshed = await host.synchronize({ repositories, scanRepositoryIds: [pendingTarget.repositoryId] });
     expect(refreshed.scannedRepositoryIds).toEqual([pendingTarget.repositoryId]);
     expect(refreshed.presentation.repositories.find((repository) => repository.role === 'target')?.analysisStatus).toBe('ready');
@@ -408,6 +413,109 @@ describe('CodeIntelligenceHost', () => {
     expect((await host.synchronize({ repositories, scanRepositoryIds: [original.repositoryId] })).scannedRepositoryIds)
       .toEqual([original.repositoryId]);
     await host.dispose();
+  });
+
+  it('forwards analysis controls and progress without refreshing the explorer for every batch', async () => {
+    const directory = await temporaryRepository('progress-target');
+    const runtime = createRuntime();
+    const originalRun = runtime.coordinator.run.bind(runtime.coordinator);
+    const scan = vi.spyOn(runtime.coordinator, 'run').mockImplementation(async request => {
+      request.onProgress?.({ stage: 'snapshot', completed: 0 });
+      for (let completed = 1; completed <= 20; completed++) request.onProgress?.({ stage: 'parse', completed, total: 20 });
+      request.onProgress?.({ stage: 'search-projection', completed: 0, total: 10 });
+      return originalRun(request);
+    });
+    const onChange = vi.fn();
+    const onProgress = vi.fn();
+    const output = { appendLine: vi.fn() };
+    const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime, onChange, output });
+    const controller = new AbortController();
+    const repositories = [{ localPath: directory, displayName: 'progress-target', role: 'target' as const }];
+    try {
+      await host.synchronize({ repositories, signal: controller.signal, onProgress });
+      expect(scan).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal, reuseFailedProjection: true }));
+      expect(onProgress.mock.calls.map(([progress]) => progress.stage)).toEqual(['snapshot', 'parse', 'parse', 'search-projection']);
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({ displayName: 'progress-target', stage: 'parse', completed: 20, total: 20 }));
+      expect(onChange).toHaveBeenCalledTimes(3);
+      expect(output.appendLine).toHaveBeenCalledWith(expect.stringContaining('正在生成检索向量'));
+      await host.synchronize({ repositories });
+      expect(scan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'incremental', reuseFailedProjection: false }));
+      const repositoryId = (await host.presentation()).repositories[0]!.repositoryId;
+      await runtime.registry.setAnalysisStatus!(repositoryId, 'degraded');
+      await host.synchronize({ repositories });
+      expect(scan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'incremental', reuseFailedProjection: false }));
+      await host.synchronize({ repositories, forceFull: true });
+      expect(scan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'full', reuseFailedProjection: false }));
+    } finally { host.dispose(); }
+  });
+
+  it.each([false, true])('retries a visible failed repository with scanNewOnly (existing revision: %s)', async (existingRevision) => {
+    const directory = await temporaryRepository('retry-target');
+    const runtime = createRuntime();
+    const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
+    const repositories = [{ localPath: directory, role: 'target' as const }];
+    try {
+      if (existingRevision) await host.synchronize({ repositories });
+      const scan = vi.spyOn(runtime.coordinator, 'run').mockImplementationOnce(async request => {
+        await runtime.registry.setAnalysisStatus!(request.repositoryId, 'failed');
+        throw new Error('temporary projection timeout');
+      });
+      const failed = await host.synchronize({ repositories });
+      expect(failed.failedRepositoryIds).toHaveLength(1);
+      const retried = await host.synchronize({ repositories, scanNewOnly: true });
+      expect(retried.scannedRepositoryIds).toEqual(failed.failedRepositoryIds);
+      expect(retried.failedRepositoryIds).toEqual([]);
+      expect(scan).toHaveBeenCalledTimes(2);
+      expect(scan).toHaveBeenLastCalledWith(expect.objectContaining({ reuseFailedProjection: true }));
+      expect(retried.presentation.repositories[0]?.analysisStatus).toBe('ready');
+    } finally { host.dispose(); }
+  });
+
+  it('keeps a committed revision ready and schedules its projects after late cancellation', async () => {
+    const root = await temporaryRepository('late-cancel');
+    const runtime = createRuntime();
+    const controller = new AbortController();
+    const run = runtime.coordinator.run.bind(runtime.coordinator);
+    vi.spyOn(runtime.coordinator, 'run').mockImplementation(async request => {
+      const result = await run(request);
+      controller.abort(new DOMException('late cancellation', 'AbortError'));
+      return result;
+    });
+    const project = { repositoryId: 'repo', analysisRevision: 'revision-1', projectId: 'project' };
+    runtime.store.listProjects = vi.fn().mockResolvedValue([project]);
+    const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
+    const schedule = vi.spyOn(host as any, 'scheduleProject').mockImplementation(() => undefined);
+    try {
+      const result = await host.synchronize({ repositories: [{ localPath: root, role: 'target' }], signal: controller.signal });
+      expect(result.failedRepositoryIds).toEqual([]);
+      expect(result.scannedRepositoryIds).toHaveLength(1);
+      expect((await runtime.registry.get(result.scannedRepositoryIds[0]!))?.analysisStatus).toBe('ready');
+      expect(schedule).toHaveBeenCalledWith(project);
+    } finally { host.dispose(); }
+  });
+
+  it('propagates cancellation and leaves later repositories unscanned', async () => {
+    const first = await temporaryRepository('a-cancelled');
+    const second = await temporaryRepository('z-pending');
+    const runtime = createRuntime();
+    const controller = new AbortController();
+    const reason = new DOMException('cancel indexing', 'AbortError');
+    const scan = vi.spyOn(runtime.coordinator, 'run').mockImplementation(async request => {
+      request.onProgress?.({ stage: 'snapshot', completed: 1 });
+      controller.abort(reason);
+      request.signal?.throwIfAborted();
+    });
+    const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
+    try {
+      await expect(host.synchronize({ repositories: [
+        { localPath: first, displayName: 'a-cancelled', role: 'target' },
+        { localPath: second, displayName: 'z-pending', role: 'history' },
+      ], signal: controller.signal })).rejects.toBe(reason);
+      expect(scan).toHaveBeenCalledTimes(1);
+      const repositories = (await host.presentation()).repositories;
+      expect(repositories.find(repository => repository.displayName === 'a-cancelled')?.analysisStatus).toBe('failed');
+      expect(repositories.find(repository => repository.displayName === 'z-pending')?.analysisStatus).toBe('registered');
+    } finally { host.dispose(); }
   });
 
   it('runs target and history roots through one host-owned revision chain without leaking local paths', async () => {
@@ -635,22 +743,35 @@ it('keeps shared repository data while each host presents only its configured re
     .toEqual([path.basename(first)]);
 });
 
-it('reuses a compatible semantic query listener owned by another host', async () => {
-  const runtime = createRuntime();
+it('keeps semantic listeners owned by their window and rejects an occupied explicit port', async () => {
+  const firstRuntime = createRuntime();
+  const secondRuntime = createRuntime();
+  await firstRuntime.registry.register({ repositoryId: 'first-window', localPath: await temporaryRepository('first-port'), role: 'history' });
+  await secondRuntime.registry.register({ repositoryId: 'second-window', localPath: await temporaryRepository('second-port'), role: 'target' });
   const firstHost = new CodeIntelligenceHost({
-    runtimeFactory: async () => runtime,
+    runtimeFactory: async () => firstRuntime,
     semanticQueryServerFactory: semanticQueryTestServer,
   });
   const secondHost = new CodeIntelligenceHost({
-    runtimeFactory: async () => runtime,
+    runtimeFactory: async () => secondRuntime,
     semanticQueryServerFactory: semanticQueryTestServer,
   });
   const port = await availablePort();
-
+  const options = { port, bearerToken: 'shared-token' };
+  const request = { method: 'POST', headers: { authorization: 'Bearer shared-token' }, body: '{}' };
   try {
-    const firstEndpoint = await firstHost.startSemanticQueryServer({ port, bearerToken: 'shared-token' });
-    const secondEndpoint = await secondHost.startSemanticQueryServer({ port, bearerToken: 'shared-token' });
-    expect(secondEndpoint).toBe(firstEndpoint);
+    const [firstEndpoint, repeatedEndpoint] = await Promise.all([
+      firstHost.startSemanticQueryServer(options), firstHost.startSemanticQueryServer(options),
+    ]);
+    expect(repeatedEndpoint).toBe(firstEndpoint);
+    await expect(secondHost.startSemanticQueryServer(options)).rejects.toMatchObject({ cause: { code: 'EADDRINUSE' } });
+    const secondEndpoint = await secondHost.startSemanticQueryServer({ bearerToken: 'shared-token' });
+    expect(secondEndpoint).not.toBe(firstEndpoint);
+    const secondResponse = await fetch(`${secondEndpoint}/v1/semantic-query/listRepositories`, request);
+    expect(await secondResponse.json()).toMatchObject({ repositories: [{ repositoryId: 'second-window' }] });
+    secondHost.dispose();
+    const firstResponse = await fetch(`${firstEndpoint}/v1/semantic-query/listRepositories`, request);
+    expect(await firstResponse.json()).toMatchObject({ repositories: [{ repositoryId: 'first-window' }] });
   } finally {
     firstHost.dispose();
     secondHost.dispose();

@@ -149,12 +149,12 @@ function changedPaths(
  * has authorized a root. It never accepts a root from SemanticQueryPort/MCP.
  */
 export class RepositoryStructuralScanner implements StructuralScanner {
-  readonly #registry: LanguageRegistry;
+  readonly #registry: LanguageRegistry | undefined;
   readonly #maxFileBytes: number;
   readonly #readSourceRevision: (root: string) => Promise<string | undefined>;
 
   constructor(options: RepositoryStructuralScannerOptions = {}) {
-    this.#registry = options.languageRegistry ?? createDefaultLanguageRegistry();
+    this.#registry = options.languageRegistry;
     this.#maxFileBytes = options.maxFileBytes ?? MAX_INDEXED_FILE_BYTES;
     if (!Number.isInteger(this.#maxFileBytes) || this.#maxFileBytes < 1) {
       throw new Error('maxFileBytes must be a positive integer.');
@@ -171,10 +171,11 @@ export class RepositoryStructuralScanner implements StructuralScanner {
       repositoryId: request.repositoryId,
       analysisRevision: request.analysisRevision,
       repositoryRoot: request.root,
-      languageRegistry: this.#registry,
+      ...(this.#registry ? { languageRegistry: this.#registry } : {}),
       maxFileBytes: this.#maxFileBytes,
       retainSourceTexts: false,
       signal: request.signal,
+      onProgress: request.onProgress,
       ...(request.mode === 'incremental' && request.previousIndex
         ? { previousIndex: request.previousIndex }
         : {}),

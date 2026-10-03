@@ -8,29 +8,135 @@ const api = vi.hoisted(() => ({
   showOpenDialog: vi.fn(), showInputBox: vi.fn(), showInformationMessage: vi.fn(), showQuickPick: vi.fn(),
   update: vi.fn(), selectedPaths: [] as string[],
   updateWorkspaceFolders: vi.fn(), folders: [] as Array<{ uri: { scheme: string; fsPath: string } }>,
+  onDidChangeWorkspaceFolders: vi.fn(), folderListeners: new Set<(event: { added: Array<{ uri: { scheme: string; fsPath: string } }> }) => void>(),
 }));
 vi.mock('vscode', () => ({
   window: api,
   workspace: { get workspaceFolders() { return api.folders; }, updateWorkspaceFolders: api.updateWorkspaceFolders,
+    onDidChangeWorkspaceFolders: api.onDidChangeWorkspaceFolders,
     getConfiguration: () => ({ get: () => api.selectedPaths, update: api.update }) },
   ConfigurationTarget: { Global: 1 },
   Uri: { file: (fsPath: string) => ({ scheme: 'file', fsPath }) },
 }));
-import { addTargetWorkspace, readPendingTargetImport, sameTargetPath, selectedTargetWorkspaceFolders } from './target-workspace';
+import { addTargetWorkspace, pendingTargetImportKey, readPendingTargetImport, sameTargetPath, selectedTargetWorkspaceFolders } from './target-workspace';
 
 let root: string;
+const emitWorkspaceChange = (added = api.folders) => { for (const listener of api.folderListeners) listener({ added }); };
 beforeEach(async () => {
-  vi.resetAllMocks(); api.folders = []; api.selectedPaths = [];
+  vi.resetAllMocks(); api.folders = []; api.selectedPaths = []; api.folderListeners.clear();
   api.update.mockImplementation(async (_key, value) => { api.selectedPaths = value; });
-  api.updateWorkspaceFolders.mockReturnValue(true);
+  api.onDidChangeWorkspaceFolders.mockImplementation((listener) => {
+    api.folderListeners.add(listener);
+    return { dispose: () => api.folderListeners.delete(listener) };
+  });
+  api.updateWorkspaceFolders.mockImplementation((start, deleteCount, ...folders) => {
+    api.folders.splice(start, deleteCount, ...folders);
+    emitWorkspaceChange();
+    return true;
+  });
   root = await realpath(await mkdtemp(path.join(tmpdir(), 'forexplore-target-dir-')));
 });
-afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.useRealTimers();
+  await rm(root, { recursive: true, force: true });
+  expect(api.folderListeners.size).toBe(0);
+});
 
 it('adds the directory selected in the native picker', async () => {
   api.showOpenDialog.mockResolvedValue([{ fsPath: root }]);
   expect(await addTargetWorkspace('browse')).toEqual({ status: 'attached', directory: root });
   expect(api.updateWorkspaceFolders).toHaveBeenCalledWith(0, 0, { uri: { scheme: 'file', fsPath: root } });
+  expect(api.onDidChangeWorkspaceFolders.mock.invocationCallOrder[0])
+    .toBeLessThan(api.updateWorkspaceFolders.mock.invocationCallOrder[0]!);
+});
+
+it('waits for the target in a multi-root workspace before scanning, ignoring unrelated events', async () => {
+  const folder = (fsPath: string) => ({ uri: { scheme: 'file', fsPath } });
+  const oldFolders = [folder(path.join(root, 'old-a')), folder(path.join(root, 'old-c'))];
+  api.folders = [...oldFolders];
+  api.selectedPaths = oldFolders.map(entry => entry.uri.fsPath);
+  api.showInputBox.mockResolvedValue(root);
+  api.updateWorkspaceFolders.mockImplementation((start, deleteCount, ...folders) => {
+    api.folders.splice(start, deleteCount, ...folders);
+    return true;
+  });
+  const scan = vi.fn();
+  const importing = addTargetWorkspace('input').then(result => {
+    scan(selectedTargetWorkspaceFolders());
+    return result;
+  });
+  await vi.waitFor(() => expect(api.updateWorkspaceFolders).toHaveBeenCalledOnce());
+  expect(scan).not.toHaveBeenCalled();
+  const unrelated = folder(path.join(root, 'unrelated'));
+  api.folders.push(unrelated);
+  emitWorkspaceChange([unrelated]);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(scan).not.toHaveBeenCalled();
+  expect(api.folderListeners.size).toBe(1);
+
+  const target = folder(root);
+  emitWorkspaceChange([target]);
+  expect(await importing).toEqual({ status: 'attached', directory: root });
+  expect(scan).toHaveBeenCalledExactlyOnceWith([...oldFolders, target]);
+});
+
+it('times out an unconfirmed optimistic update in an empty window', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  api.showInputBox.mockResolvedValue(root);
+  api.updateWorkspaceFolders.mockImplementation((start, deleteCount, ...folders) => {
+    api.folders = [...api.folders.slice(0, start), ...folders, ...api.folders.slice(start + deleteCount)];
+    return true;
+  });
+  const importing = addTargetWorkspace('input');
+  const failed = expect(importing).rejects.toThrow('没有打开任何文件夹');
+  await vi.waitFor(() => expect(api.updateWorkspaceFolders).toHaveBeenCalledOnce());
+  await vi.advanceTimersByTimeAsync(30_000);
+  await failed;
+  expect(api.selectedPaths).toEqual([]);
+});
+
+it('cancels the wait without scanning or undoing an accepted workspace request', async () => {
+  api.showInputBox.mockResolvedValue(root);
+  api.updateWorkspaceFolders.mockReturnValue(true);
+  const controller = new AbortController();
+  const scan = vi.fn();
+  const importing = addTargetWorkspace('input', { signal: controller.signal }).then(scan);
+  const cancelled = expect(importing).rejects.toMatchObject({ name: 'AbortError' });
+  await vi.waitFor(() => expect(api.updateWorkspaceFolders).toHaveBeenCalledOnce());
+  controller.abort();
+  await cancelled;
+  expect(api.folderListeners.size).toBe(0);
+  expect(api.selectedPaths).toEqual([root]);
+  api.folders.push({ uri: { scheme: 'file', fsPath: root } });
+  emitWorkspaceChange();
+  expect(scan).not.toHaveBeenCalled();
+});
+
+it('does not start selecting when the import is already cancelled', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await expect(addTargetWorkspace('browse', { signal: controller.signal }))
+    .rejects.toMatchObject({ name: 'AbortError' });
+  expect(api.showOpenDialog).not.toHaveBeenCalled();
+  expect(api.updateWorkspaceFolders).not.toHaveBeenCalled();
+});
+
+it('does not request a workspace change if cancelled while saving the selection', async () => {
+  const controller = new AbortController();
+  api.showInputBox.mockResolvedValue(root);
+  api.update.mockImplementation(async (_key, value) => {
+    api.selectedPaths = value;
+    controller.abort();
+  });
+  await expect(addTargetWorkspace('input', { signal: controller.signal }))
+    .rejects.toMatchObject({ name: 'AbortError' });
+  expect(api.updateWorkspaceFolders).not.toHaveBeenCalled();
+});
+
+it('cleans up the listener when requesting the workspace update throws', async () => {
+  api.showInputBox.mockResolvedValue(root);
+  api.updateWorkspaceFolders.mockImplementation(() => { throw new Error('workspace unavailable'); });
+  await expect(addTargetWorkspace('input')).rejects.toThrow('workspace unavailable');
 });
 
 it('accepts an entered path and prevents duplicate folders', async () => {
@@ -73,6 +179,7 @@ it('does not treat an open parent workspace as a selected target', async () => {
   expect(await addTargetWorkspace('workspace')).toEqual({ status: 'remembered', directory: root });
   expect(selectedTargetWorkspaceFolders()).toEqual(api.folders);
   expect(api.updateWorkspaceFolders).not.toHaveBeenCalled();
+  expect(api.onDidChangeWorkspaceFolders).not.toHaveBeenCalled();
 });
 
 /**
@@ -157,6 +264,12 @@ it('resumes a recent interrupted target import', () => {
   const now = Date.parse('2026-09-14T17:13:18.000Z');
   expect(readPendingTargetImport({ requestedAt: '2026-09-14T17:13:00.000Z', mode: 'browse' }, now))
     .toEqual({ requestedAt: '2026-09-14T17:13:00.000Z', mode: 'browse' });
+});
+
+it('keeps pending imports in the originating window across host restarts', () => {
+  const state = new Map([[pendingTargetImportKey('window-a'), { requestedAt: new Date().toISOString(), mode: 'browse' }]]);
+  expect(readPendingTargetImport(state.get(pendingTargetImportKey('window-a')))).toBeDefined();
+  expect(readPendingTargetImport(state.get(pendingTargetImportKey('window-b')))).toBeUndefined();
 });
 
 it('ignores a stale, malformed or future-dated import intent', () => {

@@ -15,6 +15,10 @@ export interface TargetAddUiState {
   mode?: TargetWorkspaceAddMode;
   phase?: TargetWorkspacePhase;
   message?: string;
+  /** A persisted failed import retries its registered repository directly. */
+  repositoryId?: string;
+  /** A retry ends with the host's result; queued snapshots may describe the prior scan. */
+  retryPending?: boolean;
 }
 
 export const idleTargetAdd: TargetAddUiState = { status: 'idle' };
@@ -122,7 +126,8 @@ export function ProjectPicker(props: ProjectPickerProps) {
           <RefreshCw size={14} className={props.refreshing || indexing ? 'is-spinning' : ''} />
         </button>
       </div>
-      {addState ? <TargetAddStatus state={addState} onRetry={() => props.onAdd(targetAddRetryMode(addState))} /> : null}
+      {addState ? <TargetAddStatus state={addState} onRetry={() => addState.repositoryId
+        ? props.onRefresh(addState.repositoryId) : props.onAdd(targetAddRetryMode(addState))} /> : null}
       {open ? (
         <div className="workspace-picker-menu" role="menu" aria-label={mode === 'target' ? '目标工程列表' : '参考工程列表'} ref={menu}>
           <div className="workspace-picker-options">

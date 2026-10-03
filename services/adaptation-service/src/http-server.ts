@@ -43,6 +43,8 @@ export interface HttpServerOptions {
   staticAnalysisSnapshots?: StaticAnalysisSnapshotStore;
   /** Revision-native planning path backed only by SemanticQueryPort tools. */
   semanticArchitecturePort?: RevisionScopedArchitecturePort;
+  /** The host-owned endpoint whose repository scopes this backend may query. */
+  semanticQueryUrl?: string;
   /** Optional evidence-only node decisions; the injected planner owns model configuration. */
   moduleHierarchyPlanner?: ModuleHierarchyPlanner;
   /** Explicitly configured in-place translation, authenticated separately from read-only routes. */
@@ -370,6 +372,7 @@ export function createHttpServer(options: HttpServerOptions): Server {
         json(response, 200, { service: 'recast-adaptation', version: 1, retrievalRerank: true,
           semanticPlanning: Boolean(options.semanticArchitecturePort), moduleHierarchy: Boolean(options.moduleHierarchyPlanner),
           workspaceTranslation: Boolean(options.workspaceTranslation),
+          ...(options.semanticQueryUrl ? { semanticQueryUrl: options.semanticQueryUrl } : {}),
           ...(options.workspaceTranslation ? { workspaceRoot: options.workspaceTranslation.runtime.configuration().workspaceRoot } : {}) }, options.corsOrigin);
         return;
       }

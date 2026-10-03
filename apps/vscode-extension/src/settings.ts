@@ -14,6 +14,19 @@ import {
 
 export const DEFAULT_ADAPTATION_API_URL = 'http://127.0.0.1:8788';
 
+function adaptationEndpoint(config: vscode.WorkspaceConfiguration): string {
+  const configured = normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL));
+  const inspected = config.inspect<string>('adaptationApiUrl');
+  const explicit = inspected?.workspaceFolderValue !== undefined || inspected?.workspaceValue !== undefined ||
+    inspected?.globalValue !== undefined;
+  if (explicit || configured !== DEFAULT_ADAPTATION_API_URL) return configured ?? DEFAULT_ADAPTATION_API_URL;
+  const value = process.env.ADAPTATION_PORT?.trim();
+  if (!value) return DEFAULT_ADAPTATION_API_URL;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('ADAPTATION_PORT must be a valid TCP port (1–65535).');
+  return `http://127.0.0.1:${port}`;
+}
+
 export interface ExtensionSettings {
   executionMode: ExecutionMode;
   repositoryPaths: string[];
@@ -31,9 +44,7 @@ export function loadSettings(): ExtensionSettings {
     // otherwise resolve to this extension host's working directory.
     repositoryPaths: normaliseConfiguredPaths(config.get<unknown[]>('repositoryPaths', [])),
     topK: boundedTopK(config.get<number>('topK', 4)),
-    adaptationApiUrl:
-      normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL)) ??
-      DEFAULT_ADAPTATION_API_URL,
+    adaptationApiUrl: adaptationEndpoint(config),
   };
 }
 

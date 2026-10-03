@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildStructuralIndex } from './structural-index.js';
-import { indexTreeSitterFile } from './tree-sitter-indexer.js';
+import { indexTreeSitterFile, type TreeSitterFileIndex } from './tree-sitter-indexer.js';
 
 const files = [
   {
@@ -93,6 +93,41 @@ describe('buildStructuralIndex', () => {
     ]));
   });
 
+  it('resolves qualified imports without mixing adjacent namespaces, languages, or duplicate declarations', () => {
+    const { index } = buildStructuralIndex({
+      repositoryId: 'qualified-imports',
+      analysisRevision: 'one',
+      files: [
+        { relativePath: 'lib/Only.java', content: 'package demo.lib; public class Only {}' },
+        { relativePath: 'libextra/Other.java', content: 'package demo.libextra; public class Other {}' },
+        { relativePath: 'first/Shared.java', content: 'package demo; public class Shared {}' },
+        { relativePath: 'second/Shared.java', content: 'package demo; public class Shared {}' },
+        { relativePath: 'csharp/Only.cs', content: 'namespace demo.lib; public class Only {}' },
+        { relativePath: 'app/Use.java', content: [
+          'import demo.lib.Only;',
+          'import demo.lib.*;',
+          'import demo.Shared;',
+          'import demo.missing.*;',
+          'public class Use {}',
+        ].join('\n') },
+        { relativePath: 'app/Use.cs', content: 'using demo.lib; public class Use {}' },
+      ],
+    });
+    const imports = index.dependencyEdges.filter(edge => edge.kind === 'import');
+    expect(imports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceRelativePath: 'app/Use.java', targetReference: 'demo.lib.Only',
+        targetRelativePath: 'lib/Only.java', resolution: 'resolved' }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.java', targetReference: 'demo.lib.*',
+        targetRelativePath: 'lib/Only.java', resolution: 'resolved' }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.java', targetReference: 'demo.Shared',
+        resolution: 'ambiguous', internal: true }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.java', targetReference: 'demo.missing.*',
+        resolution: 'unresolved', internal: false }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.cs', targetReference: 'demo.lib',
+        targetRelativePath: 'csharp/Only.cs', resolution: 'resolved' }),
+    ]));
+  });
+
   it('retains an absolute project reference as external unresolved evidence', () => {
     const result = buildStructuralIndex({
       repositoryId: 'history-one',
@@ -120,6 +155,67 @@ describe('buildStructuralIndex', () => {
   it('keeps the content analysis hash stable across revision identifiers', () => {
     expect(build('revision-a').index.analysisHash).toBe(build('revision-b').index.analysisHash);
     expect(build('revision-a').index.files[0]?.fileId).not.toBe(build('revision-b').index.files[0]?.fileId);
+  });
+
+  it('uses pre-parsed syntax without rereading the immutable source', () => {
+    const input = [{ relativePath: 'Main.java', content: 'public class Main { public void run() {} }' }];
+    const parsed = new Map<string, TreeSitterFileIndex>();
+    const expected = buildStructuralIndex({
+      repositoryId: 'lazy-source', analysisRevision: 'one', files: input,
+      indexFile(request) {
+        const result = indexTreeSitterFile(request);
+        parsed.set(request.relativePath, result);
+        return result;
+      },
+    });
+    const result = buildStructuralIndex({
+      repositoryId: 'lazy-source', analysisRevision: 'one', retainSourceTexts: false,
+      files: expected.index.files.map((file) => ({
+        relativePath: file.relativePath, sha256: file.sha256, sizeBytes: file.sizeBytes,
+        get content(): string { throw new Error('Pre-parsed Java source must not be reopened.'); },
+      })),
+      indexFile(request) { return parsed.get(request.relativePath)!; },
+    });
+    expect(result.index).toEqual(expected.index);
+    expect(result.stats).toEqual(expected.stats);
+    expect(result.sourceFiles.size).toBe(0);
+    let sourceReads = 0;
+    const parsedNormally = buildStructuralIndex({
+      repositoryId: 'lazy-source', analysisRevision: 'one', retainSourceTexts: false,
+      files: expected.index.files.map((file) => ({
+        relativePath: file.relativePath, sha256: file.sha256, sizeBytes: file.sizeBytes,
+        get content(): string { sourceReads += 1; return input[0]!.content; },
+      })),
+    });
+    expect(parsedNormally.index).toEqual(expected.index);
+    expect(sourceReads).toBe(1);
+  });
+
+  it('shares qualified import results only within the same language family and revision', () => {
+    const sources = [
+      { relativePath: 'java/Only.java', content: 'package demo.lib; public class Only {}' },
+      { relativePath: 'csharp/Only.cs', content: 'namespace demo.lib; public class Only {}' },
+      { relativePath: 'app/First.java', content: 'import demo.lib.Only; public class First {}' },
+      { relativePath: 'app/Second.java', content: 'import demo.lib.Only; public class Second {}' },
+      { relativePath: 'app/Use.cs', content: 'using demo.lib.Only; public class Use {}' },
+    ];
+    const first = buildStructuralIndex({ repositoryId: 'qualified-cache', analysisRevision: 'one', files: sources });
+    expect(first.index.dependencyEdges.filter((edge) => edge.kind === 'import')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceRelativePath: 'app/First.java', targetRelativePath: 'java/Only.java', resolution: 'resolved' }),
+      expect.objectContaining({ sourceRelativePath: 'app/Second.java', targetRelativePath: 'java/Only.java', resolution: 'resolved' }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.cs', targetRelativePath: 'csharp/Only.cs', resolution: 'resolved' }),
+    ]));
+    const reordered = buildStructuralIndex({ repositoryId: 'qualified-cache', analysisRevision: 'one', files: [...sources].reverse() });
+    expect(reordered.index.dependencyEdges).toEqual(first.index.dependencyEdges);
+    const removed = buildStructuralIndex({
+      repositoryId: 'qualified-cache', analysisRevision: 'three', previousIndex: first.index,
+      files: sources.filter((file) => file.relativePath !== 'java/Only.java'),
+    });
+    expect(removed.index.dependencyEdges.filter((edge) => edge.kind === 'import')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceRelativePath: 'app/First.java', resolution: 'unresolved', internal: false }),
+      expect.objectContaining({ sourceRelativePath: 'app/Second.java', resolution: 'unresolved', internal: false }),
+      expect.objectContaining({ sourceRelativePath: 'app/Use.cs', targetRelativePath: 'csharp/Only.cs', resolution: 'resolved' }),
+    ]));
   });
 
   it('reuses unchanged file evidence and only reparses an affected source file', () => {

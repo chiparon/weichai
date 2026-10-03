@@ -302,7 +302,8 @@ export function ModuleWorkspace({
               <p className="target-empty-detail">已检测到目标工程，请在左侧列表中选择具体项目。</p>
             ) : null}
             {targetAdd && targetAdd.status !== 'pending' && targetAdd.status !== 'idle' ? (
-              <TargetAddStatus state={targetAdd} onRetry={() => onAddTarget?.(targetAddRetryMode(targetAdd))} />
+              <TargetAddStatus state={targetAdd} onRetry={() => targetAdd.repositoryId
+                ? onRefreshRepository?.(targetAdd.repositoryId) : onAddTarget?.(targetAddRetryMode(targetAdd))} />
             ) : null}
             <button type="button" className="primary-action" disabled={Boolean(addPending)}
               onClick={() => setPickerOpen(true)}><FolderOpen size={15} />选择项目<ChevronDown size={13} /></button>

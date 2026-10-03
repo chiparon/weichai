@@ -122,7 +122,8 @@ export interface IndexStore {
   getStructuralIndex(scope: RepositoryRevisionScope): Promise<StructuralIndex | null>;
   getStructuralIndexMetadata?(scope: RepositoryRevisionScope, signal?: AbortSignal): Promise<Pick<StructuralIndex, 'repositoryId' | 'analysisRevision' | 'analysisHash'> | null>;
   getRevisionStatistics?(scope: RepositoryRevisionScope, signal?: AbortSignal): Promise<RevisionStatistics | null>;
-  putStructuralIndexFromSource?(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal): Promise<void>;
+  putStructuralIndexFromSource?(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal,
+    onProgress?: (completed: number, total: number) => void): Promise<void>;
   appendSearchDocuments?(index: StructuralIndex, documents: SearchDocumentRecord[], signal?: AbortSignal): Promise<void>;
   getSourceText(scope: RepositoryRevisionScope, relativePath: string): Promise<string | null>;
   getSourcePreview?(scope: RepositoryRevisionScope, relativePath: string, maxChars: number, signal?: AbortSignal): Promise<{ text: string; truncated: boolean } | null>;
@@ -202,6 +203,10 @@ export function validateRevisionWrite(
   if (!next.analysisHash?.trim()) throw new Error('Analysis revisions require an analysisHash.');
   if (!next.indexerVersion?.trim()) throw new Error('Analysis revisions require an indexerVersion.');
   if (!next.createdAt?.trim()) throw new Error('Analysis revisions require a createdAt timestamp.');
+  if (next.failureStage !== undefined && (next.status !== 'failed' ||
+      !['scan', 'structural-write', 'search-projection', 'activation'].includes(next.failureStage))) {
+    throw new Error('Failure stages belong only to failed analysis revisions.');
+  }
 
   if (!existing) {
     if (next.status !== 'building') {

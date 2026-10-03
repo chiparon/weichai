@@ -44,12 +44,16 @@ function reconcileTargetAddFromIndex(
   presentation: CodeIntelligencePresentation,
   knownTargetIds: ReadonlySet<string> = new Set(),
 ): TargetAddUiState {
-  if (current.status !== 'pending') return current;
+  if (current.status === 'notice') return current;
+  if (current.status === 'pending' && current.retryPending) return current;
   // A window can remember more than one target directory. During an import,
   // an already-ready target must not settle the spinner for a different target
   // that is still being registered or indexed.
   const candidates = presentation.repositories
-    .filter((repository) => repository.role === 'target' && !knownTargetIds.has(repository.repositoryId));
+    .filter((repository) => repository.role === 'target' && (current.repositoryId
+      ? repository.repositoryId === current.repositoryId : !knownTargetIds.has(repository.repositoryId)));
+  if (current.status === 'idle' && !candidates.some(repository => repository.analysisStatus === 'failed')) return current;
+  if (current.status === 'failed' && !current.repositoryId && !candidates.some(repository => repository.analysisStatus === 'failed')) return current;
   const allCandidatesReady = candidates.length > 1 && candidates.every((repository) =>
     (repository.analysisStatus === 'ready' || repository.analysisStatus === 'degraded') && Boolean(repository.activeRevision));
   const target = candidates.find((repository) => repository.analysisStatus === 'failed')
@@ -60,6 +64,7 @@ function reconcileTargetAddFromIndex(
   if (target.analysisStatus === 'failed') {
     return {
       status: 'failed',
+      repositoryId: target.repositoryId,
       ...(current.mode ? { mode: current.mode } : {}),
       message: '目标工程索引失败，请查看 RECAST 输出日志后重试。',
     };
@@ -71,6 +76,9 @@ function reconcileTargetAddFromIndex(
       message: '目标工程已导入并完成索引。',
     };
   }
+  if (current.repositoryId && target.analysisStatus === 'indexing') {
+    return { ...current, status: 'pending', phase: 'indexing', message: '正在恢复目标工程索引…' };
+  }
   return current;
 }
 
@@ -79,6 +87,9 @@ function reconcileTargetAddFromExplorer(
   explorer: PanelInitPayload['moduleExplorer'],
   knownTargetIds: ReadonlySet<string> = new Set(),
 ): TargetAddUiState {
+  // A retry can still display the previous active tree while indexing. Only
+  // the repository lifecycle can settle that explicitly identified attempt.
+  if (current.repositoryId) return current;
   if (current.status !== 'pending' || explorer.target.id === 'target:unselected' || !explorer.target.revision) return current;
   if (explorer.target.repositoryId
     ? knownTargetIds.has(explorer.target.repositoryId)
@@ -213,20 +224,22 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         case 'TARGET_WORKSPACE_PROGRESS':
           // Phases arrive before, during and after the host mutations, so the
           // pending state is never inferred from a single message.
-          setTargetAdd({ status: 'pending', phase: message.phase, message: message.message,
-            ...(targetAddModeRef.current ? { mode: targetAddModeRef.current } : {}) });
+          setTargetAdd(current => ({ ...(current.status === 'pending' && message.phase !== 'selecting' ? current : {}),
+            status: 'pending', phase: message.phase, message: message.message,
+            ...(targetAddModeRef.current ? { mode: targetAddModeRef.current } : {}) }));
           break;
         case 'TARGET_WORKSPACE_RESULT':
+          targetAddModeRef.current = message.mode;
           if (message.outcome === 'failed') {
-            setTargetAdd({ status: 'failed', mode: message.mode,
-              message: message.message ?? '添加目标工程失败，请重试。' });
+            setTargetAdd(current => ({ ...current, status: 'failed', mode: message.mode,
+              message: message.message ?? '添加目标工程失败，请重试。' }));
           } else if (message.outcome === 'cancelled') {
-            setTargetAdd({ status: 'notice', mode: message.mode, message: '已取消选择目标工程。' });
+            setTargetAdd({ status: 'notice', mode: message.mode, message: message.message ?? '已取消选择目标工程。' });
           } else if (message.outcome === 'added') {
             setTargetAdd({ status: 'pending', mode: message.mode, phase: 'indexing',
               message: message.message ?? '正在解析目录并建立结构索引…' });
           } else {
-            setTargetAdd({ status: 'notice', mode: message.mode, message: '目标工程已添加。' });
+            setTargetAdd({ status: 'notice', mode: message.mode, message: message.message ?? '目标工程已添加。' });
           }
           break;
         case 'TARGET_SELECTED':
@@ -448,6 +461,9 @@ export default function App({ taskSearch, initialMode = 'search' }: { taskSearch
         onRefreshRepository={(repositoryId) => {
           setError(null);
           setRefreshingExplorer(true);
+          if (codeIntelligence?.repositories.some(repository => repository.repositoryId === repositoryId && repository.role === 'target')) {
+            setTargetAdd({ status: 'pending', repositoryId, retryPending: true, phase: 'indexing', message: '正在准备目标工程索引…' });
+          }
           bus.post({ type: 'REFRESH_REPOSITORY', repositoryId });
         }}
         onAddTarget={handleAddTarget}

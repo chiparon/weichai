@@ -41,10 +41,10 @@ await esbuild.build({
   logLevel: 'info',
 });
 
-await esbuild.build({
-  entryPoints: [path.join(workspaceDirectory, 'services', 'code-indexer', 'src', 'structural-parse-worker.ts')],
+for (const worker of ['structural-parse-worker', 'structural-assembly-worker']) await esbuild.build({
+  entryPoints: [path.join(workspaceDirectory, 'services', 'code-indexer', 'src', `${worker}.ts`)],
   bundle: true,
-  outfile: path.join(extensionOutputDirectory, 'structural-parse-worker.cjs'),
+  outfile: path.join(extensionOutputDirectory, `${worker}.cjs`),
   format: 'cjs',
   platform: 'node',
   target: 'node18',

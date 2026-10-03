@@ -55,6 +55,21 @@ describe('bounded indexing and local reads', () => {
     expect((await store.listRevisions('bounded')).some((revision) => revision.status === 'failed')).toBe(true);
   });
 
+  it('rebuilds and deduplicates full revisions without hydrating the previous structural index', async () => {
+    const { root, runtime, store, scope } = await fixture('export function stable() { return 1; }');
+    vi.spyOn(store, 'getStructuralIndex').mockRejectedValue(new Error('whole-index hydration unavailable'));
+    const unchanged = await runtime.coordinator.run({ repositoryId: 'bounded', mode: 'full' });
+    expect(unchanged.scope).toEqual(scope);
+    await writeFile(path.join(root, 'main.ts'), 'export function replacement() { return 2; }');
+    const changed = await runtime.coordinator.run({ repositoryId: 'bounded', mode: 'full' });
+    expect(changed.scope.analysisRevision).not.toBe(scope.analysisRevision);
+    expect((await store.getRepository('bounded'))?.activeRevision).toBe(changed.scope.analysisRevision);
+    expect(await store.querySymbols(changed.scope, { relativePaths: ['main.ts'], limit: 10 }))
+      .toMatchObject({ symbols: [expect.objectContaining({ name: 'replacement' })], truncated: false });
+    expect(await store.querySymbols(scope, { relativePaths: ['main.ts'], limit: 10 }))
+      .toMatchObject({ symbols: [expect.objectContaining({ name: 'stable' })], truncated: false });
+  });
+
   it('returns precise end-exclusive slices and marks budget truncation', () => {
     expect(sliceSourceText('first\nsecond\nthird', { startLine: 2, startColumn: 2, endLine: 3, endColumn: 3 }, 32)).toEqual({
       text: 'econd\nth', sourceRange: { startLine: 2, startColumn: 2, endLine: 3, endColumn: 3 }, truncated: false,

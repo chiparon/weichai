@@ -69,6 +69,65 @@ describe('model embedding adapter', () => {
     await expect(provider.embed(['bad'])).rejects.toThrow('zero vector');
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it('bounds long-code batches without changing input text or output order', async () => {
+    const batches: string[][] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)); batches.push(body.input);
+      return Response.json({ data: body.input.map((text: string, index: number) => ({ index, embedding: [text.length, 1] })) });
+    });
+    const provider = new ModelSearchEmbeddingProvider(2, { url: 'http://127.0.0.1/embeddings', apiKey: '', model: 'test-model', documentPrefix: 'passage: ' });
+    const input = ['a'.repeat(12000), 'b'.repeat(12000), '中文😀'.repeat(3000), 'short'];
+    const vectors = await provider.embed(input);
+    expect(batches.flat()).toEqual(input.map(text => `passage: ${text}`));
+    expect(batches.every(batch => batch.reduce((sum, text) => sum + text.length, 0) <= 16384)).toBe(true);
+    expect(vectors).toEqual(input.map(text => [text.length + 9, 1]));
+  });
+
+  it('retries a transient document timeout with the indexing budget', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const request = vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new DOMException('request timed out', 'TimeoutError'))
+      .mockResolvedValueOnce(Response.json({ data: [{ index: 0, embedding: [1, 0] }] }));
+    const provider = new ModelSearchEmbeddingProvider(2, { url: 'http://127.0.0.1/embeddings', apiKey: '', model: 'test-model', baseDelayMs: 0 });
+    await expect(provider.embed(['document'])).resolves.toEqual([[1, 0]]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(timeout.mock.calls).toEqual([[30_000], [30_000]]);
+  });
+
+  it('limits document retries and reports the exhausted batch budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const request = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new DOMException('private source', 'TimeoutError'));
+    const provider = new ModelSearchEmbeddingProvider(2, { url: 'http://127.0.0.1/embeddings', apiKey: '', model: 'test-model', baseDelayMs: 0 });
+    await expect(provider.embed(['private source'])).rejects.toThrow(
+      'Document embedding failed: Embedding batch of 1 inputs failed (timeout 30000ms per attempt, 3 attempts): request timed out',
+    );
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('private source');
+  });
+
+  it.each([400, 401])('does not retry HTTP %s or expose submitted content in errors', async (status) => {
+    const request = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json(
+      { error: { message: 'private source and secret-api-key' } }, { status },
+    ));
+    const provider = new ModelSearchEmbeddingProvider(2, { url: 'http://127.0.0.1/embeddings', apiKey: 'secret-api-key', model: 'test-model' });
+    const failure = await provider.embed(['private source', 'another document']).catch(error => error as Error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain(`batch of 2 inputs failed (timeout 30000ms per attempt, 1 attempts): Embedding API returned HTTP ${status}`);
+    expect((failure as Error).message).not.toMatch(/private source|secret-api-key/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps query embedding at eight seconds without retries', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const request = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new DOMException('request timed out', 'TimeoutError'));
+    const provider = new ModelSearchEmbeddingProvider(2, { url: 'http://127.0.0.1/embeddings', apiKey: '', model: 'test-model' });
+    await expect(provider.embedQuery('query')).rejects.toThrow('timeout 8000ms per attempt, 1 attempts');
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(timeout.mock.calls).toEqual([[8_000]]);
+  });
 });
 
 describe('HashSearchEmbeddingProvider', () => {

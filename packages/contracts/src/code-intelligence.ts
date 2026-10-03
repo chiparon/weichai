@@ -73,6 +73,8 @@ export interface AnalysisRevisionRecord extends RepositoryRevisionScope {
   completedAt?: string;
   activatedAt?: string;
   failureReason?: string;
+  /** Only a completed structural write may be reused after projection failure. */
+  failureStage?: 'scan' | 'structural-write' | 'search-projection' | 'activation';
 }
 
 /** Built-in initial language identifiers; registries may add additional IDs. */

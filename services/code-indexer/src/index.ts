@@ -83,6 +83,7 @@ export {
   scanRepositoryStructuralIndex,
   type RepositoryStructuralScanner,
   type RepositoryStructuralScanRequest,
+  type StructuralScanProgress,
 } from './repository-scan.js';
 
 async function sourceFiles(root: string): Promise<string[]> {

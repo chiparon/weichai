@@ -3,6 +3,7 @@ import { createDefaultLanguageRegistry } from './language-registry.js';
 import { indexTreeSitterFile } from './tree-sitter-indexer.js';
 
 const registry = createDefaultLanguageRegistry();
+process.send?.({ type: 'ready' });
 process.on('message', async (request: { id: number; sourcePath: string; resultPath: string; relativePath: string }) => {
   try {
     const language = registry.resolvePath(request.relativePath);

@@ -6,7 +6,7 @@
 // a rerank server that is not listening silently costs 6 points of recall (the
 // delivery falls back to the fused order and records CONTEXT_RERANK_UNAVAILABLE).
 //
-// Idempotent: anything already listening is left alone. Safe to run repeatedly.
+// Idempotent: compatible services are reused; occupied incompatible ports fail without terminating their owner.
 //
 //   npm run services:up
 //
@@ -23,10 +23,12 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { existsSync, mkdirSync, openSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { get } from 'node:http';
+import { createConnection as connectDatabase } from 'mysql2/promise';
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const runtimePackage = '@huggingface/transformers';
@@ -36,7 +38,9 @@ const runtimeVersion = '3.8.1';
 const defaultModelHost = 'https://hf-mirror.com';
 const embeddingPort = Number(process.env.FOREXPLORE_EMBEDDING_PORT ?? 4021);
 const rerankPort = Number(process.env.FOREXPLORE_RERANK_PORT ?? 4022);
-const seekdbPort = Number(process.env.SEEKDB_PORT ?? 2881);
+const seekdbPort = Number(process.env.CODE_INTELLIGENCE_SEEKDB_PORT ?? process.env.SEEKDB_PORT ?? 2881);
+const seekdbHost = process.env.CODE_INTELLIGENCE_SEEKDB_HOST?.trim() || '127.0.0.1';
+const skipSeekDb = process.argv.includes('--skip-seek-db');
 const container = process.env.SEEKDB_CONTAINER ?? 'forexplore-seekdb';
 
 /**
@@ -55,7 +59,7 @@ function defaultToolsDirectory() {
 const tools = process.env.FOREXPLORE_EMBEDDING_TOOLS ?? defaultToolsDirectory();
 const cache = process.env.FOREXPLORE_MODEL_CACHE ?? path.join(homedir(), '.cache', 'forexplore-model-cache');
 const logDir = process.env.RECAST_SERVICES_LOG_DIR ?? path.join(tmpdir(), 'recast-services');
-let waitMs = Number(process.env.RECAST_SERVICES_WAIT_MS ?? 180_000);
+const waitMs = Number(process.env.RECAST_SERVICES_WAIT_MS ?? 180_000);
 const maxLogBytes = 10 * 1024 * 1024;
 
 const runtimeResolvable = (directory) => {
@@ -116,21 +120,45 @@ function modelHostEnvironment() {
   return { FOREXPLORE_MODEL_HOST: defaultModelHost };
 }
 
-const listening = (port) => new Promise((resolve) => {
-  const socket = createConnection({ host: '127.0.0.1', port });
+const listening = (port, host = '127.0.0.1') => new Promise((resolve) => {
+  const socket = createConnection({ host, port });
   socket.once('connect', () => { socket.destroy(); resolve(true); });
   socket.once('error', () => resolve(false));
   socket.setTimeout(1500, () => { socket.destroy(); resolve(false); });
 });
 
-async function waitFor(port, label) {
-  const started = Date.now();
-  while (Date.now() - started < waitMs) {
-    if (await listening(port)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  console.error(`${label}: not listening on ${port} after ${Math.round(waitMs / 1000)}s`);
-  return false;
+async function serviceReady(label, port) {
+  try {
+    if (label === 'SeekDB') {
+      const connection = await connectDatabase({ host: seekdbHost, port, connectTimeout: 1500,
+        user: process.env.CODE_INTELLIGENCE_SEEKDB_USER ?? process.env.SEEKDB_USER ?? 'root',
+        password: process.env.CODE_INTELLIGENCE_SEEKDB_PASSWORD ?? process.env.SEEKDB_PASSWORD ?? '' });
+      try { await connection.query({ sql: 'SELECT 1', timeout: 1500 }); }
+      finally { connection.destroy(); }
+    } else {
+      const health = await new Promise((resolve, reject) => {
+        get(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500) }, response => {
+          let body = '';
+          response.setEncoding('utf8');
+          response.on('data', chunk => { body += chunk; });
+          response.on('error', reject);
+          response.on('end', () => {
+            try {
+              if (response.statusCode !== 200) throw new Error(`health returned HTTP ${response.statusCode}`);
+              resolve(JSON.parse(body));
+            } catch (error) { reject(error); }
+          });
+        }).on('error', reject);
+      });
+      const model = label === 'embedding'
+        ? `${process.env.FOREXPLORE_EMBEDDING_MODEL ?? 'Xenova/multilingual-e5-small'}@${process.env.FOREXPLORE_EMBEDDING_REVISION ?? '761b726dd34fb83930e26aab4e9ac3899aa1fa78'}`
+        : process.env.FOREXPLORE_RERANK_MODEL ?? 'Xenova/bge-reranker-base';
+      if (health.model !== model || (label === 'embedding' && health.ready !== true)) {
+        throw new Error(`port ${port} is not serving the configured ${label} model ${model}`);
+      }
+    }
+    return { ready: true };
+  } catch (error) { return { ready: false, detail: error.message }; }
 }
 
 /**
@@ -148,58 +176,69 @@ function launch(label, script, env) {
   const handle = openSync(log, 'a');
   const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', handle, handle], cwd: process.cwd(),
     env: { ...process.env, ...env } });
+  closeSync(handle);
+  const launched = { child, log, error: undefined };
+  child.once('error', error => { launched.error = error.message; });
   child.unref();
-  return log;
+  return launched;
 }
 
 /** `docker info` only needs its exit status, so nothing is piped. */
 const dockerReady = () => spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0;
 
-async function ensureDocker() {
-  if (dockerReady()) return true;
-  console.log('SeekDB: docker daemon is down, starting Docker Desktop');
-  for (const candidate of [path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'DockerDesktop', 'Docker Desktop.exe'),
-    path.join(process.env.ProgramFiles ?? '', 'Docker', 'Docker', 'Docker Desktop.exe')]) {
-    if (!candidate || !candidate.includes('Docker')) continue;
-    const result = spawnSync(candidate, [], { stdio: 'ignore', detached: true });
-    if (result.error === undefined) break;
-  }
-  const started = Date.now();
-  while (Date.now() - started < waitMs) {
-    if (dockerReady()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-  }
-  return false;
-}
 
 const results = [];
 const step = async (label, port, action) => {
-  if (await listening(port)) { results.push([label, port, 'already up']); return true; }
-  const log = action();
-  const ok = await waitFor(port, label);
-  results.push([label, port, ok ? `started${log ? ` (log: ${log})` : ''}` : 'FAILED']);
-  return ok;
+  const host = label === 'SeekDB' ? seekdbHost : '127.0.0.1';
+  const occupied = await listening(port, host);
+  let detail = 'not listening';
+  if (occupied) {
+    const health = await serviceReady(label, port);
+    if (health.ready || label !== 'SeekDB') {
+      results.push([label, port, health.ready ? 'ready (existing)' : `FAILED: ${health.detail}`]);
+      return health.ready;
+    }
+    // Docker can expose TCP before the database has finished recovery.
+    detail = health.detail;
+  }
+  const launched = occupied ? undefined : action();
+  if (launched === false) { results.push([label, port, 'FAILED: dependency could not start']); return false; }
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (launched?.error || (launched?.child && (launched.child.exitCode !== null || launched.child.signalCode !== null))) {
+      detail = launched.error ?? `process exited (${launched.child.signalCode ?? launched.child.exitCode})`;
+      break;
+    }
+    if (await listening(port, host)) {
+      const health = await serviceReady(label, port);
+      if (health.ready) {
+        results.push([label, port, `ready${launched?.log ? ` (log: ${launched.log})` : ''}`]);
+        return true;
+      }
+      detail = health.detail;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  results.push([label, port, `FAILED: ${detail}${launched?.log ? ` (log: ${launched.log})` : ''}`]);
+  return false;
 };
 
 const seekdb = await step('SeekDB', seekdbPort, () => {
-  if (!dockerReady()) { console.error(`SeekDB: docker daemon unavailable — start Docker Desktop and retry.`); return null; }
-  spawnSync('docker', ['start', container], { stdio: 'ignore' });
-  return null;
+  if (skipSeekDb || !['127.0.0.1', 'localhost', '::1'].includes(seekdbHost)) return undefined;
+  if (!dockerReady()) { console.error('SeekDB: Docker daemon unavailable — start Docker Desktop and retry.'); return false; }
+  const started = spawnSync('docker', ['start', container], { stdio: 'inherit' });
+  if (started.status !== 0) return false;
+  return undefined;
 });
 
-const runtimeReady = ensureEmbeddingRuntime();
-if (!runtimeReady) {
-  // Both local servers exit immediately without the runtime, so probing the full
-  // readiness budget would only postpone the report.
-  waitMs = Math.min(waitMs, 5_000);
-  console.error('Local embedding and rerank servers cannot start without the inference runtime.');
-}
+const runtimeReady = (await listening(embeddingPort) && await listening(rerankPort)) || ensureEmbeddingRuntime();
+if (!runtimeReady) console.error('Local embedding and rerank servers cannot start without the inference runtime.');
 const modelHost = modelHostEnvironment();
 
-const embedding = await step('embedding', embeddingPort, () => launch('embedding', path.join('scripts', 'serve-local-embeddings.mjs'),
+const embedding = await step('embedding', embeddingPort, () => runtimeReady && launch('embedding', path.join('scripts', 'serve-local-embeddings.mjs'),
   { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_EMBEDDING_PORT: String(embeddingPort), ...modelHost }));
 
-const rerank = await step('rerank', rerankPort, () => launch('rerank', path.join('scripts', 'serve-local-rerank.mjs'),
+const rerank = await step('rerank', rerankPort, () => runtimeReady && launch('rerank', path.join('scripts', 'serve-local-rerank.mjs'),
   { FOREXPLORE_EMBEDDING_TOOLS: tools, FOREXPLORE_MODEL_CACHE: cache, FOREXPLORE_RERANK_PORT: String(rerankPort), ...modelHost }));
 
 console.log('\nservice    port   status');

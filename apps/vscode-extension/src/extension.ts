@@ -26,7 +26,10 @@ import { WorkspaceBackfill } from './backfill';
 import {
   CodeIntelligenceHost,
   codeIntelligenceRuntimeOptionsFromEnvironment,
+  type SynchronizeCodeIntelligenceRequest,
 } from './code-intelligence-host';
+import { indexingProgressMessage, isIndexingCancellation, retrievalAvailable,
+  type RepositoryIndexingProgress } from './indexing-progress';
 import { canonicalWorkspacePath } from './diff-apply';
 import {
   ModuleMigrationHost,
@@ -80,6 +83,9 @@ interface ExtensionHost {
   output: vscode.OutputChannel;
 }
 
+type SynchronizationOptions = Omit<SynchronizeCodeIntelligenceRequest, 'repositories'>;
+type IndexingControls = Pick<SynchronizationOptions, 'signal' | 'onProgress'>;
+
 interface ActiveMigrationRun {
   workspaceFolder: vscode.WorkspaceFolder;
   targetUri: vscode.Uri;
@@ -101,7 +107,9 @@ interface LastCheckpoint {
 }
 
 let activeBackend: BackendProcess | undefined;
-const workspaceTranslation = new WorkspaceTranslationHost(() => ({ url: loadSettings().adaptationApiUrl,
+let activeServices: ServiceManager | undefined;
+function backendEndpoint(): string { return activeBackend?.url ?? loadSettings().adaptationApiUrl; }
+const workspaceTranslation = new WorkspaceTranslationHost(() => ({ url: backendEndpoint(),
   token: activeBackend?.translationToken ?? process.env.ADAPTATION_WORKSPACE_TRANSLATION_TOKEN, profile: process.env.FOREXPLORE_TRANSLATION_PROFILE }),
   (url, init) => localFetch(String(url), init));
 let moduleSelectionVersion = 0;
@@ -113,9 +121,11 @@ let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
 let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
 /** One-shot startup chain, created by the first explicit use of the workbench. */
 let codeIntelligenceStartup: Promise<void> | undefined;
+let startupCancellation: AbortController | undefined;
+const startupProgressListeners = new Set<(progress: RepositoryIndexingProgress) => void>();
 
 export function activate(context: vscode.ExtensionContext): void {
-  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm));
+  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm, backendEndpoint));
   context.subscriptions.push({ dispose: () => setModelCredentialProvider(undefined) });
   context.subscriptions.push(
     context.secrets.onDidChange(() => { void publishModelKeyStatus(context); }),
@@ -125,43 +135,51 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const output = vscode.window.createOutputChannel('RECAST');
   activeOutput = output;
-  const backend = new BackendProcess(() => {
+  let codeIntelligence: CodeIntelligenceHost;
+  const backend = new BackendProcess(async () => {
     const configuration = vscode.workspace.getConfiguration('forexplore');
     const workspaceRoot = activeRun?.workspaceFolder.uri.fsPath ?? selectedTargetWorkspaceFolders()[0]?.uri.fsPath
       ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) throw new Error('请先打开目标工程。');
+    if (!vscode.workspace.isTrusted) throw new Error('请先信任工作区，再启动模型后端。');
+    const semanticEndpoint = await codeIntelligence.startSemanticQueryServer({
+      port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 0),
+      bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
+    });
     return { url: loadSettings().adaptationApiUrl, extensionPath: context.extensionPath, workspaceRoot,
       trusted: vscode.workspace.isTrusted, autoStart: configuration.get<boolean>('backend.autoStart', true),
-      semanticPort: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
+      dynamicPort: true,
+      semanticPort: Number(new URL(semanticEndpoint).port),
       compileCommand: configuration.inspect<BackendLaunchConfiguration['compileCommand']>('backend.compileCommand')?.globalValue,
       verification: configuration.inspect<BackendLaunchConfiguration['verification']>('backend.verification')?.globalValue };
   }, message => output.appendLine(`[RECAST] ${message}`));
   activeBackend = backend;
   const services = new ServiceManager(output, backend);
+  activeServices = services;
   const health = new RepositoryHealthCheck();
-  let codeIntelligence: CodeIntelligenceHost;
   try {
     const runtimeOptions = codeIntelligenceRuntimeOptionsFromEnvironment(process.env, {
       // A packaged extension must use durable SeekDB. The only memory path is
       // an explicitly non-production VS Code development/test host.
       allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
     });
-    const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure());
+    const reranker = new ConfiguredModelReranker(backendEndpoint, () => backend.ensure());
     runtimeOptions.taskCandidateReranker = reranker;
     runtimeOptions.moduleCandidateReranker = reranker;
     codeIntelligence = new CodeIntelligenceHost({
       runtimeOptions,
       planProject: async (scope) => {
         await backend.ensure();
-        await codeIntelligence.startSemanticQueryServer({
-          port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
-          bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
-        });
-        return requestSemanticModuleMigrationProposal(loadSettings().adaptationApiUrl, scope, undefined, AbortSignal.timeout(300_000));
+        return requestSemanticModuleMigrationProposal(backendEndpoint(), scope, undefined, AbortSignal.timeout(300_000));
       },
       hierarchyPlanner: new HttpModuleHierarchyPlanner(() =>
-        process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() || loadSettings().adaptationApiUrl,
-        async (url, init) => { await backend.ensure(); return localFetch(url, init); }),
+        process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() || backendEndpoint(),
+        async (url, init) => {
+          await backend.ensure();
+          const endpoint = process.env.FOREXPLORE_MODULE_HIERARCHY_URL?.trim() ? url
+            : new URL(new URL(typeof url === 'string' ? url : url instanceof URL ? url : url.url).pathname, backendEndpoint()).toString();
+          return localFetch(endpoint, init);
+        }),
       onChange: () => { void publishProjectView(codeIntelligence).catch((error) => output.appendLine(String(error))); },
       modelKeyRefusal: () => modelKeyRefusalReason(context.secrets, loadSettings().adaptationApiUrl, loadSettings().llm),
       onModelRefusal: (reason) => reportModelRefusal(context, reason),
@@ -207,12 +225,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await backend.ensure();
       const scope = await codeIntelligence.activeScopeForPath(workspaceFolder.uri.fsPath);
       const projectId = await codeIntelligence.selectedProjectForPath(workspaceFolder.uri.fsPath);
-      await codeIntelligence.startSemanticQueryServer({
-        port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
-        bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
-      });
-      const settings = loadSettings();
-      return requestSemanticModuleMigrationProposal(settings.adaptationApiUrl, {
+      return requestSemanticModuleMigrationProposal(backendEndpoint(), {
         ...scope,
         ...(projectId ? { projectId } : {}),
         objective,
@@ -236,6 +249,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('forexplore.savePanelSettings', () => { publish({ type: 'REQUEST_SETTINGS_SAVE' }); }),
     services,
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      // The explicit import owns the cancellable scan. A second automatic
+      // scan here would run ahead of its notification and ignore its token.
+      if (readPendingTargetImport(context.globalState.get(pendingTargetImportKey(vscode.env.sessionId)))) return;
       void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
     }),
     createWorkbenchLauncher({ context, services, health, codeIntelligence, output }, output),
@@ -268,30 +284,23 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('forexplore.reindex', async () => {
       await services.refresh();
-      const result = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'RECAST: 正在刷新版本化代码智能索引',
-        },
-        () => synchronizeCodeIntelligence(codeIntelligence, { forceFull: true }),
-      );
-      const repositories = await refreshRepositoryStatus(services, health);
-      void vscode.window.showInformationMessage(
-        summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。',
-      );
-      void repositories;
+      try {
+        const result = await withIndexingProgress('RECAST: 正在刷新版本化代码智能索引', controls =>
+          synchronizeCodeIntelligence(codeIntelligence, { forceFull: true, ...controls }));
+        await refreshRepositoryStatus(services, health);
+        void vscode.window.showInformationMessage(summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。');
+      } catch (error) {
+        if (!isIndexingCancellation(error)) void vscode.window.showErrorMessage(errorMessage(error, '代码索引刷新失败'));
+      }
     }),
     vscode.commands.registerCommand('forexplore.refreshCodeIntelligence', async () => {
-      const result = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'RECAST: 正在增量刷新代码智能索引',
-        },
-        () => synchronizeCodeIntelligence(codeIntelligence),
-      );
-      void vscode.window.showInformationMessage(
-        summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。',
-      );
+      try {
+        const result = await withIndexingProgress('RECAST: 正在增量刷新代码智能索引', controls =>
+          synchronizeCodeIntelligence(codeIntelligence, controls));
+        void vscode.window.showInformationMessage(summarizeCodeIntelligence(result) ?? '代码智能索引未发现可注册仓库。');
+      } catch (error) {
+        if (!isIndexingCancellation(error)) void vscode.window.showErrorMessage(errorMessage(error, '代码索引刷新失败'));
+      }
     }),
     vscode.commands.registerCommand('forexplore.restoreLastCheckpoint', () =>
       restoreLastCheckpoint(context),
@@ -369,6 +378,8 @@ async function configureModelKey(context: vscode.ExtensionContext, clear: boolea
 }
 
 export function deactivate(): void {
+  startupCancellation?.abort(new DOMException('扩展已关闭', 'AbortError'));
+  activeServices = undefined;
   activeTaskSearch?.controller.abort();
   activeTaskSearch = null;
   activeRun = null;
@@ -423,25 +434,70 @@ function createWorkbenchLauncher(
 function ensureCodeIntelligenceStarted(
   host: ExtensionHost,
   output: vscode.OutputChannel,
+  options: IndexingControls = {},
 ): Promise<void> {
-  codeIntelligenceStartup ??= Promise.all([
-    host.services.ensureStarted().catch(error => {
-      output.appendLine(`[RECAST] ${errorMessage(error, '后端启动失败')}`);
-      publish({ type: 'SERVICE_STATUS', status: host.services.serviceStatus });
-    }).then(() => synchronizeCodeIntelligence(host.codeIntelligence)).then(() => host.services.setRetrievalReady(true)),
-    host.codeIntelligence.startSemanticQueryServer({
-      port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
-      bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
-    }),
-  ])
-    .then(() => refreshRepositoryStatus(host.services, host.health))
-    .then(() => undefined)
-    .catch((error) => {
-      output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
-      host.services.setRetrievalReady(false);
-      codeIntelligenceStartup = undefined;
-    });
-  return codeIntelligenceStartup;
+  options.signal?.throwIfAborted();
+  if (options.onProgress) startupProgressListeners.add(options.onProgress);
+  if (!codeIntelligenceStartup) {
+    const controller = new AbortController();
+    startupCancellation = controller;
+    let failed = false;
+    // The shared startup owns its one native notification, including ordinary
+    // panel opening. Resumed imports only subscribe to the same scan's progress.
+    codeIntelligenceStartup = withIndexingProgress('RECAST: 正在初始化代码智能索引', controls => Promise.all([
+      host.services.ensureStarted().catch(error => {
+        output.appendLine(`[RECAST] ${errorMessage(error, '后端启动失败')}`);
+        publish({ type: 'SERVICE_STATUS', status: host.services.serviceStatus });
+      }),
+      host.codeIntelligence.startSemanticQueryServer({
+        port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 0),
+        bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
+      }),
+    ])
+      // Backend initialization creates .forexplore in the workspace. Finish that
+      // write before capturing directory metadata for the immutable source snapshot.
+      .then(() => synchronizeCodeIntelligence(host.codeIntelligence, {
+        signal: controller.signal,
+        onProgress: progress => {
+          controls.onProgress?.(progress);
+          for (const listener of startupProgressListeners) listener(progress);
+        },
+      }))
+      .then(presentation => {
+        if (presentation.status === 'error') {
+          failed = true;
+          output.appendLine(`[RECAST] ${presentation.message ?? '代码索引失败，请查看 RECAST 输出。'}`);
+        }
+        host.services.setRetrievalReady(retrievalAvailable(presentation));
+      })
+      .catch(async error => {
+        failed = true;
+        host.services.setRetrievalReady(retrievalAvailable(await host.codeIntelligence.presentation()));
+        controller.signal.throwIfAborted();
+        output.appendLine(`[RECAST] ${errorMessage(error, '检索索引启动失败')}`);
+      })
+      .then(() => {
+        publish({ type: 'SERVICE_STATUS', status: host.services.serviceStatus });
+        return refreshRepositoryStatus(host.services, host.health);
+      })
+      .then(() => undefined)
+      .catch(error => {
+        failed = true;
+        controller.signal.throwIfAborted();
+        output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
+      }), false, controller)
+      .catch(error => { failed = true; throw error; })
+      .finally(() => {
+        startupCancellation = undefined;
+        if (failed) codeIntelligenceStartup = undefined;
+      });
+  }
+  const cancel = () => startupCancellation?.abort(options.signal?.reason);
+  options.signal?.addEventListener('abort', cancel, { once: true });
+  return codeIntelligenceStartup.then(() => { options.signal?.throwIfAborted(); }).finally(() => {
+    options.signal?.removeEventListener('abort', cancel);
+    if (options.onProgress) startupProgressListeners.delete(options.onProgress);
+  });
 }
 
 /**
@@ -487,7 +543,9 @@ function primeWorkbench(
       // publish the transient `indexing` state and, if the host was revived
       // after the final result was emitted, leave the Webview with no later
       // message to settle that state.
-      const startup = ensureCodeIntelligenceStarted(host, output);
+      const startup = ensureCodeIntelligenceStarted(host, output).catch(error => {
+        if (!isIndexingCancellation(error)) throw error;
+      });
       // Published indexing results are readable while another repository scans.
       // Opening a panel must not enqueue a status read behind that scan.
       await publishProjectView(host.codeIntelligence);
@@ -504,6 +562,7 @@ function primeWorkbench(
       panel.post({ type: 'SERVICE_STATUS', status });
       panel.post({ type: 'REPOSITORY_STATUS', statuses });
     } catch (error) {
+      if (isIndexingCancellation(error)) return;
       if (TranslationPanel.current === panel) panel.post({ type: 'ERROR', message: errorMessage(error, '面板数据加载失败') });
     }
   })();
@@ -520,7 +579,9 @@ async function showPanel(
   // Opening the workbench is the explicit use that starts the indexing chain.
   // Memoized, so reopening an existing panel costs nothing while a failed
   // startup is still retried on the next click.
-  void ensureCodeIntelligenceStarted(host, output);
+  void ensureCodeIntelligenceStarted(host, output).catch(error => {
+    if (!isIndexingCancellation(error)) output.appendLine(`[RECAST] ${errorMessage(error, '索引启动失败')}`);
+  });
   if (TranslationPanel.current) {
     TranslationPanel.current.panel.reveal(vscode.ViewColumn.Beside);
     return;
@@ -605,10 +666,26 @@ async function handlePanelMessage(
     case 'REFRESH_MODULE_EXPLORER':
       await refreshModuleExplorer(host.codeIntelligence);
       return;
-    case 'REFRESH_REPOSITORY':
-      await synchronizeCodeIntelligence(host.codeIntelligence, { scanRepositoryIds: [message.repositoryId] });
-      await publishProjectView(host.codeIntelligence);
+    case 'REFRESH_REPOSITORY': {
+      const repository = (await host.codeIntelligence.presentation()).repositories.find(item => item.repositoryId === message.repositoryId);
+      const targetImport = repository?.role === 'target';
+      try {
+        const presentation = await withIndexingProgress('RECAST: 正在重试工程索引', controls =>
+          synchronizeCodeIntelligence(host.codeIntelligence, { scanRepositoryIds: [message.repositoryId], ...controls }), targetImport);
+        if (targetImport) {
+          const refreshed = presentation.repositories.find(item => item.repositoryId === message.repositoryId);
+          const completed = refreshed?.activeRevision && ['ready', 'degraded'].includes(refreshed.analysisStatus);
+          publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: completed ? 'completed' : 'failed', mode: 'workspace',
+            message: completed ? '目标工程已完成索引。' : presentation.message ?? '目标工程索引失败，请查看 RECAST 输出日志后重试。' });
+        }
+      } catch (error) {
+        if (targetImport) publish({ type: 'TARGET_WORKSPACE_RESULT',
+          outcome: isIndexingCancellation(error) ? 'cancelled' : 'failed', mode: 'workspace',
+          message: errorMessage(error, '目标工程索引失败') });
+        else if (!isIndexingCancellation(error)) throw error;
+      } finally { await publishProjectView(host.codeIntelligence); }
       return;
+    }
     case 'SAVE_SETTINGS':
       await updatePanelSettings(host, message.settings, message.modelKey);
       return;
@@ -736,7 +813,7 @@ async function updatePanelSettings(
 
 async function refreshModuleExplorer(
   codeIntelligence: CodeIntelligenceHost,
-  options: { scanNewOnly?: boolean; throwErrors?: boolean } = {},
+  options: SynchronizationOptions & { throwErrors?: boolean } = {},
 ): Promise<boolean> {
   try {
     const { throwErrors = false, ...synchronizationOptions } = options;
@@ -757,10 +834,38 @@ async function refreshModuleExplorer(
   } catch (error) {
     // A caller that owns a visible progress surface reports the failure itself
     // so the user sees one message beside the control that failed.
-    if (options.throwErrors) throw error;
+    if (options.throwErrors || options.signal?.aborted || isIndexingCancellation(error)) throw error;
     publishError(errorMessage(error, '刷新模块视图失败'));
     return false;
   }
+}
+
+function withIndexingProgress<T>(
+  title: string,
+  operation: (controls: IndexingControls) => Promise<T>,
+  targetImport = false,
+  controller = new AbortController(),
+): Promise<T> {
+  return Promise.resolve(vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+    async (progress, token) => {
+      const cancel = () => controller.abort(new DOMException('索引已取消，可重试以继续。', 'AbortError'));
+      const subscription = token.onCancellationRequested(cancel);
+      if (token.isCancellationRequested) cancel();
+      const report = (message: string) => {
+        progress.report({ message });
+        if (targetImport) publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message });
+      };
+      try {
+        controller.signal.throwIfAborted();
+        report('正在准备索引…');
+        const result = await operation({ signal: controller.signal,
+          onProgress: update => report(indexingProgressMessage(update)) });
+        controller.signal.throwIfAborted();
+        return result;
+      } finally { subscription.dispose(); }
+    },
+  ));
 }
 
 /**
@@ -779,23 +884,32 @@ async function addTargetWorkspaceFromWebview(
   // intent is persisted before that mutation and cleared once this host
   // finishes the job. Otherwise a restart leaves the panel stuck on
   // "正在建立索引" with nobody left to complete or clear it.
-  await host.context.globalState.update(pendingTargetImportKey,
+  await host.context.globalState.update(pendingTargetImportKey(vscode.env.sessionId),
     { requestedAt: new Date().toISOString(), mode } satisfies PendingTargetImport);
-  const clearIntent = () => host.context.globalState.update(pendingTargetImportKey, undefined);
+  const clearIntent = () => host.context.globalState.update(pendingTargetImportKey(vscode.env.sessionId), undefined);
+  const controller = new AbortController();
   let selection: Awaited<ReturnType<typeof addTargetWorkspace>>;
   try {
     selection = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在添加目标工程', cancellable: false },
-      (progress) => addTargetWorkspace(mode, {
-        onProgress: (update) => {
-          progress.report({ message: update.message });
-          publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: update.phase, message: update.message });
-        },
-      }),
+      { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在添加目标工程', cancellable: true },
+      async (progress, token) => {
+        const subscription = token.onCancellationRequested(() => controller.abort(new DOMException('添加目标工程已取消', 'AbortError')));
+        try {
+          if (token.isCancellationRequested) controller.abort(new DOMException('添加目标工程已取消', 'AbortError'));
+          controller.signal.throwIfAborted();
+          const selected = await addTargetWorkspace(mode, { signal: controller.signal, onProgress: update => {
+            controller.signal.throwIfAborted();
+            progress.report({ message: update.message });
+            publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: update.phase, message: update.message });
+          } });
+          controller.signal.throwIfAborted();
+          return selected;
+        } finally { subscription.dispose(); }
+      },
     );
   } catch (error) {
     await clearIntent();
-    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode,
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: isIndexingCancellation(error) ? 'cancelled' : 'failed', mode,
       message: errorMessage(error, '添加目标工程失败') });
     return;
   }
@@ -811,16 +925,11 @@ async function addTargetWorkspaceFromWebview(
   try {
     // `throwErrors` keeps the failure message with the retry affordance in the
     // selector instead of duplicating it into the global error banner.
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在建立目标工程索引', cancellable: false },
-      (progress) => {
-        progress.report({ message: '正在解析目录并建立结构索引…' });
-        return refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, throwErrors: true });
-      },
-    );
+    await withIndexingProgress('RECAST: 正在建立目标工程索引', controls =>
+      refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, throwErrors: true, ...controls }), true, controller);
   } catch (error) {
     await clearIntent();
-    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode,
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: isIndexingCancellation(error) ? 'cancelled' : 'failed', mode,
       message: errorMessage(error, '目标目录已登记，但索引失败') });
     return;
   }
@@ -840,25 +949,26 @@ async function resumeInterruptedTargetImport(
   host: ExtensionHost,
   output: vscode.OutputChannel,
 ): Promise<void> {
-  const pending = readPendingTargetImport(host.context.globalState.get(pendingTargetImportKey));
+  const pending = readPendingTargetImport(host.context.globalState.get(pendingTargetImportKey(vscode.env.sessionId)));
   if (!pending) return;
-  await host.context.globalState.update(pendingTargetImportKey, undefined);
+  await host.context.globalState.update(pendingTargetImportKey(vscode.env.sessionId), undefined);
   output.appendLine('[forexplore] resuming the target import interrupted by the workspace change.');
-  let failure: string | undefined;
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'RECAST: 正在恢复目标工程导入', cancellable: false },
-    async (progress) => {
-      progress.report({ message: '正在建立结构索引…' });
-      publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在恢复目标工程导入并建立索引…' });
-      try {
-        await ensureCodeIntelligenceStarted(host, output);
-        await refreshModuleExplorer(host.codeIntelligence, { scanNewOnly: true, throwErrors: true });
-      } catch (error) {
-        failure = errorMessage(error, '恢复目标工程导入失败');
-      }
-    },
-  );
-  if (failure) {
+  try {
+    publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'added', mode: pending.mode,
+      message: '正在恢复目标工程导入…' });
+    publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在恢复目标工程导入…' });
+    await ensureCodeIntelligenceStarted(host, output, { onProgress: update =>
+      publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: indexingProgressMessage(update) }) });
+    // Startup owns the cancellable notification and already scanned this
+    // selection. Publish its verdict without another notification or scan.
+    await refreshModuleExplorer(host.codeIntelligence, { scan: false, throwErrors: true });
+  } catch (error) {
+    if (isIndexingCancellation(error)) {
+      publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'cancelled', mode: pending.mode,
+        message: errorMessage(error, '索引已取消') });
+      return;
+    }
+    const failure = errorMessage(error, '恢复目标工程导入失败');
     publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: pending.mode, message: failure });
     void vscode.window.showWarningMessage(`RECAST: ${failure}`);
     return;
@@ -1275,19 +1385,27 @@ function codeIntelligenceRepositoryInputs(): Array<{
 
 async function synchronizeCodeIntelligence(
   host: CodeIntelligenceHost,
-  options: { forceFull?: boolean; scan?: boolean; scanRepositoryIds?: readonly string[]; scanNewOnly?: boolean; scanRoles?: readonly ('history' | 'target')[] } = {},
+  options: SynchronizationOptions = {},
 ): Promise<CodeIntelligencePresentation> {
   return (await synchronizeCodeIntelligenceResult(host, options)).presentation;
 }
 
 async function synchronizeCodeIntelligenceResult(
   host: CodeIntelligenceHost,
-  options: { forceFull?: boolean; scan?: boolean; scanRepositoryIds?: readonly string[]; scanNewOnly?: boolean; scanRoles?: readonly ('history' | 'target')[] } = {},
+  options: SynchronizationOptions = {},
 ): Promise<Awaited<ReturnType<CodeIntelligenceHost['synchronize']>>> {
-  return host.synchronize({
-    repositories: codeIntelligenceRepositoryInputs(),
-    ...options,
-  });
+  const updateStatus = (presentation: CodeIntelligencePresentation) => {
+    activeServices?.setRetrievalReady(retrievalAvailable(presentation));
+    if (activeServices) publish({ type: 'SERVICE_STATUS', status: activeServices.serviceStatus });
+  };
+  try {
+    const result = await host.synchronize({ repositories: codeIntelligenceRepositoryInputs(), ...options });
+    updateStatus(result.presentation);
+    return result;
+  } catch (error) {
+    updateStatus(await host.presentation());
+    throw error;
+  }
 }
 
 function publish(message: HostToWebviewMessage): void {
@@ -1328,7 +1446,10 @@ function sha256(bytes: Uint8Array): string {
 function positiveEnvironmentPort(value: string | undefined, fallback: number): number {
   if (!value?.trim()) return fallback;
   const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error('FOREXPLORE_SEMANTIC_QUERY_PORT 必须为 0（自动分配）或有效 TCP 端口。');
+  }
+  return port;
 }
 
 let projectViewQueue: Promise<void> = Promise.resolve();

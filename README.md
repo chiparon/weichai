@@ -151,15 +151,8 @@ the tool boundary.
 
 ### Start the application
 
-Start retrieval and adaptation:
-
-```bash
-npm run dev:retrieval
-npm run dev:adaptation
-```
-
-On Windows, Linux, or macOS, start SeekDB, both backend dev processes, build the
-extension, and open the Extension Development Host with one command:
+On Windows, Linux, or macOS, start SeekDB and the local embedding/reranking
+dependencies, build the extension, and open the Extension Development Host:
 
 ```bash
 npm run dev:extension
@@ -167,23 +160,41 @@ npm run dev:extension
 
 The cross-platform launcher is [`scripts/run-vscode-extension.mjs`](scripts/run-vscode-extension.mjs).
 It assumes dependencies are already installed and does not run `npm install`.
-The host opens as soon as the extension is built; the dependency services keep
-starting in parallel and report their status in the same terminal. Add
-`--wait-services` to open the host only after every dependency is ready,
-`--skip-services` to open it without starting them, or `--folder <path>` to choose
-the opened folder; `--help` lists every option. Use
-`npm run dev:extension -- --skip-seek-db` when SeekDB is already running.
+The host opens only after SQL and model health checks pass. A listening TCP port
+alone is not treated as a ready service. Use `--skip-services` for externally
+managed dependencies, `--folder <path>` to choose the opened folder, or
+`--skip-seek-db` when SeekDB is already running. `--help` lists every option.
 The legacy PowerShell path remains a compatibility wrapper on Windows.
+
+For an existing SeekDB, pass launcher flags after npm's `--` separator:
+
+```bash
+npm run dev:extension -- --skip-seek-db
+```
+
+Set `CODE_INTELLIGENCE_SEEKDB_HOST` and `CODE_INTELLIGENCE_SEEKDB_PORT` for an
+external database. The launcher checks that endpoint without starting local Docker.
+
+The extension alone starts its workspace-bound adaptation backend; do not also
+prestart `dev:adaptation` on its port. The semantic query listener gets a free
+loopback port per window, and its actual endpoint is passed to that backend.
+Set `FOREXPLORE_SEMANTIC_QUERY_PORT` only when a fixed endpoint is needed by an
+external client. Backend reuse requires matching workspace, query endpoint,
+capabilities, and translation token; `/health` alone does not prove ownership.
 
 VS Code keeps one Extension Development Host per extension path, so running the
 launcher again while that window is open reloads the extension inside the existing
 window instead of opening a new one. Close that window to get a fresh one.
 
-`npm run dev` is an alias for `npm run dev:extension`. Do not append
-`adaptation` to it; start `npm run dev:adaptation` separately when needed.
+`npm run dev` is an alias for `npm run dev:extension` and includes the
+extension-managed adaptation backend.
 
-To run each layer independently, use `npm run dev:retrieval` and
-`npm run dev:adaptation`. Verify the backend services:
+For standalone HTTP development outside the extension workflow, use
+`npm run dev:retrieval` and `npm run dev:adaptation`. To connect a manually
+managed backend to the extension, first set `forexplore.backend.autoStart=false`
+and follow the matching root, fixed semantic port and token requirements in the
+[backend guide](docs/extension-backend-and-evidence.zh-CN.md). Standalone HTTP
+service health checks:
 
 ```bash
 curl http://127.0.0.1:8787/health

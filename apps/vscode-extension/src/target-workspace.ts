@@ -98,8 +98,27 @@ export function selectedTargetWorkspaceFolders(): readonly vscode.WorkspaceFolde
     vscode.workspace.getConfiguration('forexplore').get<unknown[]>('targetRepositoryPaths', []),
   );
   if (selected.length === 0) return [];
-  return (vscode.workspace.workspaceFolders ?? []).filter((folder) =>
-    folder.uri.scheme === 'file' && selected.some((entry) => sameTargetPath(entry, folder.uri.fsPath)));
+  const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => folder.uri.scheme === 'file');
+  const targets: vscode.WorkspaceFolder[] = [];
+  for (const entry of selected) {
+    const exact = folders.find((folder) => sameTargetPath(entry, folder.uri.fsPath));
+    if (exact) { targets.push(exact); continue; }
+    // An explicitly configured project inside an open workspace is a valid
+    // target. Keep its own root, so the surrounding repository is never indexed
+    // or used as the write-back scope.
+    let targetRoot: string;
+    try { targetRoot = realpathSync(entry); } catch { continue; }
+    const parent = folders.find((folder) => {
+      let workspaceRoot: string;
+      try { workspaceRoot = realpathSync(folder.uri.fsPath); } catch { return false; }
+      const relative = path.relative(workspaceRoot, targetRoot);
+      return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    });
+    if (parent && !targets.some((folder) => sameTargetPath(folder.uri.fsPath, targetRoot))) {
+      targets.push({ uri: vscode.Uri.file(targetRoot), name: path.basename(targetRoot), index: parent.index });
+    }
+  }
+  return targets;
 }
 
 export async function addTargetWorkspace(

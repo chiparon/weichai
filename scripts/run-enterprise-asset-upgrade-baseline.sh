@@ -24,8 +24,7 @@ Options:
   --help               Show this help.
 
 Environment:
-  DEEPSEEK_API_KEY     Required by scripts/run-claude-deepseek.sh.
-  DEEPSEEK_MODEL       Defaults to deepseek-v4-flash, matching RECAST.
+  CLAUDE_BIN            Coding Agent executable, defaults to claude.
   BASELINE_RESULTS_ROOT  Override the results directory.
 EOF
 }
@@ -70,13 +69,15 @@ else
   cat > "$run_dir/task-prompt.md" <<'EOF'
 # Enterprise asset upgrade baseline
 
-Implement the requested AssetUpgradeGateway target project as a plain coding-agent baseline.
+Implement the requested AssetUpgradeGateway target project as a plain single-agent baseline.
 The current directory is the copied target project; read its C# source directly and read every
 requirement from the sibling `../requirements/` directory.
 Implement all four requirements, update or add tests where useful, and run the target project's
 available tests/build commands. Record useful implementation notes in the final response.
 
-This is an isolated baseline run. Work only in the current target-project directory. Do not
+This is an isolated baseline run. Work only in the current target-project directory. This run is
+the direct-agent control condition: do not use the RECAST retrieval, Analyzer, Translator,
+evidence-query, module-planning, or verification workflow. Do not
 inspect, search, index, import, or reference any parent directory, sibling directory, history
 repository, source-repositories directory, or RECAST/ForeXplore implementation. Do not edit the
 copied requirements. Do not modify the original dataset; the current directory is a disposable
@@ -96,11 +97,11 @@ cat > "$run_dir/run-manifest.json" <<EOF
 }
 EOF
 
-launcher="$repo_root/scripts/run-claude-deepseek.sh"
-[[ -x "$launcher" ]] || { echo "Missing executable launcher: $launcher" >&2; exit 1; }
+launcher="${CLAUDE_BIN:-claude}"
+command -v "$launcher" >/dev/null 2>&1 || { echo "Coding Agent executable not found: $launcher" >&2; exit 127; }
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'Starting baseline in %s\n' "$run_dir"
-printf 'Model: %s\n' "${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+printf 'Model: Coding Agent default\n'
 printf 'History repositories exposed: no\n'
 
 if [[ "${BASELINE_DRY_RUN:-0}" == "1" ]]; then
@@ -118,7 +119,6 @@ else
       --permission-mode bypassPermissions \
       --allow-dangerously-skip-permissions \
       --verbose \
-      --model "${DEEPSEEK_MODEL:-deepseek-v4-flash}" \
       --output-format stream-json \
       -p "$(cat "$run_dir/task-prompt.md")"
   ) 2>&1 | tee "$run_dir/agent-stream.jsonl"

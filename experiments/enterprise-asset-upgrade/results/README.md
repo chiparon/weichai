@@ -10,11 +10,12 @@
 - `run-manifest.json`、`run-result.json`：模型、隔离边界和退出状态。
 
 脚本只复制 `target-project/` 和需求文件，不复制或注册
-`source-repositories/` 历史资产。结果目录默认被 Git 忽略。
+`source-repositories/` 历史资产。baseline 只调用一个 Coding Agent，使用
+当前 Coding Agent 的默认模型参数，不进入 RECAST 的检索、分析、翻译和验证链路。
+结果目录默认被 Git 忽略。
 
 ```bash
-DEEPSEEK_API_KEY=... \\
-  bash scripts/run-enterprise-asset-upgrade-baseline.sh
+bash scripts/run-enterprise-asset-upgrade-baseline.sh
 ```
 
 使用 `--prompt-file FILE` 可替换任务提示词，使用 `--run-id NAME` 可固定结果目录名。

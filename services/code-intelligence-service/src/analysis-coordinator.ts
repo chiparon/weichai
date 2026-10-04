@@ -59,6 +59,12 @@ export interface RunAnalysisRequest {
   repositoryId: RepositoryId;
   mode?: AnalysisMode;
   changedPaths?: string[];
+  /**
+   * Explicit rebuild. Without it a run whose source hash is unchanged returns the
+   * previous revision and never re-projects, which would leave an operator unable
+   * to refresh a search projection after an embedding or extraction change.
+   */
+  rebuild?: boolean;
   signal?: AbortSignal;
 }
 
@@ -113,7 +119,12 @@ export class AnalysisCoordinator {
   ) {
     this.#clock = options.clock ?? systemClock();
     this.#revisionIdGenerator = options.revisionIdGenerator ?? (() => `analysis-${randomUUID()}`);
-    this.#indexerVersion = options.indexerVersion ?? 'forexplore-code-intelligence/2.1';
+    // Bumped from 2.1: the search projection now batches by characters, retries a
+    // slow embedding request, and can run the embedding model on the GPU. An
+    // unchanged source hash used to short-circuit the whole run (see the early
+    // return below), so an index built by the previous projection kept its old
+    // vectors forever and no operator action could refresh them.
+    this.#indexerVersion = options.indexerVersion ?? 'forexplore-code-intelligence/2.2';
   }
 
   async run(request: RunAnalysisRequest): Promise<AnalysisRunResult> {
@@ -182,7 +193,11 @@ export class AnalysisCoordinator {
       ) {
         throw new Error('Structural scanner returned an index for a different analysis revision.');
       }
-      if (previousIndex && previousRevision?.indexerVersion === this.#indexerVersion &&
+      // An explicit rebuild must also rebuild a search projection whose source text
+      // did not change: that projection is what an embedding or extraction change
+      // invalidates, and returning the previous revision silently kept the old one.
+      if (!request.rebuild &&
+          previousIndex && previousRevision?.indexerVersion === this.#indexerVersion &&
           previousIndex.analysisHash === result.index.analysisHash) {
         const status = previousIndex.diagnostics.some((item) => item.severity === 'error')
           ? 'degraded' as const : 'ready' as const;

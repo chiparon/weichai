@@ -101,6 +101,26 @@ describe('adaptive module hierarchy builder', () => {
     await build(files, { planner: { decide }, maxConcurrentDecisions: 4, maxModelCalls: 2 });
     expect(decide).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * The default budget decides how deep a repository-level module split can go.
+   * At 24 calls a large project stopped with most branches deferred, which is the
+   * behaviour this test now pins away from: the default must allow 120 decisions
+   * and still defer the remainder instead of failing when it runs out.
+   */
+  it('refines up to the default model call budget and defers what is left', async () => {
+    const wide = Array.from({ length: 40 }, (_, directory) => Array.from({ length: 5 }, (_, sub) =>
+      Array.from({ length: 2 }, (_, file) => ({
+        relativePath: `d${directory}/s${sub}/f${file}.ts`,
+        content: `export function f${directory}_${sub}_${file}() { return ${file}; }`,
+      })))).flat(2);
+    const decide = vi.fn(async (request: ModuleHierarchyDecisionRequest) =>
+      request.candidates.length >= 2 ? split(request) : stop(request));
+    const { proposal } = await build(wide, { planner: { decide } });
+    expect(decide).toHaveBeenCalledTimes(120);
+    expect(proposal.hierarchy?.modelDecisionCount).toBe(120);
+    expect(proposal.hierarchy?.deferredCount).toBeGreaterThan(0);
+  });
   it('publishes root functionality and keeps refinement rationale out of module purpose', async () => {
     const { proposal } = await build(files, { planner: { decide: async (request) => ({ ...stop(request),
       description: 'Provides document editing with durable storage and cached model state.',

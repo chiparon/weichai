@@ -100,9 +100,12 @@ export async function buildAdaptiveModuleProposal(
   const concurrency = boundedInteger(options.maxConcurrentDecisions, 3, 16);
   const maxDepth = boundedInteger(options.maxDepth, 8, 32);
   const maxNodes = boundedInteger(options.maxNodes, 2048, 10000);
-  const maxModelCalls = boundedInteger(options.maxModelCalls, 24, 1000);
+  // 24 calls produced a coarse tree that left most branches deferred, which is
+  // too shallow for a repository-level module split. The deadline scales with the
+  // larger budget: 120 calls at 3-way concurrency can legitimately take half an hour.
+  const maxModelCalls = boundedInteger(options.maxModelCalls, 120, 1000);
   const modelTimeoutMs = boundedInteger(options.modelTimeoutMs, 45000, 120000);
-  const maxDurationMs = boundedInteger(options.maxDurationMs, 300000, 3600000);
+  const maxDurationMs = boundedInteger(options.maxDurationMs, 1_800_000, 3_600_000);
   const started = performance.now();
   const files = index.files.filter(file => file.projectId === scope.projectId).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const fileSet = new Set(files.map(file => file.relativePath));

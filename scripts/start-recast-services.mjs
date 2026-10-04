@@ -1,6 +1,6 @@
-// One command to bring up everything RECAST retrieval needs.
+// One command to bring up the local model services used by RECAST.
 //
-// Retrieval depends on three processes that were previously started by hand, and
+// Module search depends on three processes that were previously started by hand, and
 // that fragility is not theoretical: during development the embedding server and
 // Docker both died mid-session, and because the local reranker is now the default,
 // a rerank server that is not listening silently costs 6 points of recall (the
@@ -181,6 +181,12 @@ const step = async (label, port, action) => {
   return ok;
 };
 
+// Docker Desktop is started here, not demanded from the user: the whole point of
+// this command is that one invocation brings up SeekDB, and the previous version
+// defined the helper without ever calling it, so a stopped Docker produced only
+// "start Docker Desktop and retry".
+await ensureDocker();
+
 const seekdb = await step('SeekDB', seekdbPort, () => {
   if (!dockerReady()) { console.error(`SeekDB: docker daemon unavailable — start Docker Desktop and retry.`); return null; }
   spawnSync('docker', ['start', container], { stdio: 'ignore' });
@@ -205,6 +211,6 @@ const rerank = await step('rerank', rerankPort, () => launch('rerank', path.join
 console.log('\nservice    port   status');
 for (const [label, port, status] of results) console.log(`${label.padEnd(10)} ${String(port).padEnd(6)} ${status}`);
 if (!seekdb || !embedding || !rerank) {
-  console.error('\nRetrieval will not reach full recall until every service above is up.');
+  console.error('\nModule search will not reach full recall until every service above is up.');
   process.exitCode = 1;
 }

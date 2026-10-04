@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { OpenAiCompatibleEmbeddingProvider } from '@forexplore/retrieval-service/embedding';
+import { OpenAiCompatibleEmbeddingProvider } from './embedding-client.js';
 
 /** Minimal embedding abstraction kept within the code-intelligence boundary. */
 export interface SearchEmbeddingProvider {
@@ -17,7 +17,32 @@ export interface ModelSearchEmbeddingConfig {
   supportsDimensions?: boolean;
   queryPrefix?: string;
   documentPrefix?: string;
+  /**
+   * Deployment detail that changes the produced vectors, such as the inference
+   * device and precision ("dml-fp16"). It belongs to the model identity: the store
+   * reuses an embedding whenever the model input repeats, so a provider change that
+   * is invisible here would silently keep vectors computed by the other provider.
+   */
+  variant?: string;
 }
+
+/** The local embedding server accepts at most 16 inputs of at most 32,000 characters. */
+const maxBatchItems = 16;
+const maxInputChars = 32_000;
+/**
+ * Latency follows the total characters in a batch, not the item count: measured
+ * against the local server, 16 ordinary source documents (128k characters) took
+ * 25s while this provider allowed 8s and no retry, so every large repository lost
+ * its whole search projection to "The operation was aborted due to timeout".
+ * Bound the payload per request instead, and keep a timeout that is generous for
+ * a bounded batch (about 5s measured) rather than tight.
+ */
+const maxBatchChars = 24_000;
+const requestTimeoutMs = 60_000;
+const maxRetries = 2;
+
+/** A document longer than the server limit is embedded from its prefix, which beats failing the revision. */
+const embeddingInput = (text: string) => text.length > maxInputChars ? text.slice(0, maxInputChars) : text;
 
 /** Bounded content cache is scoped to one immutable model configuration. */
 export class ModelSearchEmbeddingProvider implements SearchEmbeddingProvider {
@@ -32,9 +57,10 @@ export class ModelSearchEmbeddingProvider implements SearchEmbeddingProvider {
       throw new Error('Embedding requires an HTTP endpoint, model and positive dimension.');
     }
     this.#client = new OpenAiCompatibleEmbeddingProvider(dimension, config.url, config.apiKey, config.model,
-      { supportsDimensions: config.supportsDimensions, timeoutMs: 8_000, maxRetries: 0 });
+      { supportsDimensions: config.supportsDimensions, timeoutMs: requestTimeoutMs, maxRetries });
     this.identity = createHash('sha256').update(JSON.stringify({ dimension, url: config.url, model: config.model,
-      supportsDimensions: config.supportsDimensions ?? true, queryPrefix: config.queryPrefix ?? '', documentPrefix: config.documentPrefix ?? '' })).digest('hex');
+      supportsDimensions: config.supportsDimensions ?? true, queryPrefix: config.queryPrefix ?? '', documentPrefix: config.documentPrefix ?? '',
+      variant: config.variant ?? '' })).digest('hex');
   }
   async embed(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
     return this.encode(texts.map((text) => `${this.config.documentPrefix ?? ''}${text}`), signal);
@@ -65,10 +91,21 @@ export class ModelSearchEmbeddingProvider implements SearchEmbeddingProvider {
       entry.indices.push(index); missing.set(key, entry);
     });
     const entries = [...missing.entries()];
-    for (let offset = 0; offset < entries.length; offset += 16) {
+    for (let offset = 0; offset < entries.length;) {
       signal?.throwIfAborted();
-      const batch = entries.slice(offset, offset + 16);
-      const vectors = await this.#client.embed(batch.map(([, entry]) => entry.text), signal);
+      // One request carries at most 16 inputs and at most a bounded payload: a
+      // single oversized document still travels alone rather than failing.
+      const batch: typeof entries = [];
+      let chars = 0;
+      while (offset < entries.length && batch.length < maxBatchItems) {
+        const entry = entries[offset]!;
+        const size = embeddingInput(entry[1].text).length;
+        if (batch.length > 0 && chars + size > maxBatchChars) break;
+        batch.push(entry);
+        chars += size;
+        offset += 1;
+      }
+      const vectors = await this.#client.embed(batch.map(([, entry]) => embeddingInput(entry.text)), signal);
       batch.forEach(([key, entry], index) => {
         const vector = vectors[index]!;
         if (!vector.some((value) => value !== 0)) throw new Error('Embedding model returned a zero vector.');

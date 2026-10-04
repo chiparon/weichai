@@ -45,14 +45,37 @@ const complete = ['config.json', 'tokenizer.json', 'tokenizer_config.json']
 if (complete) env.allowRemoteModels = false;
 
 console.log(JSON.stringify({ stage: 'loading-model', model, revision, offline: env.allowRemoteModels === false }));
-const extractor = await pipeline('feature-extraction', model, { dtype: 'q8', revision });
+
+// The quantized q8 model runs most of its operators on the CPU and this server
+// never probed for a GPU, while the rerank server next to it already did. On this
+// machine that difference is 145 ms versus 16 ms per short document, i.e. a whole
+// day versus a few hours for the enterprise asset projection.
+const requestedDevice = process.env.FOREXPLORE_EMBEDDING_DEVICE?.trim();
+const requestedDtype = process.env.FOREXPLORE_EMBEDDING_DTYPE?.trim();
+let extractor;
+let device;
+let dtype;
+for (const candidate of requestedDevice ? [requestedDevice] : ['dml', 'cpu']) {
+  const candidateDtype = requestedDtype ?? (candidate === 'cpu' ? 'q8' : 'fp16');
+  try {
+    extractor = await pipeline('feature-extraction', model, { dtype: candidateDtype, device: candidate, revision });
+    device = candidate;
+    dtype = candidateDtype;
+    break;
+  } catch (error) {
+    console.error(JSON.stringify({ stage: 'device-failed', device: candidate, dtype: candidateDtype,
+      message: error instanceof Error ? error.message : String(error) }));
+  }
+}
+if (!extractor) throw new Error('No usable inference device for embeddings.');
 await extractor(['query: warmup'], { pooling: 'mean', normalize: true });
+console.log(JSON.stringify({ stage: 'model-ready', model: modelId, device, dtype }));
 let pending = 0;
 let queue = Promise.resolve();
 const server = createServer(async (request, response) => {
   response.setHeader('content-type', 'application/json');
   if (request.url === '/health' && request.method === 'GET') {
-    response.end(JSON.stringify({ ready: true, model: modelId, revision, pending })); return;
+    response.end(JSON.stringify({ ready: true, model: modelId, revision, device, dtype, pending })); return;
   }
   if (request.url !== '/v1/embeddings' || request.method !== 'POST') { response.writeHead(404); response.end('{}'); return; }
   if (pending >= 8) { response.writeHead(429); response.end('{"error":{"message":"Inference queue is full"}}'); return; }
@@ -83,6 +106,6 @@ const server = createServer(async (request, response) => {
   } finally { pending--; }
 });
 server.requestTimeout = 30_000;
-server.listen(port, '127.0.0.1', () => console.log(JSON.stringify({ ready: true, url: `http://127.0.0.1:${port}`, model: modelId, revision })));
+server.listen(port, '127.0.0.1', () => console.log(JSON.stringify({ ready: true, url: `http://127.0.0.1:${port}`, model: modelId, revision, device, dtype })));
 process.once('SIGTERM', () => server.close());
 process.once('SIGINT', () => server.close());

@@ -8,7 +8,7 @@ ForeXplore 将企业已有实现作为迁移证据：在任意受支持语言的
 
 在插件右上角打开 **设置 → AI 服务**，选择服务商并直接填写 API Key（默认为“无”），点击保存设置或按 Ctrl+S，一并保存并启用服务商。密钥以密码形式暂存在表单中，仅保存时传给宿主并写入 VS Code SecretStorage，不写入工作区设置或日志；保存成功后清空输入。已有密钥留空保留，清除操作在保存后生效；后端已有 `.env` 配置仍可作为备用。
 
-此配置仅用于 `forexplore.adaptationApiUrl` 指定的本机 AI 后端（默认 `http://127.0.0.1:8788`），按协议、主机和端口分别保存；更换后端地址后需要为新地址配置。后端需更新到支持请求凭据的版本，可在没有 `DEEPSEEK_API_KEY` 的情况下启动。远程后端仍在服务端配置密钥。密钥保存成功不等于模型鉴权成功；保存后可重试项目模块分析。
+此配置仅用于本机 AI 后端，按 `forexplore.adaptationApiUrl` 配置地址（默认 `http://127.0.0.1:8788`）保存；更换配置地址后需要为新地址配置。自动启动的自有后端使用系统分配的实际端口，宿主只向验证过的实际地址发送凭据，端口变化不要求重新填 Key。后端需更新到支持请求凭据的版本，可在没有 `DEEPSEEK_API_KEY` 的情况下启动。远程后端仍在服务端配置密钥。密钥保存成功不等于模型鉴权成功；保存后可重试项目模块分析。
 
 模块分析给模型使用短文件组和证据编号，校验后恢复真实索引 ID。遗漏、重复或未知文件组会产生具体修正反馈；修正后仍不合法时，项目显示校验原因并保留失败状态，不将结构性降级结果冒充已完成的模型分析。
 
@@ -136,7 +136,7 @@ export CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION='384' # optional; default shown
 
 ### 本机 Agent 查询
 
-首次打开工作台（或首次语义规划请求）后提供本机查询服务，默认 `http://127.0.0.1:8790`，可通过 `FOREXPLORE_SEMANTIC_QUERY_PORT` 调整。MCP 进程使用同一个服务：
+首次打开工作台（或首次语义规划请求）后提供本机查询服务，默认由操作系统分配空闲的 loopback 端口；实际地址记录在 RECAST 输出中并自动传给本窗口的适配后端，不复用另一窗口的查询服务。外部 MCP 客户端应使用该实际地址；如需固定 8790，请先设置 `FOREXPLORE_SEMANTIC_QUERY_PORT=8790` 再启动扩展，然后运行：
 
 ```bash
 SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexplore/semantic-index-mcp-server
@@ -147,7 +147,7 @@ SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexpl
 
 ## 运行方式
 
-1. 在仓库根目录运行 `npm run dev:extension`。脚本会启动 SeekDB、两个本地服务，并打开 Extension Development Host。
+1. 在仓库根目录运行 `npm run dev:extension`。脚本启动 SeekDB、embedding 和 rerank，完成 SQL / 模型健康检查后再打开 Extension Development Host；适配后端仅由扩展启动，不再由脚本重复抢占端口。
 2. 点击活动栏的 **RECAST** 图标打开工作台（等价于命令面板中的 **RECAST: 打开智能开发工作台**）。该活动栏容器只作为启动入口：点击后工作台在编辑器区域打开，并自动收起随之弹出的侧边栏；只有在工作台已经是当前编辑器时（例如用 Ctrl+B 主动展开侧边栏），侧边栏才保留并显示「打开工作台 / 重新索引参考工程」两个入口。
 3. 在面板左侧“目标工程”的选择器中选择目标目录；已打开的 VS Code 工作区仅作为候选，不会自动作为目标工程。
 4. 从目标工程的模块树中选择待实现的类或方法，输入需求并检索全部语料候选。任意已支持语言的候选均可继续生成目标语言补丁。
@@ -160,19 +160,14 @@ SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexpl
 
 运行插件需要一台具备以下条件的机器：
 
-- SeekDB 检索服务已经建立并加载完整的多语言 `code-corpus` 索引；
-- 适配服务具备 `DEEPSEEK_API_KEY` 和目标语言的编译器；
-- `ADAPTATION_PROJECT_ROOT` 指向与插件选中目标**相同内容**的工程；
-- `ADAPTATION_SKELETON_PROJECT_PATH` 对应同一目标工程，用于临时集成编译。
+- SeekDB、embedding 和 rerank 已就绪；启动器会检查数据库和模型健康状态；
+- 在面板设置中配置模型 Key，并安装目标语言的编译器；
+- 默认由扩展启动适配后端，自动绑定当前目标工程、语义查询地址和翻译令牌。
 
-适配服务环境示例：
+默认工作流从仓库根目录启动，无需另外运行 `dev:adaptation`：
 
 ```bash
-# 服务端环境；密钥只保留在这里
-export DEEPSEEK_API_KEY='…'
-export ADAPTATION_PROJECT_ROOT='/absolute/path/to/commons-fileupload-java-skeleton'
-export ADAPTATION_SKELETON_PROJECT_PATH="$ADAPTATION_PROJECT_ROOT"
-npm run dev:adaptation
+npm run dev:extension
 ```
 
 插件默认使用以下 VS Code 配置：
@@ -229,6 +224,8 @@ npm run test:integration --workspace forexplore-vscode
 
 选定目录后的每一步都会反馈：`TARGET_WORKSPACE_PROGRESS` 按 `selecting → resolving → attaching → indexing` 报告阶段，同时以 VS Code 通知显示进度；`TARGET_WORKSPACE_RESULT` 区分取消、已加入、完成和失败，失败时在选择器与空态中就地显示原因并提供重试。索引中的仓库由 `analysisStatus` 呈现（面板重建后仍可恢复该状态），索引失败的首次扫描会标记为 `failed` 而不是停留在“正在建立索引”。同一目录的路径比较同时按解析路径与真实路径（real path）匹配，因此通过符号链接/联接（junction）打开的目录仍会被识别为目标工程。
 
+大仓库索引会显示快照、源码解析、结构合并、数据库写入、检索向量等阶段及已完成数量，索引通知支持取消。结构合并在后台进程执行，分块把结果交回扩展。文档向量请求每次等待最多 30 秒，瞬态失败最多重试两次；交互查询仍使用 8 秒且不重试。重开后失败目标保留重试入口，直接重试已登记目录。若失败发生在结构完整落库之后的检索投影阶段，重试先重新采集并核对当前源码，再复用未变化文件的解析结果与已缓存向量；不会直接激活旧快照。旧版失败记录没有阶段信息时按正常扫描处理，显式全量重建也不复用失败记录。
+
 保存设置时只扫描新添加的仓库，已有仓库通过“刷新此仓库”检查变化。普通刷新在内容未变化时复用原 revision 和 Summary。“重新解析模块”按当前策略重新建模；小项目可使用已配置 Agent，大项目使用离线结构分组。“重试解析 / 同步”在仅投影失败时不重复建模。历史版本展示保持只读。本地 .forexplore/module-summary.json 不参与当前模块树构建。
 
 SeekDB 按行数和数据大小分批写入，项目 Summary 只替换自身的模块检索文档。宿主控制台中的 `[forexplore:performance]` 日志记录源码扫描、结构解析、数据库写入、检索投影和 Agent 分析耗时，以及文件、符号、依赖数量和 INSERT 次数。数据库写入验收可在仓库根目录运行 `npx tsx scripts/verify-indexing-performance.ts`，它使用本机 SeekDB 连接配置，创建独立临时数据库，验证索引一致性、Summary 更新范围及逐条/批量写入耗时，结束后删除测试数据库。
@@ -243,7 +240,7 @@ $env:CODE_INTELLIGENCE_SEEKDB_DATABASE = 'forexplore_code_intelligence'
 # 如需密码，在宿主环境中配置 CODE_INTELLIGENCE_SEEKDB_PASSWORD。
 ~~~
 
-适配服务需要 DEEPSEEK_API_KEY，以及 ADAPTATION_SEMANTIC_INDEX_ENABLED=true、SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790。兼容服务可通过 DEEPSEEK_API_BASE 和 DEEPSEEK_MODEL 指定。查询服务在首次打开工作台时随索引链启动，不依赖 Agent 模块解析；端口可通过 FOREXPLORE_SEMANTIC_QUERY_PORT 调整，并同步修改适配服务地址。可选 SEMANTIC_QUERY_PORT_TOKEN 在两个进程中应一致。凭据仅保留在本地服务或宿主环境。
+扩展自动启动的适配后端会收到本窗口实际的语义查询地址，无需手填 `SEMANTIC_QUERY_PORT_URL`。手动部署后端时，先在 VS Code 用户设置中设 `forexplore.backend.autoStart=false`；启动扩展前设置固定 `FOREXPLORE_SEMANTIC_QUERY_PORT`，后端设置 `ADAPTATION_SEMANTIC_INDEX_ENABLED=true`，并将 `SEMANTIC_QUERY_PORT_URL` 指向该端口（实际地址可在 RECAST 输出核对）。两个进程必须配置相同的 `ADAPTATION_WORKSPACE_TRANSLATION_TOKEN` 和可选 `SEMANTIC_QUERY_PORT_TOKEN`，后端的 `ADAPTATION_PROJECT_ROOT` 与 `ADAPTATION_SKELETON_PROJECT_PATH` 必须绑定插件选中的目标根目录，再运行 `npm run dev:adaptation`。模型凭据通过面板 SecretStorage 或服务端 `DEEPSEEK_API_KEY` 配置；后端启动成功不代表模型已鉴权。兼容服务可通过 `DEEPSEEK_API_BASE` 和 `DEEPSEEK_MODEL` 指定。
 
 模块任务使用 module_artifacts 中独立的 job 记录持久化，Summary 使用按项目和解析配置稳定定位的另一条记录。任务失败不删除上一份有效结果；扩展重启后中断任务可重试。Summary 的自动发布只代表代码理解完成，不批准代码迁移或写回。
 

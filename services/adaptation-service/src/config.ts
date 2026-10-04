@@ -75,7 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AdaptationServ
     ? loadModuleGenerationConfig(env) : undefined;
   return {
     host: env.ADAPTATION_HOST?.trim() || "127.0.0.1",
-    port: positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
+    port: env.ADAPTATION_PORT === '0' ? 0 : positiveInteger(env.ADAPTATION_PORT, 8788, "ADAPTATION_PORT"),
     corsOrigin: env.ADAPTATION_CORS_ORIGIN?.trim() || undefined,
     apiKey,
     skeletonProjectPath,

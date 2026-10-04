@@ -359,7 +359,8 @@ export function discoverProjects(request: ProjectDiscoveryRequest): ProjectDisco
     }
   }
 
-  if (request.files.some((file) => !projectForPath(projects, file.relativePath, file.languageId))) {
+  const findProject = createProjectLookup(projects);
+  if (request.files.some((file) => !findProject(file.relativePath, file.languageId))) {
     projects.push({
       repositoryId: request.repositoryId, analysisRevision: request.analysisRevision,
       projectId: projectId('directory', '', []), kind: 'directory', displayName: '未归属工程文件',
@@ -380,21 +381,44 @@ export function discoverProjects(request: ProjectDiscoveryRequest): ProjectDisco
   };
 }
 
+/** Build once per revision; lookups visit path ancestors rather than every project. */
+export function createProjectLookup(
+  projects: readonly ProjectRecord[],
+): (relativePath: string, languageId?: LanguageId) => ProjectRecord | undefined {
+  const byRoot = new Map<string, ProjectRecord[]>();
+  const ordered = projects.map((project) => ({ project, root: canonicalPath(project.relativePath) }));
+  ordered.sort((left, right) =>
+    right.root.length - left.root.length ||
+    Number(left.project.kind === 'directory') - Number(right.project.kind === 'directory') ||
+    compareText(left.project.projectId, right.project.projectId),
+  );
+  for (const { project, root } of ordered) {
+    const key = root.replace(/\/$/, '');
+    const values = byRoot.get(key) ?? [];
+    values.push(project);
+    byRoot.set(key, values);
+  }
+  return (relativePath, languageId) => {
+    let root = canonicalPath(relativePath);
+    while (true) {
+      const match = byRoot.get(root)?.find((project) =>
+        languageId === undefined || project.languageIds.includes(languageId),
+      );
+      if (match) return match;
+      if (!root) return undefined;
+      const slash = root.lastIndexOf('/');
+      root = slash < 0 ? '' : root.slice(0, slash);
+    }
+  };
+}
+
 /** Assign a source/configuration file to its deepest compatible project boundary. */
 export function projectForPath(
   projects: readonly ProjectRecord[],
   relativePath: string,
   languageId?: LanguageId,
 ): ProjectRecord | undefined {
-  const candidates = projects.filter((project) =>
-    pathWithin(relativePath, project.relativePath) &&
-    (languageId === undefined || project.languageIds.includes(languageId)),
-  );
-  candidates.sort((left, right) => {
-    const depth = canonicalPath(right.relativePath).length - canonicalPath(left.relativePath).length;
-    return depth || Number(left.kind === 'directory') - Number(right.kind === 'directory') || compareText(left.projectId, right.projectId);
-  });
-  return candidates[0];
+  return createProjectLookup(projects)(relativePath, languageId);
 }
 
 export const projectDiscoveryInternals = {

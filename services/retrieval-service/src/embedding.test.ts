@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HashEmbeddingProvider, OpenAiCompatibleEmbeddingProvider } from './embedding.js';
+
+afterEach(() => vi.restoreAllMocks());
 
 function dot(left: number[], right: number[]): number {
   return left.reduce((sum, value, index) => sum + value * (right[index] ?? 0), 0);
@@ -130,5 +132,42 @@ describe('OpenAiCompatibleEmbeddingProvider', () => {
     await expect(provider.embed(['first', 'second'])).rejects.toThrow(
       'malformed vector entries',
     );
+  });
+
+  it('cancels a retry backoff promptly without making another request', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    vi.spyOn(console, 'warn').mockImplementation(() => started());
+    const request = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
+    const provider = new OpenAiCompatibleEmbeddingProvider(2, 'https://example.test/embeddings', 'test-key', 'test-model', {
+      request, maxRetries: 2, baseDelayMs: 60_000,
+    });
+    const cancellation = new Error('indexing cancelled');
+    const result = provider.embed(['first'], controller.signal).catch(error => error);
+    await waiting;
+    controller.abort(cancellation);
+    let timeout!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise(resolve => { timeout = setTimeout(() => resolve('still waiting'), 250); });
+    try {
+      expect(await Promise.race([result, deadline])).toBe(cancellation);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally { clearTimeout(timeout); }
+  });
+
+  it('does not retry when the caller cancels an active request', async () => {
+    const controller = new AbortController();
+    const cancellation = new Error('indexing cancelled');
+    const request = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+      controller.abort(cancellation);
+      throw new DOMException('request aborted', 'AbortError');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const provider = new OpenAiCompatibleEmbeddingProvider(2, 'https://example.test/embeddings', 'test-key', 'test-model', {
+      request, maxRetries: 2, baseDelayMs: 0,
+    });
+    await expect(provider.embed(['first'], controller.signal)).rejects.toBe(cancellation);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { discoverProjects, projectForPath } from './project-discovery.js';
+import type { LanguageId, ProjectRecord } from '@forexplore/contracts';
+import { createProjectLookup, discoverProjects, projectForPath } from './project-discovery.js';
 
 describe('project discovery', () => {
   it('recognizes repository-relative build/package boundaries and C# project references', () => {
@@ -44,6 +45,43 @@ describe('project discovery', () => {
     const project = projectForPath(result.projects, 'packages/widget/src/View.ts', 'typescript');
     expect(project?.relativePath).toBe('packages/widget');
     expect(projectForPath(result.projects, 'packages/widget/src/View.py', 'python')).toBeUndefined();
+  });
+
+  it('preserves boundary, language, and tie-breaking rules in a reusable project lookup', () => {
+    const project = (projectId: string, relativePath: string, languageIds: LanguageId[], kind = 'node'): ProjectRecord => ({
+      repositoryId: 'history-one', analysisRevision: 'revision-a', projectId, relativePath,
+      kind, languageIds, displayName: projectId, manifestPaths: [], sourceRoots: [], testRoots: [],
+    });
+    const projects = [
+      project('root', '', ['java', 'typescript']),
+      project('directory', '', ['python', 'java', 'typescript'], 'directory'),
+      project('nested-z', 'packages/widget', ['typescript']),
+      project('nested-a', './packages\\widget', ['typescript']),
+      project('nested-directory', 'packages/widget', ['typescript'], 'directory'),
+      project('python', 'packages/widget/python/', ['python']),
+      project('trailing-root', 'trailing/', ['java']),
+      project('plain-root', 'trailing', ['java']),
+    ];
+    const find = createProjectLookup(projects);
+    const cases: Array<[string, LanguageId | undefined, string | undefined]> = [
+      ['packages/widget/src/View.ts', 'typescript', 'nested-a'],
+      ['./packages\\widget//src/View.ts', 'typescript', 'nested-a'],
+      ['packages/widget', undefined, 'nested-a'],
+      ['packages/widget/python/script.py', 'python', 'python'],
+      ['packages/widget/python/Use.java', 'java', 'root'],
+      ['packages/widgetish/View.ts', 'typescript', 'root'],
+      ['packages/widget/script.py', 'python', 'directory'],
+      ['trailing/Use.java', 'java', 'trailing-root'],
+      ['unclaimed.rs', 'rust', undefined],
+      ['', undefined, 'root'],
+    ];
+    for (const [relativePath, languageId, expected] of cases) {
+      expect(find(relativePath, languageId)?.projectId, relativePath).toBe(expected);
+      expect(projectForPath(projects, relativePath, languageId)?.projectId, relativePath).toBe(expected);
+    }
+    expect(projects.map(({ projectId }) => projectId)).toEqual([
+      'root', 'directory', 'nested-z', 'nested-a', 'nested-directory', 'python', 'trailing-root', 'plain-root',
+    ]);
   });
 
   it('retains explicit local build/package references for every v1 project ecosystem', () => {

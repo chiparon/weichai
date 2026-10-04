@@ -1,0 +1,95 @@
+import { EventEmitter } from 'node:events';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  spawn: vi.fn(), spawnSync: vi.fn(), connect: vi.fn(), database: vi.fn(), get: vi.fn(),
+}));
+vi.mock('node:child_process', () => ({ spawn: mocks.spawn, spawnSync: mocks.spawnSync }));
+vi.mock('node:net', () => ({ createConnection: mocks.connect }));
+vi.mock('mysql2/promise', () => ({ createConnection: mocks.database }));
+vi.mock('node:http', () => ({ get: mocks.get }));
+vi.mock('node:fs', () => ({
+  existsSync: () => true, readdirSync: () => ['cached-model'],
+  closeSync: vi.fn(), mkdirSync: vi.fn(), openSync: vi.fn(), renameSync: vi.fn(), statSync: vi.fn(), writeFileSync: vi.fn(),
+}));
+
+const argv = [...process.argv];
+beforeEach(() => {
+  vi.resetModules();
+  vi.resetAllMocks();
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  vi.spyOn(process, 'chdir').mockImplementation(() => undefined);
+  vi.stubEnv('CODE_INTELLIGENCE_SEEKDB_PORT', '2881');
+  vi.stubEnv('CODE_INTELLIGENCE_SEEKDB_HOST', '127.0.0.1');
+  vi.stubEnv('FOREXPLORE_EMBEDDING_PORT', '4021');
+  vi.stubEnv('FOREXPLORE_RERANK_PORT', '4022');
+  vi.stubEnv('FOREXPLORE_EMBEDDING_MODEL', 'embedding-test');
+  vi.stubEnv('FOREXPLORE_EMBEDDING_REVISION', 'revision');
+  vi.stubEnv('FOREXPLORE_RERANK_MODEL', 'rerank-test');
+  process.argv = ['node', 'script'];
+  mocks.connect.mockImplementation(() => {
+    const socket = Object.assign(new EventEmitter(), { destroy: vi.fn(), setTimeout: vi.fn() });
+    queueMicrotask(() => socket.emit('connect'));
+    return socket;
+  });
+  mocks.database.mockResolvedValue({ query: vi.fn().mockResolvedValue([]), destroy: vi.fn() });
+  mocks.get.mockImplementation((url, _options, callback) => {
+    const request = new EventEmitter();
+    queueMicrotask(() => {
+      const response = Object.assign(new EventEmitter(), { statusCode: 200, setEncoding: vi.fn() });
+      callback(response);
+      response.emit('data', JSON.stringify({ ready: true, model: new URL(url).port === '4021' ? 'embedding-test@revision' : 'rerank-test' }));
+      response.emit('end');
+    });
+    return request;
+  });
+  mocks.spawnSync.mockReturnValue({ status: 0, stdout: 'redhat.java\n' });
+  mocks.spawn.mockImplementation(() => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 0));
+    return child;
+  });
+});
+afterEach(() => {
+  process.argv = [...argv];
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+it('checks the configured external SeekDB host without starting Docker', async () => {
+  vi.stubEnv('CODE_INTELLIGENCE_SEEKDB_HOST', 'db.example');
+  await import('./start-recast-services.mjs');
+  expect(mocks.connect).toHaveBeenCalledWith({ host: 'db.example', port: 2881 });
+  expect(mocks.database).toHaveBeenCalledWith(expect.objectContaining({ host: 'db.example', port: 2881 }));
+  expect(mocks.spawnSync).not.toHaveBeenCalled();
+  expect(mocks.spawn).not.toHaveBeenCalled();
+});
+
+it('honors skip-seek-db while waiting for an externally managed local database', async () => {
+  process.argv.push('--skip-seek-db');
+  mocks.connect.mockImplementationOnce(() => {
+    const socket = Object.assign(new EventEmitter(), { destroy: vi.fn(), setTimeout: vi.fn() });
+    queueMicrotask(() => socket.emit('error', new Error('not listening yet')));
+    return socket;
+  });
+  await import('./start-recast-services.mjs');
+  expect(mocks.database).toHaveBeenCalled();
+  expect(mocks.spawnSync).not.toHaveBeenCalled();
+});
+
+it('forwards skip-seek-db through the launcher npm separator', async () => {
+  process.argv.push('--skip-seek-db');
+  await import('./run-vscode-extension.mjs');
+  await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalled());
+  expect(mocks.spawnSync).toHaveBeenCalledWith(expect.stringMatching(/^npm/),
+    ['run', 'services:up', '--', '--skip-seek-db'], expect.anything());
+  expect(mocks.spawnSync.mock.calls.some(([command]) => command === 'docker')).toBe(false);
+});
+
+it('does not launch local Docker for a configured remote database', async () => {
+  vi.stubEnv('CODE_INTELLIGENCE_SEEKDB_HOST', 'db.example');
+  await import('./run-vscode-extension.mjs');
+  await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalled());
+  expect(mocks.spawnSync.mock.calls.some(([command]) => command === 'docker')).toBe(false);
+});

@@ -22,3 +22,12 @@ bash scripts/run-enterprise-asset-upgrade-baseline.sh
 
 使用 `--prompt-file FILE` 可替换任务提示词，使用 `--run-id NAME` 可固定结果目录名。
 设置 `BASELINE_DRY_RUN=1` 只验证复制和 manifest 生成，不启动 Agent。
+
+Java 目标使用独立启动器：
+
+```bash
+bash scripts/run-enterprise-asset-upgrade-java-baseline.sh
+```
+
+Java 启动器先在 `/tmp` 隔离工作区运行 Agent，结束后才复制结果并运行外部
+`evaluation/java-hidden`；因此 Agent 运行期间不会看到 history 或 hidden tests。

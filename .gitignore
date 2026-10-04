@@ -15,6 +15,7 @@ coverage/
 backups/
 
 # Local environment files
+.apikey/
 .env
 .env.*
 !.env.example

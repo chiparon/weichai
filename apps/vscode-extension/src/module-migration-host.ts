@@ -293,7 +293,7 @@ export class ModuleMigrationHost {
             location: vscode.ProgressLocation.Notification,
             title: 'RECAST: Agenticodex 正在提出模块边界',
           },
-          () => requestModuleMigrationProposal(settings.adaptationApiUrl, {
+          () => requestModuleMigrationProposal(this.options.services.adaptationEndpoint ?? settings.adaptationApiUrl, {
             snapshotId: session.analysis.snapshotId,
             objective: objective.trim(),
             ...(immutableConstraints.length === 0 ? {} : { immutableConstraints }),

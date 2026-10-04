@@ -15,31 +15,17 @@ import path from 'node:path';
 
 export const DEFAULT_ADAPTATION_API_URL = 'http://127.0.0.1:8788';
 
-/**
- * Resolve the VS Code workspace-folder variable used by the dataset's
- * portable `.code-workspace` file. VS Code does not expand this variable for
- * every extension configuration shape, especially arrays, so the host keeps
- * the expansion deterministic and local to path settings.
- */
-export function resolveWorkspaceConfiguredPath(value: string): string | undefined {
-  const configured = normaliseConfiguredPath(value);
-  if (configured === undefined) return undefined;
-  const match = /^\$\{workspaceFolder(?::([^}]+))?\}(.*)$/.exec(configured);
-  if (!match) return configured;
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const folder = match[1]
-    ? folders.find((candidate) => candidate.name === match[1])
-    : folders[0];
-  if (!folder || folder.uri.scheme !== 'file') return undefined;
-  const suffix = match[2] ?? '';
-  return path.resolve(folder.uri.fsPath, suffix.replace(/^[/\\]+/, ''));
-}
-
-export function resolveWorkspaceConfiguredPaths(values: readonly unknown[]): string[] {
-  const resolved = values
-    .map((value) => typeof value === 'string' ? resolveWorkspaceConfiguredPath(value) : undefined)
-    .filter((value): value is string => value !== undefined);
-  return normaliseConfiguredPaths(resolved);
+function adaptationEndpoint(config: vscode.WorkspaceConfiguration): string {
+  const configured = normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL));
+  const inspected = config.inspect<string>('adaptationApiUrl');
+  const explicit = inspected?.workspaceFolderValue !== undefined || inspected?.workspaceValue !== undefined ||
+    inspected?.globalValue !== undefined;
+  if (explicit || configured !== DEFAULT_ADAPTATION_API_URL) return configured ?? DEFAULT_ADAPTATION_API_URL;
+  const value = process.env.ADAPTATION_PORT?.trim();
+  if (!value) return DEFAULT_ADAPTATION_API_URL;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('ADAPTATION_PORT must be a valid TCP port (1–65535).');
+  return `http://127.0.0.1:${port}`;
 }
 
 export interface ExtensionSettings {
@@ -56,12 +42,12 @@ export function loadSettings(): ExtensionSettings {
     executionMode: 'real',
     llm: parseLlmSettings(config.inspect<LlmSettings>('llm')?.globalValue ?? DEFAULT_LLM_SETTINGS),
     // A hand-written array can hold quoted or empty entries; an empty one would
-    // otherwise resolve to this extension host's working directory.
+    // otherwise resolve to this extension host's working directory. The dataset's
+    // portable workspace file also uses ${workspaceFolder}, which VS Code does not
+    // expand for every configuration shape, so the host expands it here.
     repositoryPaths: resolveWorkspaceConfiguredPaths(config.get<unknown[]>('repositoryPaths', [])),
     topK: boundedTopK(config.get<number>('topK', 4)),
-    adaptationApiUrl:
-      normaliseConfiguredPath(config.get<string>('adaptationApiUrl', DEFAULT_ADAPTATION_API_URL)) ??
-      DEFAULT_ADAPTATION_API_URL,
+    adaptationApiUrl: adaptationEndpoint(config),
   };
 }
 
@@ -88,6 +74,33 @@ export async function savePanelSettings(input: {
 function boundedTopK(value: number): number {
   if (!Number.isInteger(value)) return 4;
   return Math.min(10, Math.max(1, value));
+}
+
+/**
+ * Resolve the VS Code workspace-folder variable used by the dataset's
+ * portable `.code-workspace` file. VS Code does not expand this variable for
+ * every extension configuration shape, especially arrays, so the host keeps
+ * the expansion deterministic and local to path settings.
+ */
+export function resolveWorkspaceConfiguredPath(value: string): string | undefined {
+  const configured = normaliseConfiguredPath(value);
+  if (configured === undefined) return undefined;
+  const match = /^\$\{workspaceFolder(?::([^}]+))?\}(.*)$/.exec(configured);
+  if (!match) return configured;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const folder = match[1]
+    ? folders.find((candidate) => candidate.name === match[1])
+    : folders[0];
+  if (!folder || folder.uri.scheme !== 'file') return undefined;
+  const suffix = match[2] ?? '';
+  return path.resolve(folder.uri.fsPath, suffix.replace(/^[/\\]+/, ''));
+}
+
+export function resolveWorkspaceConfiguredPaths(values: readonly unknown[]): string[] {
+  const resolved = values
+    .map((value) => typeof value === 'string' ? resolveWorkspaceConfiguredPath(value) : undefined)
+    .filter((value): value is string => value !== undefined);
+  return normaliseConfiguredPaths(resolved);
 }
 
 /**

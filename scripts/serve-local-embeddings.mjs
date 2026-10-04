@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { embeddingBatches } from './embedding-batches.mjs';
 
 // Optional local inference runtime; keep native ML dependencies out of the extension bundle.
 const requireRuntime = createRequire(path.resolve(process.env.FOREXPLORE_EMBEDDING_TOOLS ?? process.cwd(), 'package.json'));
@@ -92,13 +93,19 @@ const server = createServer(async (request, response) => {
     if (body.model !== modelId) throw new Error('Requested model/revision is not loaded');
     if (!Array.isArray(body.input) || body.input.length < 1 || body.input.length > 16 ||
       body.input.some((text) => typeof text !== 'string' || text.length > 32_000)) throw new Error('Invalid embedding input');
-    const task = queue.then(async () => {
-      if (response.destroyed) throw new Error('Client disconnected');
-      const tensor = await extractor(body.input, { pooling: 'mean', normalize: true });
-      return tensor.tolist();
-    });
-    queue = task.then(() => undefined, () => undefined);
-    const vectors = await task;
+    const vectors = new Array(body.input.length);
+    for (const batch of embeddingBatches(body.input)) {
+      const task = queue.then(async () => {
+        if (response.destroyed) throw new Error('Client disconnected');
+        // The model tokenizer already truncates to its token window. Do not
+        // truncate by characters or decode/re-encode tokens and change vectors.
+        const tensor = await extractor(batch.map(entry => entry.text), { pooling: 'mean', normalize: true });
+        return tensor.tolist();
+      });
+      queue = task.then(() => undefined, () => undefined);
+      const encoded = await task;
+      batch.forEach((entry, i) => { vectors[entry.index] = encoded[i]; });
+    }
     if (body.dimensions !== undefined && body.dimensions !== vectors[0].length) throw new Error('Unsupported embedding dimension');
     response.end(JSON.stringify({ model: modelId, data: vectors.map((embedding, index) => ({ index, embedding })) }));
   } catch (error) {

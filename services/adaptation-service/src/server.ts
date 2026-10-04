@@ -17,18 +17,11 @@ import {
   ToolCallingArchitectRuntime,
 } from './tool-calling-architect-runtime.js';
 
-const config = loadConfig();
-
-const adapter = new AdaptationAdapter({
-  apiKey: () => config.apiKey,
-  skeletonProjectPath: config.skeletonProjectPath,
-  projectRoot: config.projectRoot,
-});
-
 let server: ReturnType<typeof createHttpServer> | undefined;
 let workspaceTranslationRuntime: WorkspaceTranslationRuntime | undefined;
 
 async function main(): Promise<void> {
+  const config = loadConfig();
   if (config.workspaceTranslation) {
     workspaceTranslationRuntime = new WorkspaceTranslationRuntime({
       workspaceRoot: config.projectRoot,
@@ -58,7 +51,11 @@ async function main(): Promise<void> {
     })
     : undefined;
   const httpServer = createHttpServer({
-    adapter,
+    adapter: new AdaptationAdapter({
+      apiKey: () => config.apiKey,
+      skeletonProjectPath: config.skeletonProjectPath,
+      projectRoot: config.projectRoot,
+    }),
     moduleHierarchyPlanner: new ModelModuleHierarchyPlanner({
       timeoutMs: 45_000,
       maxRepairs: 1,
@@ -72,7 +69,7 @@ async function main(): Promise<void> {
     staticAnalysisSnapshots: new FileStaticAnalysisSnapshotStore({
       analysisRoot: config.analysisRoot,
     }),
-    ...(semanticArchitecturePort ? { semanticArchitecturePort } : {}),
+    ...(semanticArchitecturePort ? { semanticArchitecturePort, semanticQueryUrl: config.semanticQueryPort!.endpoint } : {}),
     ...(workspaceTranslationRuntime && config.workspaceTranslation ? {
       workspaceTranslation: { runtime: workspaceTranslationRuntime, bearerToken: config.workspaceTranslation.bearerToken },
     } : {}),
@@ -93,26 +90,32 @@ async function main(): Promise<void> {
   });
   server = httpServer;
 
-  httpServer.listen(config.port, config.host, () => {
-    console.log(`Adaptation service listening on http://${config.host}:${config.port}`);
-    console.log(`Target project: ${config.projectRoot}`);
-    console.log(`Static analysis snapshots: ${config.analysisRoot}`);
-    if (semanticArchitecturePort) {
-      console.log('Revision-scoped semantic module planning is enabled.');
-    }
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(config.port, config.host, () => {
+      httpServer.removeListener('error', reject);
+      const address = httpServer.address();
+      const port = address && typeof address !== 'string' ? address.port : config.port;
+      console.log(`Adaptation service listening on http://${config.host}:${port}`);
+      process.send?.({ type: 'listening', port });
+      console.log(`Target project: ${config.projectRoot}`);
+      console.log(`Static analysis snapshots: ${config.analysisRoot}`);
+      if (semanticArchitecturePort) console.log('Revision-scoped semantic module planning is enabled.');
+      resolve();
+    });
   });
 }
 
 let shutdownPromise: Promise<void> | undefined;
 function shutdown(): Promise<void> { return shutdownPromise ??= closeRuntime(); }
 async function closeRuntime(): Promise<void> {
-  await workspaceTranslationRuntime?.shutdown();
   const activeServer = server;
-  if (!activeServer) return;
-  await new Promise<void>((resolve, reject) => {
+  const closing = activeServer?.listening ? new Promise<void>((resolve, reject) => {
     activeServer.close((error) => (error ? reject(error) : resolve()));
     activeServer.closeIdleConnections();
-  });
+  }) : undefined;
+  await workspaceTranslationRuntime?.shutdown();
+  await closing;
 }
 
 function requestShutdown(): void {
@@ -129,7 +132,13 @@ process.on('message', message => { if (message && typeof message === 'object' &&
   void shutdown().catch(() => { process.exitCode = 1; }).finally(() => { if (process.connected) process.disconnect?.(); });
 } });
 
-void main().catch((error) => {
-  console.error('Adaptation service failed to start:', error);
+void main().catch(async (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('Adaptation service failed to start:', message);
   process.exitCode = 1;
+  if (process.connected) await new Promise<void>(resolve => {
+    process.send?.({ type: 'startup-error', message }, () => resolve());
+  });
+  try { await shutdown(); }
+  finally { if (process.connected) process.disconnect?.(); }
 });

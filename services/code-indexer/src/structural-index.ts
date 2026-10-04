@@ -18,7 +18,7 @@ import {
 } from './language-registry.js';
 import {
   discoverProjects,
-  projectForPath,
+  createProjectLookup,
 } from './project-discovery.js';
 import {
   resolveSyntacticDependencies,
@@ -471,6 +471,7 @@ export function buildStructuralIndex(request: BuildStructuralIndexRequest): Stru
       languageId: registry.resolvePath(relativePath)?.languageId,
     })),
   });
+  const findProject = createProjectLookup(discovery.projects);
 
   const diagnostics: IndexDiagnosticRecord[] = [];
   const indexed: IndexedSource[] = [];
@@ -494,7 +495,7 @@ export function buildStructuralIndex(request: BuildStructuralIndexRequest): Stru
   for (const [relativePath, source] of [...sources.entries()].sort(([left], [right]) => compareText(left, right))) {
     request.signal?.throwIfAborted();
     const registration = registry.resolvePath(relativePath);
-    const project = projectForPath(discovery.projects, relativePath, registration?.languageId);
+    const project = findProject(relativePath, registration?.languageId);
     const record: IndexedFileRecord = {
       repositoryId: request.repositoryId,
       analysisRevision: request.analysisRevision,
@@ -540,7 +541,10 @@ export function buildStructuralIndex(request: BuildStructuralIndexRequest): Stru
       continue;
     }
     try {
-      const parserResult = indexFile({ content: source.content, language: registration, relativePath });
+      // A parser-pool adapter already has the syntax facts. Only load the
+      // immutable source when the selected parser actually consumes it.
+      let parserContent: string | undefined;
+      const parserResult = indexFile({ get content() { return parserContent ??= source.content; }, language: registration, relativePath });
       reparsedFileCount += 1;
       if (parserResult.diagnostics.length > 0) record.parseStatus = 'partial';
       diagnostics.push(...parserResult.diagnostics.map((diagnostic) =>
@@ -593,6 +597,12 @@ export function buildStructuralIndex(request: BuildStructuralIndexRequest): Stru
   }));
   const previousEdges = (previous?.dependencyEdges ?? []).filter((edge) => edge.provider === 'tree-sitter' && !edge.kind.endsWith('-binding'));
   const previousEdgeByKey = new Map(previousEdges.map((edge) => [edgeKey(edge), edge]));
+  const previousEdgesByPath = new Map<string, DependencyEdgeRecord[]>();
+  for (const edge of previousEdges) {
+    const edges = previousEdgesByPath.get(edge.sourceRelativePath) ?? [];
+    edges.push(edge);
+    previousEdgesByPath.set(edge.sourceRelativePath, edges);
+  }
   const currentImports: TreeSitterImport[] = [];
   const currentExports: TreeSitterExport[] = [];
   const currentEdgeKeys = new Set<string>();
@@ -609,7 +619,7 @@ export function buildStructuralIndex(request: BuildStructuralIndexRequest): Stru
       continue;
     }
     if (!source.reused) continue;
-    for (const edge of previousEdges.filter((candidate) => candidate.sourceRelativePath === source.file.relativePath)) {
+    for (const edge of previousEdgesByPath.get(source.file.relativePath) ?? []) {
       const imported = importFromEdge(edge, source.file);
       if (imported) currentEdgeKeys.add(importKey(imported));
       const exported = exportFromEdge(edge, source.file);

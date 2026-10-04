@@ -20,13 +20,14 @@ export function modelCredentialId(endpoint: string, settings?: LlmSettings): str
 }
 
 /** Endpoint is supplied by the trusted host, never by a Webview message. */
-export function createModelCredentialProvider(storage: CredentialStorage, endpoint: () => string, settings?: () => LlmSettings) {
+export function createModelCredentialProvider(storage: CredentialStorage, endpoint: () => string, settings?: () => LlmSettings,
+  runtimeEndpoint: () => string = endpoint) {
   return async (url: URL): Promise<string | ModelRequestContext | undefined> => {
     const configured = endpoint();
     const model = settings ? parseLlmSettings(settings()) : undefined;
     let id: string;
     try { id = modelCredentialId(configured, model); } catch { return undefined; }
-    const base = new URL(configured);
+    const base = new URL(runtimeEndpoint());
     const prefix = base.pathname.replace(/\/+$/, '');
     if (url.origin !== base.origin || url.username || url.password || !url.pathname.startsWith(`${prefix}/`)) return undefined;
     const route = url.pathname.slice(prefix.length);

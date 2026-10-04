@@ -28,6 +28,8 @@ import type {
 import { projectAnalysisPresentation } from './project-analysis-presentation';
 import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope } from '@forexplore/contracts';
 import type { ModuleReranker } from '../../../services/code-intelligence-service/src/module-reranker';
+import { createIndexingProgressReporter, indexingProgressMessage, isIndexingCancellation,
+  type IndexingProgress, type RepositoryIndexingProgress } from './indexing-progress';
 
 /** Local-only SeekDB configuration; credentials never cross a UI boundary. */
 export interface SeekDbRuntimeConfig {
@@ -90,7 +92,8 @@ interface HostRepositoryRegistry {
 }
 
 interface HostAnalysisCoordinator {
-  run(request: { repositoryId: RepositoryId; mode: 'full' | 'incremental' }): Promise<unknown>;
+  run(request: { repositoryId: RepositoryId; mode: 'full' | 'incremental'; signal?: AbortSignal;
+    onProgress?: (progress: IndexingProgress) => void; reuseFailedProjection?: boolean }): Promise<unknown>;
 }
 
 interface HostJavaCsharpSpecializedProvider {
@@ -155,28 +158,6 @@ function isAddressInUse(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'EADDRINUSE';
 }
 
-async function isSemanticQueryEndpoint(
-  endpoint: string,
-  bearerToken?: string,
-): Promise<boolean> {
-  try {
-    const response = await fetch(`${endpoint}/v1/semantic-query/listRepositories`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
-      },
-      body: '{}',
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (!response.ok) return false;
-    const payload = await response.json() as { repositories?: unknown };
-    return Array.isArray(payload.repositories);
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Minimal persistence surface supplied by VS Code's globalState.  IDs are
  * deliberately keyed by a digest of a local path, and no local path ever
@@ -234,6 +215,8 @@ export interface CodeIntelligenceRepositoryInput {
 }
 
 export interface SynchronizeCodeIntelligenceRequest {
+  signal?: AbortSignal;
+  onProgress?: (progress: RepositoryIndexingProgress) => void;
   scanRepositoryIds?: readonly string[];
   /** Automatic history initialization must not crawl unrelated workspace targets. */
   scanRoles?: readonly RepositoryRole[];
@@ -484,7 +467,7 @@ export class CodeIntelligenceHost {
   } = {}): Promise<string> {
     if (this.#semanticServerStart) {
       const endpoint = await this.#semanticServerStart;
-      if (this.#semanticQueryServer?.listening || await isSemanticQueryEndpoint(endpoint, options.bearerToken)) {
+      if (this.#semanticQueryServer?.listening) {
         return endpoint;
       }
       this.#semanticServerStart = undefined;
@@ -501,16 +484,15 @@ export class CodeIntelligenceHost {
 
   private async startSemanticQueryServerInternal(options: { port?: number; bearerToken?: string }): Promise<string> {
     if (this.#semanticQueryEndpoint) return this.#semanticQueryEndpoint;
-    const port = options.port ?? 8790;
-    if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-      throw new Error('Semantic query server port must be a valid TCP port.');
+    const port = options.port ?? 0;
+    if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+      throw new Error('Semantic query server port must be 0 (automatic) or a valid TCP port.');
     }
     const runtime = await this.runtime();
     const server = this.#semanticQueryServerFactory({
       queryPort: await this.semanticQueryPort(),
       ...(options.bearerToken ? { bearerToken: options.bearerToken } : {}),
     });
-    const endpoint = `http://127.0.0.1:${port}`;
     try {
       await new Promise<void>((resolve, reject) => {
         const onError = (error: Error) => {
@@ -524,15 +506,18 @@ export class CodeIntelligenceHost {
         });
       });
     } catch (error) {
-      if (isAddressInUse(error) && await isSemanticQueryEndpoint(endpoint, options.bearerToken)) {
-        this.#semanticQueryEndpoint = endpoint;
-        this.#output?.appendLine(`[forexplore] reusing semantic query port at ${endpoint}.`);
-        return endpoint;
+      if (isAddressInUse(error)) {
+        throw new Error(`代码查询端口 ${port} 已被占用；不能复用另一窗口的索引。请更换 FOREXPLORE_SEMANTIC_QUERY_PORT 或取消固定端口。`, { cause: error });
       }
       throw error;
     }
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      throw new Error('Semantic query server did not bind a TCP endpoint.');
+    }
     this.#semanticQueryServer = server;
-    this.#semanticQueryEndpoint = endpoint;
+    this.#semanticQueryEndpoint = `http://127.0.0.1:${address.port}`;
     this.#output?.appendLine(`[forexplore] semantic query port listening at ${this.#semanticQueryEndpoint}.`);
     return this.#semanticQueryEndpoint;
   }
@@ -612,6 +597,7 @@ export class CodeIntelligenceHost {
     request: SynchronizeCodeIntelligenceRequest,
   ): Promise<CodeIntelligenceSynchronizationResult> {
     if (this.#disposed) throw new Error('Code intelligence host has been disposed.');
+    request.signal?.throwIfAborted();
     const operation = this.#syncQueue.catch(() => {}).then(() => this.synchronizeInternal(request)).finally(() => {
       if (this.#synchronizing === operation) this.#synchronizing = undefined;
     });
@@ -795,11 +781,13 @@ export class CodeIntelligenceHost {
   private async synchronizeInternal(
     request: SynchronizeCodeIntelligenceRequest,
   ): Promise<CodeIntelligenceSynchronizationResult> {
+    request.signal?.throwIfAborted();
     this.#output?.appendLine('[forexplore] code intelligence synchronization started.');
     let runtime: CodeIntelligenceRuntime;
     try {
       runtime = await this.runtime();
     } catch (error) {
+      request.signal?.throwIfAborted();
       this.logFailure('start code intelligence runtime', error);
       return {
         presentation: this.emptyPresentation('error', genericRuntimeFailure()),
@@ -822,6 +810,7 @@ export class CodeIntelligenceHost {
       ? new Set(normalizedInputs.filter((input) => request.scanRoles!.includes(input.role)).map(repositoryInputKey))
       : undefined;
     for (const input of preferredInputs) {
+      request.signal?.throwIfAborted();
       try {
         const repositoryId = await this.repositoryIdFor(input.localPath, persistedByPath.get(stableIdentityKey(input.localPath)));
         const repository = await runtime.registry.register({
@@ -832,6 +821,7 @@ export class CodeIntelligenceHost {
         });
         registered.set(repository.repositoryId, repository);
       } catch (error) {
+        request.signal?.throwIfAborted();
         // The only identifier available to UI clients is a registered ID, so
         // an unregistered local-path error stays in the trusted host log.
         this.logFailure('register code intelligence repository', error);
@@ -847,12 +837,13 @@ export class CodeIntelligenceHost {
     const scannedRepositoryIds: RepositoryId[] = [];
     if (request.scan !== false) {
       for (const repository of registered.values()) {
+        request.signal?.throwIfAborted();
         if (request.scanRepositoryIds && !request.scanRepositoryIds.includes(repository.repositoryId)) continue;
         // A path explicitly configured as history can also be a workspace
         // target. Role precedence must not suppress that requested scan.
         if (requestedScanPaths && !requestedScanPaths.has(repositoryInputKey(repository))) continue;
-        if (request.scanNewOnly && previouslyVisible.has(repository.repositoryId) &&
-          (!requestedScanPaths || repository.activeRevision)) continue;
+        if (request.scanNewOnly && previouslyVisible.has(repository.repositoryId) && repository.activeRevision &&
+          repository.analysisStatus !== 'failed') continue;
         try {
           this.#output?.appendLine(`[forexplore] indexing ${repository.role} repository: ${repository.displayName}.`);
           // The coordinator flips the registry to 'indexing' inside its own
@@ -861,25 +852,43 @@ export class CodeIntelligenceHost {
           // than only its final result.
           await runtime.registry.setAnalysisStatus?.(repository.repositoryId, 'indexing');
           this.#onChange?.();
+          const onProgress = createIndexingProgressReporter(progress => {
+            this.#output?.appendLine(`[RECAST] ${indexingProgressMessage(progress)}`);
+            request.onProgress?.(progress);
+          });
           await runtime.coordinator.run({
             repositoryId: repository.repositoryId,
             mode: request.forceFull || !repository.activeRevision ? 'full' : 'incremental',
             // A forced full scan is a rebuild request: it must not return the
             // previous revision's search projection when sources happen to match.
             ...(request.forceFull ? { rebuild: true } : {}),
+            reuseFailedProjection: !request.forceFull && !['ready', 'degraded'].includes(repository.analysisStatus),
+            signal: request.signal,
+            onProgress: progress => onProgress({ ...progress, repositoryId: repository.repositoryId, displayName: repository.displayName }),
           });
+          // A resolved coordinator run has committed its revision. Late
+          // cancellation must not relabel that success or skip its projects.
           scannedRepositoryIds.push(repository.repositoryId);
           const current = await runtime.registry.get(repository.repositoryId);
           if (current?.activeRevision) {
-            const index = await runtime.store.getStructuralIndex({ repositoryId: current.repositoryId, analysisRevision: current.activeRevision });
-            const chosen = this.resolveProjectChoice(repository, index?.projects ?? []).projectId;
-            for (const project of index?.projects ?? []) {
+            const scope = { repositoryId: current.repositoryId, analysisRevision: current.activeRevision };
+            const projects = runtime.store.listProjects
+              ? await runtime.store.listProjects(scope)
+              : (await runtime.queryPort.listProjects(scope)).projects.map((project) => project.value);
+            const chosen = this.resolveProjectChoice(repository, projects).projectId;
+            for (const project of projects) {
               if (repository.role === 'history' || project.projectId === chosen) this.scheduleProject(project);
             }
           }
         } catch (error) {
           failedRepositoryIds.push(repository.repositoryId);
           await this.markIndexFailure(runtime, repository.repositoryId);
+          if (request.signal?.aborted || isIndexingCancellation(error)) {
+            this.#lastFailure = true;
+            this.#output?.appendLine(`[RECAST] ${repository.displayName}：索引已取消，可重试。`);
+            request.signal?.throwIfAborted();
+            throw error;
+          }
           this.logFailure(`index repository ${repository.repositoryId}`, error);
         } finally {
           this.#onChange?.();
@@ -903,9 +912,9 @@ export class CodeIntelligenceHost {
   }
 
   /**
-   * A failed refresh of an already-indexed repository keeps its last usable
-   * revision and status. A failed *first* scan would otherwise stay 'indexing'
-   * forever, hiding the failure behind a spinner that never resolves.
+   * A failed refresh keeps its last usable revision. If cancellation happens
+   * before the coordinator takes ownership, finish the host's 'indexing'
+   * transition here so neither first scans nor refreshes retain a spinner.
    */
   private async markIndexFailure(
     runtime: CodeIntelligenceRuntime,
@@ -913,7 +922,7 @@ export class CodeIntelligenceHost {
   ): Promise<void> {
     try {
       const current = await runtime.registry.get(repositoryId);
-      if (current?.analysisStatus === 'indexing' && !current.activeRevision) {
+      if (current?.analysisStatus === 'indexing') {
         await runtime.registry.setAnalysisStatus?.(repositoryId, 'failed');
       }
     } catch (error) {
@@ -1004,6 +1013,10 @@ export class CodeIntelligenceHost {
       if (!analysisRevision) return null;
       const scope = { repositoryId: repository.repositoryId, analysisRevision };
       const projects = await runtime.store.listProjects?.(scope);
+      if (projects && !this.resolveProjectChoice(repository, projects).projectId) {
+        if (analysisRevision === repository.activeRevision) this.forgetSelectedProject(repository.repositoryId);
+        return null;
+      }
       const index = await runtime.store.getStructuralIndex(scope);
       if (!index) return null;
       const resolved = this.resolveProjectChoice(repository, projects ?? index.projects);

@@ -19,6 +19,13 @@ import {
 } from './structural-index.js';
 import type { TreeSitterFileIndex, TreeSitterIndexRequest } from './tree-sitter-indexer.js';
 import { parseSourceFiles, type ParsePoolOptions } from './structural-parse-pool.js';
+import { assembleStructuralIndex } from './structural-assembly.js';
+
+export interface StructuralScanProgress {
+  stage: 'snapshot' | 'parse' | 'assemble';
+  completed?: number;
+  total?: number;
+}
 
 /**
  * Host-only input for a repository snapshot. `repositoryRoot` never crosses
@@ -39,6 +46,7 @@ export interface RepositoryStructuralScanRequest {
   signal?: AbortSignal;
   isolatedParsing?: boolean;
   parserPool?: ParsePoolOptions;
+  onProgress?: (progress: StructuralScanProgress) => void;
 }
 
 /** A narrow adapter shape suitable for `AnalysisCoordinator` injection. */
@@ -209,6 +217,7 @@ async function snapshotSourceFiles(request: RepositoryStructuralScanRequest, reg
           ...(unavailableReason ? { unavailableReason } : {}),
           get content() { return unavailableReason ? '' : readFileSync(contentPath, 'utf8'); },
         });
+        if (files.length % 128 === 0) request.onProgress?.({ stage: 'snapshot', completed: files.length });
       } finally {
         await handle.close();
       }
@@ -223,7 +232,8 @@ async function snapshotSourceFiles(request: RepositoryStructuralScanRequest, reg
         throw new Error('Repository changed during source snapshot capture; retry after the current edits finish.');
       }
     }
-    return { files, storedPaths, sourceReader: {
+    request.onProgress?.({ stage: 'snapshot', completed: files.length, total: files.length });
+    return { directory, files, storedPaths, sourceReader: {
       async read(relativePath: string): Promise<string | null> {
         request.signal?.throwIfAborted();
         const contentPath = storedPaths.get(relativePath);
@@ -261,16 +271,18 @@ export async function scanRepositoryStructuralIndex(
     throw new Error('Repository scan maxFileBytes must be a positive integer.');
   }
   const scanStarted = performance.now();
+  request.onProgress?.({ stage: 'snapshot', completed: 0 });
   const snapshot = await snapshotSourceFiles({ ...request, repositoryRoot }, languageRegistry, maxFileBytes);
   console.info('[forexplore:performance]', JSON.stringify({ stage: 'source-snapshot', repositoryId: request.repositoryId,
     durationMs: Math.round(performance.now() - scanStarted), files: snapshot.files.length }));
   const parseStarted = performance.now();
   try {
     let indexFile = request.indexFile;
+    let parsed = false;
     let parserResources: { peakWorkerRss: number; peakCombinedRss: number; workers: number } | undefined;
     const requiresIsolation = request.retainSourceTexts === false &&
       (snapshot.files.length > 128 || snapshot.files.reduce((sum, file) => sum + (file.sizeBytes ?? 0), 0) > 2 * 1024 * 1024);
-    if (!indexFile && (request.isolatedParsing ?? requiresIsolation)) {
+    if (!indexFile && !request.languageRegistry && (request.isolatedParsing ?? requiresIsolation)) {
       const previous = new Map(request.previousIndex?.files.map(file => [file.relativePath, file]) ?? []);
       const changed = new Set(request.changedPaths ?? []);
       const tasks = snapshot.files.flatMap(file => {
@@ -279,8 +291,14 @@ export async function scanRepositoryStructuralIndex(
         if (!sourcePath || !languageRegistry.resolvePath(file.relativePath) || old && old.sha256 === file.sha256 && old.parseStatus !== 'failed' && !changed.has(file.relativePath)) return [];
         return [{ sourcePath, resultPath: `${sourcePath}.parsed.json`, relativePath: file.relativePath, sizeBytes: file.sizeBytes ?? 0 }];
       });
-      const stats = await parseSourceFiles(tasks, request.signal, request.parserPool);
+      const stats = await parseSourceFiles(tasks, request.signal, { ...request.parserPool,
+        onProgress: (completed, total) => {
+          request.parserPool?.onProgress?.(completed, total);
+          request.onProgress?.({ stage: 'parse', completed, total });
+        },
+      });
       parserResources = stats;
+      parsed = true;
       console.info('[forexplore:performance]', JSON.stringify({ stage: 'parser-pool-complete', ...stats, files: tasks.length }));
       indexFile = input => {
         const contentPath = snapshot.storedPaths.get(input.relativePath)!;
@@ -289,7 +307,19 @@ export async function scanRepositoryStructuralIndex(
         return payload.result;
       };
     }
-    const result = buildStructuralIndex({
+    request.onProgress?.({ stage: 'assemble' });
+    request.signal?.throwIfAborted();
+    // Native grammars and callback seams cannot cross a process boundary.
+    // Production callers omit those seams and keep the entire synchronous
+    // assembly off the extension host, including small first-time imports.
+    const isolateAssembly = request.retainSourceTexts === false && !request.indexFile && !request.languageRegistry;
+    const result = isolateAssembly ? await assembleStructuralIndex(snapshot.directory, {
+      repositoryId: request.repositoryId, analysisRevision: request.analysisRevision, parsed,
+      files: snapshot.files.map(file => ({ relativePath: file.relativePath, sha256: file.sha256,
+        sizeBytes: file.sizeBytes, unavailableReason: file.unavailableReason,
+        sourcePath: snapshot.storedPaths.get(file.relativePath) })),
+      changedPaths: request.changedPaths, previousIndex: request.previousIndex,
+    }, request.signal) : buildStructuralIndex({
       repositoryId: request.repositoryId,
       analysisRevision: request.analysisRevision,
       files: snapshot.files,
@@ -300,6 +330,7 @@ export async function scanRepositoryStructuralIndex(
       languageRegistry,
       ...(request.previousIndex ? { previousIndex: request.previousIndex } : {}),
     });
+    request.onProgress?.({ stage: 'assemble', completed: result.index.files.length, total: result.index.files.length });
     if (parserResources) result.stats.parserResources = parserResources;
     console.info('[forexplore:performance]', JSON.stringify({ stage: 'structural-parse', repositoryId: request.repositoryId,
       durationMs: Math.round(performance.now() - parseStarted), symbols: result.index.symbols.length,

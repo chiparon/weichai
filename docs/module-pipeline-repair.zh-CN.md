@@ -36,7 +36,7 @@
 | `ADAPTATION_WORKSPACE_COMPILE_COMMAND` | 固定编译命令 JSON，按实际目标工程配置 |
 | `ADAPTATION_WORKSPACE_VERIFICATION` | 行为测试命令及 `protectedFiles`；未配置时不能得到行为验收通过结论 |
 | 模型凭据 | 服务 `.env` 中的模型 Key，或 VS Code 中已保存的模型凭据 |
-| `SEMANTIC_QUERY_PORT_URL` | 启用按需历史查询时，指向扩展宿主的查询端口，默认 8790 |
+| `SEMANTIC_QUERY_PORT_URL` | 手动部署时指向 RECAST 输出中的实际查询地址；扩展自启后端会自动接收地址，不再假定 8790 |
 
 VS Code 使用已有的 `forexplore.adaptationApiUrl` 设置。服务仍然只接受配置工作区内的写入，选中其他根目录时会给出不一致错误。
 

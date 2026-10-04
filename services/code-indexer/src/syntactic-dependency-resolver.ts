@@ -33,6 +33,13 @@ interface Resolution {
   resolution: DependencyEdgeRecord['resolution'];
 }
 
+interface ResolvedTarget {
+  internal: boolean;
+  resolution: DependencyEdgeRecord['resolution'];
+  targetRelativePath?: string;
+  targetSymbolKey?: string;
+}
+
 const sourceExtensions: Readonly<Record<string, readonly string[]>> = {
   c: ['.h', '.c'], cpp: ['.h', '.hpp', '.cpp'], kotlin: ['.kt', '.kts'], arkts: ['.ets', '.ts'],
   csharp: ['.cs'],
@@ -149,40 +156,53 @@ function rustCandidates(sourceRelativePath: string, targetReference: string): { 
   return { candidates: [...new Set(options)], internal: true };
 }
 
-function javaCandidates(targetReference: string, symbols: readonly SymbolRecord[]): ResolutionCandidate[] {
-  const target = targetReference.replace(/\.\*$/, '');
-  const wildcard = targetReference.endsWith('.*');
-  return symbols
-    .filter((symbol) =>
-      ['java', 'kotlin'].includes(symbol.languageId) &&
-      (wildcard
-        ? symbol.qualifiedName.startsWith(`${target}.`)
-        : symbol.qualifiedName === target),
-    )
-    .map((symbol) => ({ relativePath: symbol.relativePath, symbolKey: symbol.symbolKey }));
+interface QualifiedSymbols {
+  java: readonly SymbolRecord[];
+  csharp: readonly SymbolRecord[];
+  javaResolutions: Map<string, ResolvedTarget>;
+  csharpResolutions: Map<string, ResolvedTarget>;
 }
 
-function csharpCandidates(targetReference: string, symbols: readonly SymbolRecord[]): ResolutionCandidate[] {
-  return symbols
-    .filter((symbol) =>
-      symbol.languageId === 'csharp' &&
-      (symbol.qualifiedName === targetReference || symbol.qualifiedName.startsWith(`${targetReference}.`)),
-    )
-    .map((symbol) => ({ relativePath: symbol.relativePath, symbolKey: symbol.symbolKey }));
+function qualifiedCandidates(
+  target: string,
+  symbols: readonly SymbolRecord[],
+  descendants: boolean,
+  exact: boolean,
+): ResolutionCandidate[] {
+  const prefix = `${target}.`;
+  const lower = exact ? target : prefix;
+  let start = 0;
+  let end = symbols.length;
+  while (start < end) {
+    const middle = (start + end) >>> 1;
+    if (symbols[middle]!.qualifiedName < lower) start = middle + 1;
+    else end = middle;
+  }
+  const candidates: ResolutionCandidate[] = [];
+  for (let i = start; i < symbols.length; i++) {
+    const symbol = symbols[i]!;
+    if (exact && symbol.qualifiedName === target || descendants && symbol.qualifiedName.startsWith(prefix)) {
+      candidates.push({ relativePath: symbol.relativePath, symbolKey: symbol.symbolKey });
+    } else if (symbol.qualifiedName >= prefix || !descendants) {
+      break;
+    }
+  }
+  return candidates;
 }
 
 function candidatesForImport(
   imported: TreeSitterImport,
   filesByPath: ReadonlyMap<string, IndexedFileRecord>,
-  symbols: readonly SymbolRecord[],
+  symbols: QualifiedSymbols,
 ): { candidates: ResolutionCandidate[]; internal: boolean } {
   const languageId = imported.languageId;
   if (languageId === 'java' || languageId === 'kotlin') {
-    const candidates = javaCandidates(imported.targetReference, symbols);
+    const wildcard = imported.targetReference.endsWith('.*');
+    const candidates = qualifiedCandidates(imported.targetReference.replace(/\.\*$/, ''), symbols.java, wildcard, !wildcard);
     return { candidates, internal: candidates.length > 0 };
   }
   if (languageId === 'csharp') {
-    const candidates = csharpCandidates(imported.targetReference, symbols);
+    const candidates = qualifiedCandidates(imported.targetReference, symbols.csharp, true, true);
     return { candidates, internal: candidates.length > 0 };
   }
 
@@ -211,26 +231,49 @@ export function syntacticDependencyCandidatePaths(imported: TreeSitterImport): s
   return resolution.candidates;
 }
 
-function normalizeCandidates(candidates: readonly ResolutionCandidate[]): ResolutionCandidate[] {
-  const byKey = new Map<string, ResolutionCandidate>();
+// Edges retain only a unique target (or ambiguity), not an ordered candidate
+// list. Summarize in one pass instead of repeatedly sorting wildcard imports.
+function resolvedTarget(candidates: readonly ResolutionCandidate[], internal: boolean): ResolvedTarget {
+  let firstPath: string | undefined;
+  let firstSymbol: string | undefined;
+  let multiplePaths = false;
+  let multipleSymbols = false;
   for (const candidate of candidates) {
-    byKey.set(`${candidate.relativePath}\u0000${candidate.symbolKey ?? ''}`, candidate);
+    if (firstPath === undefined) firstPath = candidate.relativePath;
+    else if (candidate.relativePath !== firstPath) multiplePaths = true;
+    if (candidate.symbolKey) {
+      if (firstSymbol === undefined) firstSymbol = candidate.symbolKey;
+      else if (candidate.symbolKey !== firstSymbol) multipleSymbols = true;
+    }
   }
-  return [...byKey.values()].sort((left, right) =>
-    compareText(`${left.relativePath}\u0000${left.symbolKey ?? ''}`, `${right.relativePath}\u0000${right.symbolKey ?? ''}`),
-  );
+  return {
+    internal: multiplePaths || internal,
+    resolution: multiplePaths ? 'ambiguous' : firstPath !== undefined ? 'resolved' : 'unresolved',
+    ...(!multiplePaths && firstPath ? { targetRelativePath: firstPath } : {}),
+    ...(!multipleSymbols && firstSymbol ? { targetSymbolKey: firstSymbol } : {}),
+  };
 }
 
-function resolutionFor(candidates: readonly ResolutionCandidate[], internal: boolean): Resolution {
-  const normalized = normalizeCandidates(candidates);
-  const paths = [...new Set(normalized.map((candidate) => candidate.relativePath))];
-  if (paths.length === 1) return { candidates: normalized, internal, resolution: 'resolved' };
-  if (paths.length > 1) return { candidates: normalized, internal: true, resolution: 'ambiguous' };
-  return { candidates: [], internal, resolution: 'unresolved' };
+function targetForImport(
+  imported: TreeSitterImport,
+  filesByPath: ReadonlyMap<string, IndexedFileRecord>,
+  symbols: QualifiedSymbols,
+): ResolvedTarget {
+  const cache = imported.languageId === 'java' || imported.languageId === 'kotlin'
+    ? symbols.javaResolutions
+    : imported.languageId === 'csharp' ? symbols.csharpResolutions : undefined;
+  const cached = cache?.get(imported.targetReference);
+  if (cached) return cached;
+  const candidates = candidatesForImport(imported, filesByPath, symbols);
+  const target = resolvedTarget(candidates.candidates, candidates.internal);
+  // Qualified references are independent of the importing file. Keep only
+  // the small final result, not potentially huge wildcard candidate arrays.
+  cache?.set(imported.targetReference, target);
+  return target;
 }
 
 function edgeEvidence(
-  resolution: Resolution,
+  resolution: Pick<Resolution, 'resolution'>,
 ): Pick<DependencyEdgeRecord, 'confidence' | 'evidenceLevel'> {
   switch (resolution.resolution) {
     case 'resolved':
@@ -246,13 +289,9 @@ function edgeForImport(
   request: SyntacticDependencyResolverRequest,
   imported: TreeSitterImport,
   filesByPath: ReadonlyMap<string, IndexedFileRecord>,
+  symbols: QualifiedSymbols,
 ): DependencyEdgeRecord {
-  const candidates = candidatesForImport(imported, filesByPath, request.symbols);
-  const resolution = resolutionFor(candidates.candidates, candidates.internal);
-  const targetPaths = [...new Set(resolution.candidates.map((candidate) => candidate.relativePath))];
-  const targetSymbols = [...new Set(resolution.candidates.flatMap((candidate) =>
-    candidate.symbolKey ? [candidate.symbolKey] : [],
-  ))];
+  const resolution = targetForImport(imported, filesByPath, symbols);
   const kind: IndexDependencyKind = imported.importKind === 're-export' ? 'export' : 'import';
   return {
     repositoryId: request.repositoryId,
@@ -267,9 +306,9 @@ function edgeForImport(
     ),
     kind,
     sourceRelativePath: imported.relativePath,
-    ...(resolution.resolution === 'resolved' && targetPaths[0] ? { targetRelativePath: targetPaths[0] } : {}),
-    ...(resolution.resolution === 'resolved' && targetSymbols.length === 1
-      ? { targetSymbolKey: targetSymbols[0] }
+    ...(resolution.resolution === 'resolved' && resolution.targetRelativePath ? { targetRelativePath: resolution.targetRelativePath } : {}),
+    ...(resolution.resolution === 'resolved' && resolution.targetSymbolKey
+      ? { targetSymbolKey: resolution.targetSymbolKey }
       : {}),
     targetReference: imported.targetReference,
     internal: resolution.internal,
@@ -333,6 +372,7 @@ function edgeForExport(
   exported: TreeSitterExport,
   filesByPath: ReadonlyMap<string, IndexedFileRecord>,
   localSymbols: readonly SymbolRecord[],
+  symbols: QualifiedSymbols,
 ): DependencyEdgeRecord {
   const kind: IndexDependencyKind = 'export';
   const reExport = exported.exportKind === 're-export' && Boolean(exported.targetReference);
@@ -345,9 +385,6 @@ function edgeForExport(
       targetReference: exported.targetReference,
     }
     : undefined;
-  const importedCandidates = imported
-    ? candidatesForImport(imported, filesByPath, request.symbols)
-    : undefined;
   const localCandidates = imported
     ? []
     : localSymbols
@@ -358,13 +395,9 @@ function edgeForExport(
           symbol.qualifiedName === exported.targetReference),
       )
       .map((symbol) => ({ relativePath: symbol.relativePath, symbolKey: symbol.symbolKey }));
-  const resolution = importedCandidates
-    ? resolutionFor(importedCandidates.candidates, importedCandidates.internal)
-    : resolutionFor(localCandidates, true);
-  const targetPaths = [...new Set(resolution.candidates.map((candidate) => candidate.relativePath))];
-  const targetSymbols = [...new Set(resolution.candidates.flatMap((candidate) =>
-    candidate.symbolKey ? [candidate.symbolKey] : [],
-  ))];
+  const resolution = imported
+    ? targetForImport(imported, filesByPath, symbols)
+    : resolvedTarget(localCandidates, true);
   return {
     repositoryId: request.repositoryId,
     analysisRevision: request.analysisRevision,
@@ -377,13 +410,13 @@ function edgeForExport(
       exported.sourceRange.startColumn,
     ),
     kind,
-    ...(imported ? {} : targetSymbols.length === 1 ? { sourceSymbolKey: targetSymbols[0] } : {}),
+    ...(imported ? {} : resolution.targetSymbolKey ? { sourceSymbolKey: resolution.targetSymbolKey } : {}),
     sourceRelativePath: exported.relativePath,
-    ...(reExport && resolution.resolution === 'resolved' && targetPaths[0]
-      ? { targetRelativePath: targetPaths[0] }
+    ...(reExport && resolution.resolution === 'resolved' && resolution.targetRelativePath
+      ? { targetRelativePath: resolution.targetRelativePath }
       : {}),
-    ...(reExport && resolution.resolution === 'resolved' && targetSymbols.length === 1
-      ? { targetSymbolKey: targetSymbols[0] }
+    ...(reExport && resolution.resolution === 'resolved' && resolution.targetSymbolKey
+      ? { targetSymbolKey: resolution.targetSymbolKey }
       : {}),
     ...(exported.targetReference ? { targetReference: exported.targetReference } : {}),
     internal: resolution.internal,
@@ -405,13 +438,20 @@ export function resolveSyntacticDependencies(
 ): DependencyEdgeRecord[] {
   const filesByPath = new Map(request.files.map((file) => [canonicalPath(file.relativePath), file]));
   const symbolsByPath = new Map<string, SymbolRecord[]>();
+  const qualified: QualifiedSymbols & { java: SymbolRecord[]; csharp: SymbolRecord[] } = {
+    java: [], csharp: [], javaResolutions: new Map(), csharpResolutions: new Map(),
+  };
   for (const symbol of request.symbols) {
     const symbols = symbolsByPath.get(symbol.relativePath) ?? [];
     symbols.push(symbol); symbolsByPath.set(symbol.relativePath, symbols);
+    if (symbol.languageId === 'java' || symbol.languageId === 'kotlin') qualified.java.push(symbol);
+    else if (symbol.languageId === 'csharp') qualified.csharp.push(symbol);
   }
+  qualified.java.sort((left, right) => compareText(left.qualifiedName, right.qualifiedName));
+  qualified.csharp.sort((left, right) => compareText(left.qualifiedName, right.qualifiedName));
   const edges = [
-    ...request.imports.map((imported) => edgeForImport(request, imported, filesByPath)),
-    ...(request.exports ?? []).map((exported) => edgeForExport(request, exported, filesByPath, symbolsByPath.get(exported.relativePath) ?? [])),
+    ...request.imports.map((imported) => edgeForImport(request, imported, filesByPath, qualified)),
+    ...(request.exports ?? []).map((exported) => edgeForExport(request, exported, filesByPath, symbolsByPath.get(exported.relativePath) ?? [], qualified)),
     ...(request.projectReferences ?? []).map((reference) => edgeForProjectReference(request, reference, filesByPath)),
   ];
   const unique = new Map<string, DependencyEdgeRecord>();
@@ -425,7 +465,7 @@ export const syntacticDependencyResolverInternals = {
   normalizedProjectReference,
   pythonCandidates,
   relativeCandidates,
-  resolutionFor,
+  resolvedTarget,
   rustCandidates,
   syntacticDependencyCandidatePaths,
 };

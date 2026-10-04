@@ -87,6 +87,7 @@ interface RevisionRow extends RowDataPacket {
   completed_at: string | Date | null;
   activated_at: string | Date | null;
   failure_reason: string | null;
+  failure_stage?: AnalysisRevisionRecord['failureStage'] | null;
 }
 
 interface ProjectRow extends RowDataPacket {
@@ -274,6 +275,7 @@ function toRevision(row: RevisionRow): AnalysisRevisionRecord {
     ...(completedAt ? { completedAt } : {}),
     ...(activatedAt ? { activatedAt } : {}),
     ...(failureReason ? { failureReason } : {}),
+    ...(row.failure_stage ? { failureStage: row.failure_stage } : {}),
   };
 }
 
@@ -491,7 +493,7 @@ function searchDocumentProjectId(document: SearchDocumentRecord, filesByPath: Re
 }
 
 /** Version of the last migration in SeekDbIndexStore.#migrate(); read-only tools compare against it. */
-export const seekDbSchemaVersion = 2;
+export const seekDbSchemaVersion = 3;
 
 /**
  * SeekDB persistence for the authoritative revision model. It uses dedicated
@@ -616,6 +618,7 @@ export class SeekDbIndexStore implements IndexStore {
         completed_at VARCHAR(64) NULL,
         activated_at VARCHAR(64) NULL,
         failure_reason TEXT NULL,
+        failure_stage VARCHAR(32) NULL,
         PRIMARY KEY (repository_id, analysis_revision),
         INDEX idx_analysis_revisions_repository (repository_id, created_at)
       ) ORGANIZATION = HEAP
@@ -802,6 +805,10 @@ export class SeekDbIndexStore implements IndexStore {
         await this.backfillSearchDocumentProjects();
         const [indexes] = await this.pool.query<RowDataPacket[]>(`SHOW INDEX FROM ${this.#tables.searchDocuments} WHERE Key_name = 'idx_search_documents_scope'`);
         if (!indexes.length) await this.pool.query(`ALTER TABLE ${this.#tables.searchDocuments} ADD INDEX idx_search_documents_scope (repository_id, analysis_revision, kind, project_id)`);
+      }],
+      [3, 'analysis_revisions.failure_stage for safe parse reuse', async () => {
+        const [columns] = await this.pool.query<RowDataPacket[]>(`SHOW COLUMNS FROM ${this.#tables.analysisRevisions} LIKE 'failure_stage'`);
+        if (!columns.length) await this.pool.query(`ALTER TABLE ${this.#tables.analysisRevisions} ADD COLUMN failure_stage VARCHAR(32) NULL`);
       }],
     ];
     await this.pool.query(`CREATE TABLE IF NOT EXISTS ${this.#tables.schemaMigrations} (
@@ -997,11 +1004,11 @@ export class SeekDbIndexStore implements IndexStore {
       }
       const [result] = await connection.query<ResultSetHeader>(`
         UPDATE ${this.#tables.analysisRevisions}
-        SET status = ?, analysis_hash = ?, source_revision = ?, completed_at = ?, failure_reason = ?
+        SET status = ?, analysis_hash = ?, source_revision = ?, completed_at = ?, failure_reason = ?, failure_stage = ?
         WHERE repository_id = ? AND analysis_revision = ? AND status = 'building'
       `, [
         revision.status, revision.analysisHash, revision.sourceRevision ?? null,
-        revision.completedAt ?? null, revision.failureReason ?? null,
+        revision.completedAt ?? null, revision.failureReason ?? null, revision.failureStage ?? null,
         ...scopeParams(revision),
       ]);
       if (result.affectedRows !== 1) {
@@ -1119,12 +1126,17 @@ export class SeekDbIndexStore implements IndexStore {
     });
   }
 
-  async putStructuralIndexFromSource(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal): Promise<void> {
+  async putStructuralIndexFromSource(index: StructuralIndex, source: SourceTextReader, signal?: AbortSignal,
+    onProgress?: (completed: number, total: number) => void): Promise<void> {
     validateStructuralIndex(index);
     const batchRows = this.#structuralBatchRows;
+    const total = index.projects.length + index.files.length + index.symbols.length + index.dependencyEdges.length + index.diagnostics.length;
+    let completed = 0;
+    const progress = (count: number) => { completed += count; onProgress?.(completed, total); };
     await this.#writeBuilding(index, (connection) => this.#deleteRevisionStructuralRecords(connection, index), signal);
     for (let offset = 0; offset < index.projects.length; offset += batchRows) {
       await this.#writeBuilding(index, (connection) => this.#insertProjects(connection, index.projects.slice(offset, offset + batchRows)), signal);
+      progress(Math.min(batchRows, index.projects.length - offset));
     }
     let files: IndexedFileRecord[] = [];
     let texts = new Map<string, string>();
@@ -1132,6 +1144,7 @@ export class SeekDbIndexStore implements IndexStore {
     const flush = async () => {
       if (!files.length) return;
       await this.#writeBuilding(index, (connection) => this.#insertFiles(connection, files, texts), signal);
+      progress(files.length);
       files = []; texts = new Map(); bytes = 0;
     };
     for (const file of index.files) {
@@ -1146,12 +1159,15 @@ export class SeekDbIndexStore implements IndexStore {
     await flush();
     for (let offset = 0; offset < index.symbols.length; offset += batchRows) {
       await this.#writeBuilding(index, (connection) => this.#insertSymbols(connection, index.symbols.slice(offset, offset + batchRows)), signal);
+      progress(Math.min(batchRows, index.symbols.length - offset));
     }
     for (let offset = 0; offset < index.dependencyEdges.length; offset += batchRows) {
       await this.#writeBuilding(index, (connection) => this.#insertDependencies(connection, index.dependencyEdges.slice(offset, offset + batchRows)), signal);
+      progress(Math.min(batchRows, index.dependencyEdges.length - offset));
     }
     for (let offset = 0; offset < index.diagnostics.length; offset += batchRows) {
       await this.#writeBuilding(index, (connection) => this.#insertDiagnostics(connection, index.diagnostics.slice(offset, offset + batchRows)), signal);
+      progress(Math.min(batchRows, index.diagnostics.length - offset));
     }
   }
 

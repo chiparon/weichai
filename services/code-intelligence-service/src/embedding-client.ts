@@ -1,3 +1,6 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
+/** Transport/exceptions module boundary: the provider only needs these two members. */
 export interface EmbeddingProvider {
   readonly dimension: number;
   embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
@@ -54,14 +57,6 @@ export class HashEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
-function apiErrorMessage(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const error = (value as { error?: unknown }).error;
-  if (typeof error !== 'object' || error === null) return undefined;
-  const message = (error as { message?: unknown }).message;
-  return typeof message === 'string' ? message : undefined;
-}
-
 const RETRYABLE_CODES = new Set([
   'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND',
   'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
@@ -75,6 +70,21 @@ class EmbeddingHttpError extends Error {
     super(message);
     this.name = 'EmbeddingHttpError';
   }
+}
+
+class EmbeddingResponseError extends Error {}
+
+/** Server bodies and arbitrary transport messages can echo submitted source or credentials. */
+function failureReason(error: unknown): string {
+  if (error instanceof EmbeddingHttpError || error instanceof EmbeddingResponseError) return error.message;
+  if (!(error instanceof Error)) return 'embedding request failed';
+  if (error.name === 'TimeoutError') return 'request timed out';
+  if (error.name === 'AbortError') return 'request aborted';
+  const cause = error.cause;
+  const code = (error as NodeJS.ErrnoException).code ??
+    (cause instanceof Error ? (cause as NodeJS.ErrnoException).code : undefined);
+  if (code && RETRYABLE_CODES.has(code)) return `network error (${code})`;
+  return 'network request failed';
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -99,10 +109,6 @@ function isRetryable(error: unknown): boolean {
     if (causeCode && RETRYABLE_CODES.has(causeCode)) return true;
   }
   return error.message.includes('fetch failed') || error.message.includes('network');
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export interface OpenAiCompatibleEmbeddingProviderOptions {
@@ -158,13 +164,15 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
       } catch (error: unknown) {
         lastError = error;
         signal?.throwIfAborted();
-        if (attempt === this.maxRetries || !isRetryable(error)) throw error;
-        const delay = this.baseDelayMs * 2 ** attempt;
+        const detail = `Embedding batch of ${texts.length} inputs failed (timeout ${this.timeoutMs}ms per attempt, ` +
+          `${attempt + 1} attempts): ${failureReason(error)}`;
+        if (attempt === this.maxRetries || !isRetryable(error)) throw new Error(detail);
+        const delayMs = this.baseDelayMs * 2 ** attempt;
         console.warn(
-          `Embedding API request failed (attempt ${attempt + 1}/${this.maxRetries + 1}), ` +
-            `retrying in ${delay}ms: ${error instanceof Error ? error.message : String(error)}`,
+          `${detail}; retrying in ${delayMs}ms (${attempt + 1}/${this.maxRetries} retries).`,
         );
-        await sleep(delay);
+        try { await delay(delayMs, undefined, { signal }); }
+        catch (error) { signal?.throwIfAborted(); throw error; }
       }
     }
     throw lastError;
@@ -188,28 +196,28 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
     let body: unknown;
     try {
       body = await response.json();
-    } catch {
+    } catch (error) {
+      if (response.ok && isRetryable(error)) throw error;
       if (!response.ok) {
         throw new EmbeddingHttpError(
           response.status,
           `Embedding API returned HTTP ${response.status} with an invalid JSON body.`,
         );
       }
-      throw new Error(`Embedding API returned invalid JSON (HTTP ${response.status}).`);
+      throw new EmbeddingResponseError(`Embedding API returned invalid JSON (HTTP ${response.status}).`);
     }
     if (!response.ok) {
       throw new EmbeddingHttpError(
         response.status,
-        apiErrorMessage(body) ||
-          `Embedding API returned HTTP ${response.status}. Body: ${JSON.stringify(body)}`,
+        `Embedding API returned HTTP ${response.status}.`,
       );
     }
     if (typeof body !== 'object' || body === null) {
-      throw new Error('Embedding API returned an invalid response body.');
+      throw new EmbeddingResponseError('Embedding API returned an invalid response body.');
     }
     const data = (body as { data?: unknown }).data;
     if (!Array.isArray(data) || data.length !== texts.length) {
-      throw new Error('Embedding API returned an unexpected number of vectors.');
+      throw new EmbeddingResponseError('Embedding API returned an unexpected number of vectors.');
     }
     const items = data.map((item) => {
       if (typeof item !== 'object' || item === null) return null;
@@ -228,13 +236,13 @@ export class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
       new Set(items.map((item) => item?.index)).size !== texts.length ||
       items.some((item) => (item?.index ?? -1) < 0 || (item?.index ?? -1) >= texts.length)
     ) {
-      throw new Error('Embedding API returned malformed vector entries.');
+      throw new EmbeddingResponseError('Embedding API returned malformed vector entries.');
     }
     const vectors = items
       .sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0))
       .map((item) => item?.embedding ?? []);
     if (vectors.some((vector) => vector.length !== this.dimension)) {
-      throw new Error(`Embedding API did not return ${this.dimension}-dimensional vectors.`);
+      throw new EmbeddingResponseError(`Embedding API did not return ${this.dimension}-dimensional vectors.`);
     }
     return vectors;
   }

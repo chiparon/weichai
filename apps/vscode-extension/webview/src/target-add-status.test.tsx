@@ -143,3 +143,78 @@ it('rejects an unknown target phase instead of trusting the message name', async
   await act(async () => postRaw({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'queued', message: 'x' }));
   expect(container.querySelector('.target-add-status')).toBeNull();
 });
+
+it('restores a failed import after reopening and retries the registered repository', async () => {
+  const { container, post, posted } = await mountPanel();
+  const repository = { repositoryId: 'failed-target', displayName: 'Camel', role: 'target' as const,
+    analysisStatus: 'failed' as const, activeRevision: null, selectedRevision: null, revisions: [], languages: [],
+    projects: [], selectedProjectId: null, summary: { status: 'missing' as const } };
+  // No transient ADD/RESULT message survives reopening; durable state must suffice.
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'error', storage: 'seekdb', repositories: [repository] } }));
+  const failure = container.querySelector('.target-add-status.is-error')!;
+  expect(failure.textContent).toContain('目标工程索引失败');
+  await act(async () => failure.querySelector<HTMLButtonElement>('button')!.click());
+  expect(posted).toContainEqual({ type: 'REFRESH_REPOSITORY', repositoryId: 'failed-target' });
+  expect(posted.some(message => message.type === 'ADD_TARGET_WORKSPACE')).toBe(false);
+  // Registration and queued pushes may still contain the previous failure.
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'error', storage: 'seekdb', repositories: [repository] } }));
+  expect(container.querySelector('.target-add-status.is-error')).toBeNull();
+  expect(container.querySelector('.target-add-status button')).toBeNull();
+  await act(async () => post({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在生成检索向量 · 已完成 256 条' }));
+  expect(container.querySelector('.target-add-status')?.textContent).toContain('256');
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'ready', storage: 'seekdb', repositories: [{ ...repository, analysisStatus: 'indexing' }] } }));
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'ready', storage: 'seekdb', repositories: [{ ...repository, analysisStatus: 'ready',
+      activeRevision: 'recovered', selectedRevision: 'recovered' }] } }));
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'completed', mode: 'workspace' }));
+  expect(container.querySelector('.target-add-status .is-spinning')).toBeNull();
+  expect(container.querySelector('.target-add-status')?.textContent).toContain('目标工程已添加');
+});
+
+it('shows indexing cancellation separately from cancelling the folder picker', async () => {
+  const { container, post } = await mountPanel();
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'cancelled', mode: 'browse',
+    message: '已取消索引，可稍后重试。' }));
+  expect(container.querySelector('.target-add-status')?.textContent).toContain('已取消索引');
+  expect(container.querySelector('.target-add-status .is-spinning')).toBeNull();
+});
+
+it('releases the retry latch when the new indexing attempt fails', async () => {
+  const { container, post, posted } = await mountPanel();
+  const repository = { repositoryId: 'failed-target', displayName: 'Camel', role: 'target' as const,
+    analysisStatus: 'failed' as const, activeRevision: null, selectedRevision: null, revisions: [], languages: [],
+    projects: [], selectedProjectId: null, summary: { status: 'missing' as const } };
+  const status = (analysisStatus: 'failed' | 'indexing') => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'ready', storage: 'seekdb', repositories: [{ ...repository, analysisStatus }] } });
+  await act(async () => status('failed'));
+  await act(async () => container.querySelector<HTMLButtonElement>('.target-add-status button')!.click());
+  await act(async () => status('indexing'));
+  await act(async () => status('failed'));
+  expect(container.querySelector('.target-add-status.is-error')).toBeNull();
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'workspace', message: '索引失败' }));
+  expect(container.querySelector('.target-add-status.is-error button')).not.toBeNull();
+  expect(posted.filter(message => message.type === 'REFRESH_REPOSITORY')).toHaveLength(1);
+  await act(async () => container.querySelector<HTMLButtonElement>('.target-add-status button')!.click());
+  await act(async () => post({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'failed', mode: 'workspace', message: '注册失败' }));
+  expect(container.querySelector('.target-add-status.is-error')?.textContent).toContain('注册失败');
+});
+
+it('forgets a stale repository when the host starts a different import', async () => {
+  const { container, post, posted } = await mountPanel();
+  const repository = (repositoryId: string, analysisStatus: 'failed' | 'indexing') => ({
+    repositoryId, displayName: repositoryId, role: 'target' as const, analysisStatus,
+    activeRevision: null, selectedRevision: null, revisions: [], languages: [], projects: [],
+    selectedProjectId: null, summary: { status: 'missing' as const },
+  });
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'error', storage: 'seekdb', repositories: [repository('old-target', 'failed')] } }));
+  await act(async () => post({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: '正在恢复目标工程导入…' }));
+  await act(async () => post({ type: 'CODE_INTELLIGENCE_STATUS', presentation: {
+    status: 'error', storage: 'seekdb', repositories: [repository('new-target', 'failed')] } }));
+  await act(async () => container.querySelector<HTMLButtonElement>('.target-add-status button')!.click());
+  expect(posted.filter(message => message.type === 'REFRESH_REPOSITORY'))
+    .toEqual([{ type: 'REFRESH_REPOSITORY', repositoryId: 'new-target' }]);
+});

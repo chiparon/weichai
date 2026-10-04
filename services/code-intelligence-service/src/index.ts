@@ -37,6 +37,7 @@ export {
   type AnalysisCoordinatorClock,
   type AnalysisCoordinatorOptions,
   type AnalysisMode,
+  type AnalysisProgress,
   type AnalysisRunResult,
   type RunAnalysisRequest,
   type SearchProjection,
@@ -147,7 +148,7 @@ export async function createCodeIntelligenceRuntime(
   }
   const languageRegistry = options.languageRegistry ?? createDefaultLanguageRegistry();
   const registry = new RepositoryRegistry(store, options.registryOptions);
-  const scanner = options.scanner ?? new RepositoryStructuralScanner({ languageRegistry });
+  const scanner = options.scanner ?? new RepositoryStructuralScanner({ languageRegistry: options.languageRegistry });
   const projection = options.projection ?? new SeekDbProjection(store);
   const lspSessionManager = options.lspSessionManager ?? new LspSessionManager();
   const javaCsharpSpecializedProvider = options.javaCsharpSpecializedProvider ?? new JavaCsharpSpecializedProvider(store);

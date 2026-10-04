@@ -8,6 +8,18 @@ import { localFetch, setModelCredentialProvider } from './local-fetch';
 afterEach(() => setModelCredentialProvider(undefined));
 
 describe('model credential boundary', () => {
+  it('keeps the saved key identity stable while authorizing only the owned runtime port', async () => {
+    const configured = 'http://127.0.0.1:8788';
+    let runtime = 'http://127.0.0.1:45678';
+    const storage = { get: vi.fn(async () => 'saved-key'), store: vi.fn(), delete: vi.fn() };
+    const provider = createModelCredentialProvider(storage, () => configured, undefined, () => runtime);
+    expect(await provider(new URL(runtime + '/v1/adapt'))).toBe('saved-key');
+    expect(storage.get).toHaveBeenCalledWith(modelCredentialId(configured));
+    expect(await provider(new URL(configured + '/v1/adapt'))).toBeUndefined();
+    runtime = 'http://127.0.0.1:45679';
+    expect(await provider(new URL('http://127.0.0.1:45678/v1/adapt'))).toBeUndefined();
+    expect(await provider(new URL(runtime + '/v1/adapt'))).toBe('saved-key');
+  });
   it('separates keys by provider and API base while snapshotting settings before async key lookup', async () => {
     const endpoint = 'http://127.0.0.1:8788';
     let settings: LlmSettings = { ...DEFAULT_LLM_SETTINGS };

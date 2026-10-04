@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config";
 
 describe("adaptation service config", () => {
+  it('accepts an OS-assigned port for extension-owned backends', () => {
+    expect(loadConfig({ ADAPTATION_PORT: '0' }).port).toBe(0);
+    expect(() => loadConfig({ ADAPTATION_PORT: '-1' })).toThrow('positive integer');
+  });
   it("loads local workflow defaults and keeps the API key server-side", () => {
     const config = loadConfig({ DEEPSEEK_API_KEY: "demo-key" });
 
@@ -89,7 +93,7 @@ describe("adaptation service config", () => {
   });
 
   it("rejects invalid ports", () => {
-    for (const port of ["0", "-1", "abc"]) {
+    for (const port of ["-1", "abc"]) {
       expect(() =>
         loadConfig({ DEEPSEEK_API_KEY: "sk-test", ADAPTATION_PORT: port }),
       ).toThrow("ADAPTATION_PORT must be a positive integer.");

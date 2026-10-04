@@ -40,15 +40,13 @@ async function translationHandoff(reply: (target: ModuleTarget, candidate: Searc
     if (message.type === 'START_ADAPT') post(reply(target, candidate));
   } });
   const container = document.createElement('div'); document.body.append(container); reactRoot = createRoot(container);
-  await act(async () => reactRoot!.render(<App initialMode="migration" />));
+  await act(async () => reactRoot!.render(<App />));
   await act(async () => post({ type: 'INIT', payload: { target, workspaceRoot: '/target',
     settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [], moduleExplorer: explorer,
     codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
-    serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' },
+    serviceStatus: { moduleSearch: 'connected', adaptation: 'connected', executionMode: 'real' },
     searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
   const button = (text: string) => [...container.querySelectorAll('button')].find(item => item.textContent?.includes(text))!;
-  await act(async () => button('任务检索').click());
-  await act(async () => button('选择历史模块候选').click());
   await act(async () => button('查找 4 个候选方案').click());
   await act(async () => button('Java limit module').click());
   await act(async () => button('准备模块翻译与回填').click());

@@ -110,7 +110,6 @@ let activeRun: ActiveMigrationRun | null = null;
 let moduleExplorerTargets = new Map<string, ModuleTarget>();
 let moduleExplorerChildren: ExplorerChildrenIndex = new Map();
 let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
-let activeTaskSearch: { requestId: string; controller: AbortController } | null = null;
 /** One-shot startup chain, created by the first explicit use of the workbench. */
 let codeIntelligenceStartup: Promise<void> | undefined;
 
@@ -147,7 +146,6 @@ export function activate(context: vscode.ExtensionContext): void {
       allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
     });
     const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure());
-    runtimeOptions.taskCandidateReranker = reranker;
     runtimeOptions.moduleCandidateReranker = reranker;
     codeIntelligence = new CodeIntelligenceHost({
       runtimeOptions,
@@ -369,8 +367,6 @@ async function configureModelKey(context: vscode.ExtensionContext, clear: boolea
 }
 
 export function deactivate(): void {
-  activeTaskSearch?.controller.abort();
-  activeTaskSearch = null;
   activeRun = null;
   invalidateModuleTranslation();
   moduleExplorerTargets = new Map();
@@ -428,7 +424,7 @@ function ensureCodeIntelligenceStarted(
     host.services.ensureStarted().catch(error => {
       output.appendLine(`[RECAST] ${errorMessage(error, '后端启动失败')}`);
       publish({ type: 'SERVICE_STATUS', status: host.services.serviceStatus });
-    }).then(() => synchronizeCodeIntelligence(host.codeIntelligence)).then(() => host.services.setRetrievalReady(true)),
+    }).then(() => synchronizeCodeIntelligence(host.codeIntelligence)).then(() => host.services.setModuleSearchReady(true)),
     host.codeIntelligence.startSemanticQueryServer({
       port: positiveEnvironmentPort(process.env.FOREXPLORE_SEMANTIC_QUERY_PORT, 8790),
       bearerToken: process.env.SEMANTIC_QUERY_PORT_TOKEN?.trim() || undefined,
@@ -438,7 +434,7 @@ function ensureCodeIntelligenceStarted(
     .then(() => undefined)
     .catch((error) => {
       output.appendLine(`[forexplore] preflight failed: ${String(error)}`);
-      host.services.setRetrievalReady(false);
+      host.services.setModuleSearchReady(false);
       codeIntelligenceStartup = undefined;
     });
   return codeIntelligenceStartup;
@@ -584,12 +580,6 @@ async function handlePanelMessage(
     case 'START_SEARCH':
       await startSearch(host, message);
       return;
-    case 'START_TASK_SEARCH':
-      await startTaskSearch(host, message);
-      return;
-    case 'CANCEL_TASK_SEARCH':
-      if (activeTaskSearch?.requestId === message.requestId) activeTaskSearch.controller.abort();
-      return;
     case 'SELECT_CANDIDATE':
       selectCandidate(message.candidateId);
       return;
@@ -633,30 +623,6 @@ async function handlePanelMessage(
     case 'OPEN_TARGET':
       await openTarget();
       return;
-  }
-}
-
-async function startTaskSearch(host: ExtensionHost, message: Extract<WebviewToHostMessage, { type: 'START_TASK_SEARCH' }>): Promise<void> {
-  activeTaskSearch?.controller.abort();
-  const run = { requestId: message.requestId, controller: new AbortController() };
-  activeTaskSearch = run;
-  const panel = TranslationPanel.current;
-  const disposed = panel?.panel.onDidDispose(() => run.controller.abort());
-  const signal = AbortSignal.any([run.controller.signal, AbortSignal.timeout(35_000)]);
-  try {
-    const packet = await host.codeIntelligence.searchTaskContext(message.requestId, message.targetScope, message.request, signal);
-    signal.throwIfAborted();
-    if (activeTaskSearch === run && TranslationPanel.current === panel) {
-      workspaceTranslation.remember(packet);
-      panel?.post({ type: 'TASK_SEARCH_RESULT', requestId: message.requestId, packet });
-    }
-  } catch (error) {
-    if (!run.controller.signal.aborted && activeTaskSearch === run && TranslationPanel.current === panel) {
-      panel?.post({ type: 'TASK_SEARCH_ERROR', requestId: message.requestId, message: errorMessage(error, '任务检索失败') });
-    }
-  } finally {
-    disposed?.dispose();
-    if (activeTaskSearch === run) activeTaskSearch = null;
   }
 }
 
@@ -874,7 +840,7 @@ async function selectWorkspaceTarget(targetId: string): Promise<void> {
     if (!target) throw new Error('该目标不属于当前 Host 静态分析快照。');
     if (!activeCodeIntelligenceHost) throw new Error('索引尚未初始化。');
     const selected = (await activeCodeIntelligenceHost.explorerData()).find((item) => item.selectedTarget);
-    const workspaceFolder = vscode.workspace.workspaceFolders?.find((folder) =>
+    const workspaceFolder = selectedTargetWorkspaceFolders().find((folder) =>
       path.resolve(folder.uri.fsPath).toLowerCase() === path.resolve(selected?.repository.localPath ?? '').toLowerCase());
     if (!workspaceFolder) throw new Error('所选工程不属于已打开的 VS Code 工作区。');
     const canonicalPath = canonicalWorkspacePath(workspaceFolder.uri.fsPath, target.path);

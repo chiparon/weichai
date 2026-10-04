@@ -53,14 +53,12 @@ it('takes an explicitly selected module through preparation, scoped start, diff 
         : { run: message.action === 'rollback' ? { ...run, status: 'rolled-back' } : run }) });
   } });
   const container = document.createElement('div'); document.body.append(container); reactRoot = createRoot(container);
-  await act(async () => reactRoot!.render(<App initialMode="migration" />));
+  await act(async () => reactRoot!.render(<App />));
   await act(async () => post({ type: 'INIT', payload: { target, workspaceRoot: '/target',
     settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [], moduleExplorer: explorer,
     codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
-    serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' }, searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
+    serviceStatus: { moduleSearch: 'connected', adaptation: 'connected', executionMode: 'real' }, searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
   const button = (text: string) => [...container.querySelectorAll('button')].find(item => item.textContent?.includes(text))!;
-  await act(async () => button('任务检索').click());
-  await act(async () => button('选择历史模块候选').click());
   expect(container.querySelector('.workspace-translation')).toBeNull();
   await act(async () => button('查找 4 个候选方案').click());
   expect(sent.some(item => item.type === 'START_ADAPT')).toBe(false);
@@ -83,38 +81,6 @@ it('takes an explicitly selected module through preparation, scoped start, diff 
   expect(button('查找 4 个候选方案')).toBeDefined();
   await act(async () => post({ type: 'TARGET_CLEARED' }));
   expect(container.querySelector('.workspace-translation')).toBeNull();
-});
-
-it('enables subsystem search from complete projected metadata beyond the first tree page', async () => {
-  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-  window.acquireVsCodeApi = () => ({ getState: () => null, setState: () => {}, postMessage: () => {} });
-  const explorer: ModuleExplorerPresentation = { generatedAt: '', history: [], target: {
-    id: 'target', repositoryId: 'target', projectId: 'project', revision: 'revision', mode: 'target', name: 'Target', rootLabel: '.',
-    stats: { modules: 81, files: 81, types: 0, methods: 0, implemented: 0, unimplemented: 0, unknown: 0, dependencies: 0 },
-    summary: { exists: false, path: '.forexplore/module-summary.json' }, rootTotal: 81,
-    tree: Array.from({ length: 80 }, (_, index) => ({ id: `module:${index}`, name: `Module ${index}`, kind: 'module', children: [] })),
-    analysis: { repositoryId: 'target', analysisRevision: 'revision', projectId: 'project', analysisProfile: 'test', updatedAt: '',
-      state: 'ready', projection: 'ready', proposal: { summary: 'Published hierarchy' },
-      hierarchy: { nodeCount: 81, rootCount: 81, moduleCount: 80, subsystemCount: 1, leafCount: 81,
-        splitCount: 0, deferredCount: 0, unknownCount: 0, maxDepth: 0 } },
-  } };
-  const container = document.createElement('div'); document.body.append(container); reactRoot = createRoot(container);
-  await act(async () => reactRoot!.render(<App />));
-  const post = (message: HostToWebviewMessage) => window.dispatchEvent(new MessageEvent('message', { data: message }));
-  await act(async () => post({ type: 'INIT', payload: { target: null, workspaceRoot: '',
-    settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [], moduleExplorer: explorer,
-    codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
-    serviceStatus: { retrieval: 'connected', adaptation: 'unconfigured', executionMode: 'real' },
-    searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
-  const option = () => container.querySelector<HTMLOptionElement>('[aria-label="检索粒度"] option[value="subsystem"]')!;
-  expect(option().disabled).toBe(false);
-  explorer.target.analysis!.projection = 'pending';
-  await act(async () => post({ type: 'MODULE_EXPLORER', explorer: { ...explorer, target: { ...explorer.target } } }));
-  expect(option().disabled).toBe(true);
-  explorer.target.analysis!.projection = 'ready';
-  explorer.target.analysis!.hierarchy!.subsystemCount = 0;
-  await act(async () => post({ type: 'MODULE_EXPLORER', explorer: { ...explorer, target: { ...explorer.target } } }));
-  expect(option().disabled).toBe(true);
 });
 
 it('opens without a method, saves two history paths, displays durable summaries and switches project scope', async () => {
@@ -171,10 +137,6 @@ it('opens without a method, saves two history paths, displays durable summaries 
     expect(isWebviewToHostMessage(message)).toBe(true);
     if (message.type === 'LOAD_MODULE_CHILDREN') post({ type: 'MODULE_CHILDREN', requestId: message.requestId,
       page: readExplorerChildren(moduleChildren, message.request) });
-    if (message.type === 'START_TASK_SEARCH') pending.push((async () => {
-      const packet = await host.searchTaskContext(message.requestId, message.targetScope, message.request);
-      post({ type: 'TASK_SEARCH_RESULT', requestId: message.requestId, packet });
-    })());
     if (message.type === 'SAVE_SETTINGS') pending.push((async () => {
       historyPaths = message.settings.repositoryPaths;
       post({ type: 'SETTINGS_UPDATED', settings: message.settings });
@@ -191,34 +153,16 @@ it('opens without a method, saves two history paths, displays durable summaries 
   await act(async () => post({ type: 'INIT', payload: {
     target: null, workspaceRoot: paths[2]!, settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [],
     codeIntelligence: await host.presentation(), moduleExplorer: await explorerPresentation(),
-    serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' },
+    serviceStatus: { moduleSearch: 'connected', adaptation: 'connected', executionMode: 'real' },
     searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek',
   } }));
   expect(container.textContent).toContain('Stored summary: target');
   expect(container.textContent).not.toContain('WRONG DISK SUMMARY');
-  expect(container.querySelector<HTMLOptionElement>('[aria-label="检索粒度"] option[value="function"]')?.disabled).toBe(false);
-  expect(container.querySelector<HTMLOptionElement>('[aria-label="检索粒度"] option[value="class"]')?.disabled).toBe(true);
   expect(container.querySelectorAll('[role="treeitem"]')).toHaveLength(1);
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开 Agent module target"]')!.click());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="展开 index.ts"]')!.click());
   expect(container.querySelector('.module-tree')?.textContent).toContain('run');
   expect(sent.filter((message) => message.type === 'LOAD_MODULE_CHILDREN')).toHaveLength(2);
-  await act(async () => {
-    const input = container.querySelector<HTMLTextAreaElement>('#task-query')!;
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'run');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await act(async () => {
-    const select = container.querySelector<HTMLSelectElement>('[aria-label="检索粒度"]')!;
-    select.value = 'function';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  await act(async () => {
-    container.querySelector('.task-search form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    await Promise.all(pending);
-  });
-  expect(sent.some((message) => message.type === 'START_TASK_SEARCH' && message.request.granularity === 'function')).toBe(true);
-  expect(container.querySelector('.context-detail')?.textContent).toContain('function run() { return 1; }');
   await act(async () => (container.querySelector('.header-settings-button') as HTMLButtonElement).click());
   const clickText = async (text: string) => act(async () => {
     const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes(text));

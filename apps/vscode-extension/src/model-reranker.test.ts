@@ -8,7 +8,7 @@ import { setModelCredentialProvider } from './local-fetch';
 
 afterEach(() => setModelCredentialProvider(undefined));
 const candidates = [0, 1].map(id => ({ id: String(id), name: 'feature', granularity: 'function', relativePath: 'a.py', preview: 'def feature(): pass' }));
-it('forwards fresh panel keys and model settings to the backend for task and module reranking', async () => {
+it('forwards fresh panel keys and model settings for module reranking', async () => {
   const requests: any[] = [];
   const server = createServer((req, res) => {
     requests.push(req.headers); req.resume();

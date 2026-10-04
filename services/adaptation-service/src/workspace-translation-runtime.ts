@@ -4,6 +4,7 @@ import type {
 } from "@forexplore/contracts";
 import type { DeepSeekToolMessage } from "./deepseek-client";
 import { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";
+import { applyWorkspaceEdits, parseWorkspaceEdits } from "./workspace-translation-edits";
 import { TranslationWorkspaceFiles, maxWorkspaceFileChars } from "./workspace-translation-files";
 import type { WorkspaceEvidencePort } from "./workspace-evidence-port";
 import {
@@ -395,6 +396,61 @@ export class WorkspaceTranslationRuntime {
         evidenceQueriesRemaining: this.evidenceBudget ? Math.max(0, this.evidenceBudget.maxQueries - (run.evidenceQueries?.length ?? 0)) : 0,
       }) },
     ];
+    /**
+     * The single write path for a whole-file write and for an anchored edit: plan
+     * scope, read hash, change record, step invalidation and the verification reset
+     * must hold identically however the new content was produced. The producer runs
+     * only after those checks, so an edit can never report whether text exists in a
+     * file this task may not read.
+     */
+    const applyWrite = (
+      path: unknown,
+      expectedHash: unknown,
+      produce: (before: string | null) => unknown,
+      logLine: (path: string) => string,
+    ): { path: string; hash: string | null } => {
+      if (typeof path !== "string" || !run.request.writeFiles.includes(path) ||
+        !run.plan?.steps.some((step) => step.files.includes(path))) throw new Error("File is outside the implementation plan.");
+      if (!readHashes.has(path) || expectedHash !== readHashes.get(path)) throw new Error("Read the file before writing and supply its hash.");
+      const beforeWrite = this.files.read(path);
+      if (hash(beforeWrite) !== expectedHash) throw new Error(`File changed since read: ${path}`);
+      const content = produce(beforeWrite);
+      if (typeof content !== "string" || content.length > maxWorkspaceFileChars) throw new Error("Invalid file content.");
+      let change = run.changes.find((item) => item.path === path);
+      if (change && beforeWrite !== (change.applied ? change.after : change.before)) throw new Error(`File changed outside this task: ${path}`);
+      const previous = change ? structuredClone(change) : undefined;
+      if (!change) {
+        change = { path, before: beforeWrite, after: content, applied: false };
+        run.changes.push(change);
+      } else {
+        change.after = content;
+        change.applied = false;
+      }
+      change.pendingBefore = beforeWrite;
+      successfulSnapshot = undefined;
+      verifiedSnapshot = undefined;
+      run.acceptance = "compilation-only";
+      // A shared-file repair invalidates its steps and every dependent step.
+      const invalid = new Set(run.plan!.steps.filter((step) => step.files.includes(path)).map((step) => step.id));
+      for (const step of run.plan!.steps) if (step.dependsOn.some((id) => invalid.has(id))) invalid.add(step.id);
+      run.completedSteps = run.completedSteps.filter((id) => !invalid.has(id));
+      this.save(run);
+      try { this.files.write(path, beforeWrite, content); }
+      catch (error) {
+        if (previous) {
+          delete change.pendingBefore;
+          Object.assign(change, previous);
+        }
+        else run.changes = run.changes.filter((item) => item !== change);
+        this.save(run);
+        throw error;
+      }
+      change.applied = true;
+      delete change.pendingBefore;
+      readHashes.delete(path);
+      log(logLine(path));
+      return { path, hash: hash(content) };
+    };
     let messages = makeMessages();
     for (let turn = 0; turn < this.maxTurns; turn++) {
       signal.throwIfAborted();
@@ -460,47 +516,17 @@ export class WorkspaceTranslationRuntime {
               break;
             }
             case "write_file": {
+              result = applyWrite(args.path, args.expectedHash, () => args.content, (path) => `Translator 写入文件：${path}`);
+              break;
+            }
+            case "edit_file": {
               const path = args.path;
-              if (typeof path !== "string" || !run.request.writeFiles.includes(path) ||
-                !run.plan?.steps.some((step) => step.files.includes(path))) throw new Error("File is outside the implementation plan.");
-              if (typeof args.content !== "string" || args.content.length > maxWorkspaceFileChars) throw new Error("Invalid file content.");
-              if (!readHashes.has(path) || args.expectedHash !== readHashes.get(path)) throw new Error("Read the file before writing and supply its hash.");
-              const beforeWrite = this.files.read(path);
-              if (hash(beforeWrite) !== args.expectedHash) throw new Error(`File changed since read: ${path}`);
-              let change = run.changes.find((item) => item.path === path);
-              if (change && beforeWrite !== (change.applied ? change.after : change.before)) throw new Error(`File changed outside this task: ${path}`);
-              const previous = change ? structuredClone(change) : undefined;
-              if (!change) {
-                change = { path, before: beforeWrite, after: args.content, applied: false };
-                run.changes.push(change);
-              } else {
-                change.after = args.content;
-                change.applied = false;
-              }
-              change.pendingBefore = beforeWrite;
-              successfulSnapshot = undefined;
-              verifiedSnapshot = undefined;
-              run.acceptance = "compilation-only";
-              // A shared-file repair invalidates its steps and every dependent step.
-              const invalid = new Set(run.plan!.steps.filter((step) => step.files.includes(path)).map((step) => step.id));
-              for (const step of run.plan!.steps) if (step.dependsOn.some((id) => invalid.has(id))) invalid.add(step.id);
-              run.completedSteps = run.completedSteps.filter((id) => !invalid.has(id));
-              this.save(run);
-              try { this.files.write(path, beforeWrite, args.content); }
-              catch (error) {
-                if (previous) {
-                  delete change.pendingBefore;
-                  Object.assign(change, previous);
-                }
-                else run.changes = run.changes.filter((item) => item !== change);
-                this.save(run);
-                throw error;
-              }
-              change.applied = true;
-              delete change.pendingBefore;
-              readHashes.delete(path);
-              log(`Translator 写入文件：${path}`);
-              result = { path, hash: hash(args.content) };
+              if (typeof path !== "string") throw new Error("File is outside the implementation plan.");
+              const edits = parseWorkspaceEdits(args.edits);
+              result = applyWrite(path, args.expectedHash, (before) => {
+                if (before === null) throw new Error(`edit_file needs an existing file: ${path}. Use write_file to create it.`);
+                return applyWorkspaceEdits(before, edits);
+              }, (target) => `Translator 局部修改文件：${target}（${edits.length} 处）`);
               break;
             }
             case "complete_step": {

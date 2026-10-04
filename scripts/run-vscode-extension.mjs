@@ -4,7 +4,7 @@
  * Cross-platform development launcher for the VS Code extension.
  *
  * This owns the same pieces as the former PowerShell entry point:
- * development defaults, SeekDB, local embedding/reranking, retrieval and
+ * development defaults, SeekDB, local embedding/reranking and
  * adaptation services, the extension build, and the Extension Development
  * Host. Child services are detached and write to files so the launcher does
  * not depend on a platform-specific terminal window implementation.
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = path.join(repoRoot, 'apps', 'vscode-extension');
-const composeFile = path.join(repoRoot, 'services', 'retrieval-service', 'docker-compose.yml');
+const composeFile = path.join(repoRoot, 'services', 'code-intelligence-service', 'infra', 'docker-compose.yml');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const vscodeCommand = process.env.FOREXPLORE_VSCODE_COMMAND?.trim() || 'code';
 const logDir = process.env.RECAST_EXTENSION_LOG_DIR?.trim() || path.join(os.tmpdir(), 'recast-extension');
@@ -31,7 +31,7 @@ function usage() {
 
 Options:
   --skip-seek-db       Do not run docker compose for SeekDB.
-  --skip-services      Do not start retrieval or adaptation services.
+  --skip-services      Do not start local model or adaptation services.
   --folder <path>      Folder to open in the Extension Development Host.
   --wait-services      Open the host only after every dependency reports ready.
   --help               Show this help.
@@ -152,6 +152,10 @@ function configureEnvironment() {
   setDefault('CODE_INTELLIGENCE_EMBEDDING_QUERY_PREFIX', 'query: ');
   setDefault('CODE_INTELLIGENCE_EMBEDDING_DOCUMENT_PREFIX', 'passage: ');
   setDefault('CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION', '384');
+  // Device and precision change the vectors, so the workbench must declare the same
+  // embedding variant as the offline ingestion, or the two would key embedding reuse
+  // differently and mix providers inside one index.
+  setDefault('CODE_INTELLIGENCE_EMBEDDING_VARIANT', 'dml-fp16');
 
   if (process.env.ADAPTATION_PROJECT_ROOT?.trim()) {
     process.env.ADAPTATION_PROJECT_ROOT = path.resolve(process.env.ADAPTATION_PROJECT_ROOT);
@@ -268,18 +272,7 @@ async function startServices(options) {
 
   const servicesStatus = runSync(npmCommand, ['run', 'services:up']);
   if (servicesStatus !== 0) {
-    console.warn('Some dependency services are unavailable; retrieval may report fetch failures.');
-  }
-
-  if (await listening(8787)) {
-    console.log('Retrieval service is already listening on http://127.0.0.1:8787.');
-  } else {
-    const log = startDetached('retrieval', ['run', 'dev:retrieval']);
-    if (await waitForPort(8787, 90, 'Retrieval service')) {
-      console.log('Retrieval service is ready at http://127.0.0.1:8787.');
-    } else {
-      console.warn(`Start log: ${log}`);
-    }
+    console.warn('Some local model services are unavailable; module search may report fetch failures.');
   }
 
   if (await listening(8788)) {
@@ -310,18 +303,18 @@ async function startServices(options) {
 async function startSeekDb(options) {
   if (options.skipSeekDb) return true;
   if (!existsSync(composeFile)) {
-    console.warn(`SeekDB compose file does not exist: ${composeFile}. Retrieval will report fetch failures.`);
+    console.warn(`SeekDB compose file does not exist: ${composeFile}. Code intelligence will report fetch failures.`);
     return false;
   }
   try {
     ensureCommand('docker', ['--version']);
   } catch (error) {
-    console.warn(`${error.message} SeekDB stays down; retrieval will report fetch failures.`);
+    console.warn(`${error.message} SeekDB stays down; code intelligence will report fetch failures.`);
     return false;
   }
   const status = runSync('docker', ['compose', '-f', composeFile, 'up', '-d']);
   if (status !== 0) {
-    console.warn(`SeekDB startup failed with exit code ${status}. Retrieval will report fetch failures.`);
+    console.warn(`SeekDB startup failed with exit code ${status}. Code intelligence will report fetch failures.`);
     return false;
   }
   return true;

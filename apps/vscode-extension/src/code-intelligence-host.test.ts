@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ContextPacket, RepositoryStaticAnalysis, TaskRetrievalRequest } from '@forexplore/contracts';
+import type { RepositoryStaticAnalysis } from '@forexplore/contracts';
 import {
   CodeIntelligenceHost,
   codeIntelligenceRuntimeOptionsFromEnvironment,
@@ -684,39 +684,6 @@ it('scopes module-first retrieval to this window historical repositories', async
   expect(search).toHaveBeenCalledWith(expect.objectContaining({ repositoryIds: historicalIds }), undefined);
 });
 
-it('retrieves the selected historical snapshot and visible references without waiting for module analysis', async () => {
-  const target = await temporaryRepository('task-target');
-  const history = await temporaryRepository('task-history');
-  const hidden = await temporaryRepository('task-hidden');
-  const runtime = createRuntime();
-  const response = { packetId: 'host-packet' } as ContextPacket;
-  const search = vi.fn(async (_request: TaskRetrievalRequest, _signal?: AbortSignal) => response);
-  runtime.taskRetrieval = { search };
-  const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
-  const repositories = [{ localPath: target, role: 'target' as const }, { localPath: history, role: 'history' as const }];
-  await host.synchronize({ repositories });
-  const oldScope = await host.activeScopeForPath(target);
-  await host.synchronize({ repositories });
-  await runtime.registry.register({ repositoryId: 'hidden-repository', localPath: hidden, role: 'history' });
-  const fullRead = vi.spyOn(runtime.store, 'getStructuralIndex');
-  const wait = vi.spyOn(host, 'waitForProjects');
-  const signal = new AbortController().signal;
-  const result = await host.searchTaskContext('request-1', oldScope, {
-    requirement: '  限制上传大小  ', scope: 'all', granularity: 'function',
-  }, signal);
-  expect(result).toBe(response);
-  expect(search).toHaveBeenCalledWith(expect.objectContaining({
-    requestId: 'request-1', requirement: '限制上传大小', granularity: 'function',
-    budget: { maxLatencyMs: 30_000 },
-    scopes: [{ ...oldScope, role: 'target' }, { ...await host.activeScopeForPath(history), role: 'reference' }],
-  }), signal);
-  expect(fullRead).not.toHaveBeenCalled();
-  expect(wait).not.toHaveBeenCalled();
-  fullRead.mockRestore();
-  wait.mockRestore();
-  host.dispose();
-});
-
 it('pins all nine visible history repositories for module evidence and rejects hidden candidates', async () => {
   const histories = await Promise.all(Array.from({ length: 9 }, (_, i) => temporaryRepository(`evidence-${i}`)));
   const runtime = createRuntime();
@@ -728,45 +695,5 @@ it('pins all nine visible history repositories for module evidence and rejects h
     expect(scopes).toHaveLength(9); expect(scopes[0]).toEqual(selected);
     await expect(host.historyEvidenceScopes({ ...selected, repositoryId: 'hidden' })).rejects.toThrow('参考范围');
     await expect(host.historyEvidenceScopes({ ...selected, analysisRevision: 'missing' })).rejects.toThrow('不可查询');
-  } finally { host.dispose(); }
-});
-
-it('rejects invisible repositories and mismatched projects before starting task retrieval', async () => {
-  const target = await temporaryRepository('task-scope');
-  const runtime = createRuntime();
-  const search = vi.fn(async () => ({ packetId: 'unused' }) as ContextPacket);
-  runtime.taskRetrieval = { search };
-  const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
-  await host.synchronize({ repositories: [{ localPath: target, role: 'target' }] });
-  const scope = await host.activeScopeForPath(target);
-  const request = { requirement: '限制上传大小', scope: 'target' as const, granularity: 'function' as const };
-  await expect(host.searchTaskContext('request-1', { ...scope, repositoryId: 'not-visible' }, request)).rejects.toThrow('检索范围');
-  await expect(host.searchTaskContext('request-2', { ...scope, projectId: 'missing-project' }, request)).rejects.toThrow('不属于');
-  expect(search).not.toHaveBeenCalled();
-  host.dispose();
-});
-
-it('limits the local task HTTP port to visible ready or superseded repository revisions', async () => {
-  const target = await temporaryRepository('task-http');
-  const runtime = createRuntime();
-  const search = vi.fn(async () => ({ packetId: 'packet-1' }) as ContextPacket);
-  runtime.taskRetrieval = { search };
-  let taskPort: CodeIntelligenceRuntime['taskRetrieval'];
-  const host = new CodeIntelligenceHost({ runtimeFactory: async () => runtime, semanticQueryServerFactory: (options) => {
-    taskPort = options.taskRetrieval;
-    const server = createServer();
-    const listen = server.listen.bind(server);
-    server.listen = ((_port: number, address: string, callback: () => void) => listen(0, address, callback)) as typeof server.listen;
-    return server;
-  } });
-  try {
-    await host.synchronize({ repositories: [{ localPath: target, role: 'target' }] });
-    const scope = await host.activeScopeForPath(target);
-    await host.startSemanticQueryServer({ port: 8790 });
-    const request = { requestId: 'request-1', requirement: 'quote', scopes: [scope], budget: { maxTokens: 4000 } };
-    expect(await taskPort!.search(request)).toMatchObject({ packetId: 'packet-1' });
-    await expect(taskPort!.search({ ...request, scopes: [{ ...scope, repositoryId: 'not-visible' }] })).rejects.toThrow('outside this window');
-    await expect(taskPort!.search({ ...request, scopes: [{ ...scope, analysisRevision: 'missing-revision' }] })).rejects.toThrow('not available');
-    expect(search).toHaveBeenCalledTimes(1);
   } finally { host.dispose(); }
 });

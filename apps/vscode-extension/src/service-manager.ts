@@ -20,7 +20,7 @@ export interface RuntimePorts {
  */
 export class ServiceManager implements vscode.Disposable {
   private status: ServiceStatus = {
-    retrieval: 'unconfigured',
+    moduleSearch: 'unconfigured',
     adaptation: 'unconfigured',
     executionMode: 'real',
   };
@@ -30,8 +30,8 @@ export class ServiceManager implements vscode.Disposable {
   get serviceStatus(): ServiceStatus {
     return { ...this.status };
   }
-  setRetrievalReady(ready: boolean): void {
-    this.status = { ...this.status, retrieval: ready ? 'connected' : 'error' };
+  setModuleSearchReady(ready: boolean): void {
+    this.status = { ...this.status, moduleSearch: ready ? 'connected' : 'error' };
   }
 
   /** Display-only provider labels that do not create or replace any port. */
@@ -47,13 +47,13 @@ export class ServiceManager implements vscode.Disposable {
     const settings = loadSettings();
     const adaptation = await checkServiceHealth(settings.adaptationApiUrl, localFetch);
     this.status = {
-      retrieval: this.status.retrieval,
+      moduleSearch: this.status.moduleSearch,
       adaptation: adaptation.healthy ? 'connected' : 'error',
       executionMode: 'real',
       message: !adaptation.healthy ? `翻译：${adaptation.detail}` : undefined,
     };
     this.output.appendLine(
-      `[forexplore] runtime refreshed: retrieval=${this.status.retrieval}, adaptation=${this.status.adaptation}`,
+      `[forexplore] runtime refreshed: moduleSearch=${this.status.moduleSearch}, adaptation=${this.status.adaptation}`,
     );
     return this.serviceStatus;
   }

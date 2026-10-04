@@ -92,12 +92,12 @@ public sealed record HealthCheckResult(string Component, bool Healthy, TimeSpan 
 
 public sealed record ServiceHealthReport(DateTimeOffset CheckedAt, IReadOnlyList<HealthCheckResult> Checks)
 {
-    public bool Healthy => Checks.All(x => x.Healthy);
+    public bool Healthy => throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent.");
 }
 
 public sealed record DispatchBatch(string TenantId, IReadOnlyList<EventEnvelope> Events, string? ContinuationToken)
 {
-    public bool IsEmpty => Events.Count == 0;
+    public bool IsEmpty => throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent.");
 }
 
 public sealed record OrderCommand(string TenantId, string ActorId, string OrderId, string CommandId, string Operation);

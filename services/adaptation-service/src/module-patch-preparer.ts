@@ -32,7 +32,7 @@ export { validateWorkspaceCompileCommand } from "./workspace-compiler";
  * evidence, and then restores the worktree so only patch evidence can reach the
  * combined wave transaction.
  *
- * Scope of this version: one module, serial execution, and no retrieval port.
+ * Scope of this version: one module, serial execution, and no search port.
  * The module's own source files are read live from the worktree by the agents;
  * `context` carries the module inventory and the plan constraints only.
  */

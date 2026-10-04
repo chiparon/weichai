@@ -114,7 +114,7 @@ npm install
 npm run dev:adaptation
 ```
 
-In another terminal, start retrieval and the VS Code extension:
+In another terminal, start the local model services and the VS Code extension:
 
 ```bash
 npm run dev:extension
@@ -133,7 +133,7 @@ performs any local write.
 
 ## In-place workspace translation
 
-The independent workspace workflow takes a development Spec and retrieved Context
+The independent workspace workflow takes a development Spec and module evidence Context
 (source, interfaces, call chains, configuration, dependencies, summaries). Analyzer
 produces file/symbol mappings and ordered dependency steps. Translator reads current
 workspace files, writes multiple files, compiles the configured project and repairs
@@ -199,28 +199,9 @@ terminal status is reached; dropping the start HTTP connection does not cancel i
 changes, and the record explicitly reports `acceptance: "compilation-only"`.
 
 The same runtime can be embedded through the exported `WorkspaceTranslationRuntime`
-and `createWorkspaceTranslationModelClient` APIs. This backend does not yet connect
-the new flow to the module picker or SeekDB task persistence.
-
-## Python POC
-
-```powershell
-# 5 hardcoded test cases
-pip install openai
-$env:DEEPSEEK_API_KEY = "sk-..."
-python poc/translate_poc.py
-
-# End-to-end: search API → translate → compile
-python poc/e2e_pipeline.py
-```
-
-## Pipeline position
-
-```
-code-indexer (module 1) → retrieval-service (module 2) → adaptation-service (module 3)
-                                                              ↑
-                                              /v1/search → candidates → DeepSeek → Java
-```
+and `createWorkspaceTranslationModelClient` APIs. The VS Code host supplies the
+selected target module, reference module and immutable evidence directly; there is
+the old standalone retrieval persistence and HTTP service are no longer part of the workflow.
 
 ## Architecture
 
@@ -235,8 +216,6 @@ code-indexer (module 1) → retrieval-service (module 2) → adaptation-service 
 | `src/model-config.ts` | Isolated temporary model provider configuration |
 | `src/adaptation-adapter.ts` | Main adapter, orchestrates context → analyze → translate → compile → verify → repair |
 | `src/backfill-adapter.ts` | Backfill results into corpus |
-| `poc/translate_poc.py` | Standalone POC with 5 test cases |
-| `poc/e2e_pipeline.py` | End-to-end: calls retrieval-service /v1/search |
 
 ## Analyzer boundary
 
@@ -247,7 +226,7 @@ inside the context are project-relative and the collector rejects traversal
 outside `projectRoot`.
 
 `new AnalyzerAgent({ apiKey }).analyze(request)` makes a separate DeepSeek call
-with target facts, the user requirement, and one retrieval candidate. The
+with target facts, the user requirement, and one selected reference candidate. The
 prompt requests `AnalysisReport` schema version `1.0`, but runtime treats it as
 advisory context: missing sections receive defaults, unknown terminology passes
 through, and non-JSON narrative output is preserved instead of blocking. Only an

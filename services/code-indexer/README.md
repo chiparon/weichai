@@ -22,7 +22,7 @@ const documents = await extractCorpus('./fixtures/code-corpus');
 ## Pipeline position
 
 ```
-code-indexer (module 1) → retrieval-service (module 2) → adaptation-service (module 3)
+code-indexer → code-intelligence-service（模块索引与候选检索）→ adaptation-service
 ```
 
-Extracts symbols from source repositories, outputs `IndexedCodeDocument[]` that feeds into the retrieval-service SeekDB index.
+Extracts symbols from source repositories and outputs `IndexedCodeDocument[]` for the versioned code-intelligence index.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ContextPacket, WorkspaceTranslationRun } from '@forexplore/contracts';
+import type { WorkspaceTranslationRun } from '@forexplore/contracts';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
 
 const workspaceRoot = process.cwd();
@@ -32,17 +32,6 @@ function host(): WorkspaceTranslationHost {
   return new WorkspaceTranslationHost(() => ({ url: 'http://127.0.0.1:8790', token, profile }));
 }
 
-function packetWithEvidence(): ContextPacket {
-  return {
-    packetId: 'packet-1', requirement: '任务需求', status: 'partial',
-    evidence: [{ evidenceId: 'source-a', kind: 'implementation', role: 'implementation', content: 'retrieved', relativePath: 'a.java',
-      repositoryId: 'repo-history', analysisRevision: 'analysis-1', sourceRange: { startLine: 1, startColumn: 1, endLine: 2, endColumn: 1 },
-      fileHash: 'h', contentHash: 'c', truncated: false }],
-    results: [], relations: [], snapshots: [], gaps: [], markdown: '# context',
-    routing: { requestedGranularity: 'auto', resolvedGranularities: ['function'], source: 'user', reason: '' },
-    usage: { tokenizer: 'cl100k_base', tokens: 1, maxTokens: null, characters: 1, files: 0, sourceLines: 0, latencyMs: 1 },
-  } as unknown as ContextPacket;
-}
 
 afterEach(() => {
   requests.length = 0;
@@ -61,13 +50,13 @@ describe('workspace translation host', () => {
     expect(response.profile?.profileId).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('requires task evidence when no module scope is active', async () => {
+  it('requires a selected module scope before starting', async () => {
     stubServer();
     const instance = host();
     const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-2', action: 'describe' });
     const profileId = described.type === 'WORKSPACE_TRANSLATION_RESULT' ? described.profile!.profileId : '';
     const refused = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-1', action: 'start', profileId });
-    expect(refused).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR' });
+    expect(refused).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR', message: expect.stringContaining('模块翻译缺少可用上下文') });
     const forged = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-2', action: 'start', profileId: 'deadbeef' });
     expect(forged).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR', message: expect.stringContaining('翻译配置已变化') });
   });
@@ -112,41 +101,6 @@ describe('workspace translation host', () => {
     expect(posted!.body!.spec).toContain('# 模块级翻译任务：Multipart 流解析');
   });
 
-  it('merges selected task evidence with the module context and rejects a stale scope id', async () => {
-    stubServer();
-    const instance = host();
-    const scopeId = instance.rememberModuleScope({
-      label: '模块 Multipart 流解析',
-      spec: '# 模块级翻译任务：Multipart 流解析',
-      profile: { workspaceRoot, sourceLanguage: 'Java', targetLanguage: 'Java',
-        workspaceFiles: ['src/main/java/a/MultipartStream.java'], writeFiles: ['src/main/java/a/MultipartStream.java'] },
-      context: [{ id: 'module-target', kind: 'summary', content: '目标模块：Multipart 流解析' }],
-    });
-    const packet = packetWithEvidence();
-    packet.snapshots = [{ repositoryId: 'repo-history', analysisRevision: 'analysis-1', role: 'reference', repositoryName: 'History', analysisHash: 'hash' }];
-    instance.remember(packet);
-
-    const stale = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-4', action: 'start',
-      profileId: 'f'.repeat(64), moduleScopeId: 'a'.repeat(64) });
-    expect(stale).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR', message: expect.stringContaining('模块翻译范围已变化') });
-
-    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-4', action: 'describe', moduleScopeId: scopeId });
-    if (described.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
-    const started = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-5', action: 'start',
-      profileId: described.profile!.profileId, moduleScopeId: scopeId,
-      packetId: 'packet-1', evidenceIds: ['source-a'] });
-    expect(started.type).toBe('WORKSPACE_TRANSLATION_RESULT');
-    const posted = requests.filter((request) => request.method === 'POST' && request.url.endsWith('/v1/workspace-translations')).at(-1);
-    expect(posted!.body!.context.map((item: { id: string }) => item.id)).toEqual(['module-target', 'source-a', 'packet-1:provenance']);
-    expect(posted!.body!.spec).toContain('补充需求：任务需求');
-    expect(posted!.body!.evidenceScopes).toEqual([{ repositoryId: 'repo-history', analysisRevision: 'analysis-1' }]);
-
-    instance.clearModuleScope();
-    expect(instance.activeModuleScopeId).toBeUndefined();
-    const afterClear = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-6', action: 'start',
-      profileId: described.profile!.profileId });
-    expect(afterClear).toMatchObject({ type: 'WORKSPACE_TRANSLATION_ERROR', message: expect.stringContaining('翻译配置已变化') });
-  });
 });
 
 async function describeStaticProfileId(): Promise<string> {

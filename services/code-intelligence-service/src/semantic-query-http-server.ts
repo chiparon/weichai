@@ -5,8 +5,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
-import type { SemanticQueryPort, TaskRetrievalPort } from '@forexplore/workflow-core';
-import { validateTaskRetrievalRequest } from './task-retrieval.js';
+import type { SemanticQueryPort } from '@forexplore/workflow-core';
 import { SemanticQueryArgumentError } from './semantic-query-service.js';
 
 const maxBodyBytes = 256 * 1024;
@@ -27,7 +26,6 @@ const operations = new Set<keyof SemanticQueryPort>([
 export interface SemanticQueryHttpServerOptions {
   /** Host-owned read-only query port; this transport owns neither index nor LSP. */
   queryPort: SemanticQueryPort;
-  taskRetrieval?: TaskRetrievalPort;
   /** Required for non-loopback listening; kept outside Agent-visible payloads. */
   bearerToken?: string;
 }
@@ -90,7 +88,7 @@ function operationFor(url: string | undefined): keyof SemanticQueryPort | undefi
 /**
  * Minimal localhost-friendly transport used when the standalone MCP process
  * must proxy a host-owned SemanticQueryPort. It deliberately exposes only
- * the eleven read-only operations and an optional task-context query, with no
+ * the eleven read-only operations, with no
  * repository registration/indexing route or filesystem/database credentials.
  */
 export function createSemanticQueryHttpServer(options: SemanticQueryHttpServerOptions): Server {
@@ -102,19 +100,13 @@ export function createSemanticQueryHttpServer(options: SemanticQueryHttpServerOp
     try {
       if (request.method !== 'POST') throw new HttpError(405, 'Only POST is supported.');
       if (!authorized(request, options.bearerToken)) throw new HttpError(401, 'Unauthorized.');
-      const taskSearch = new URL(request.url ?? '/', 'http://semantic-query.local').pathname === '/v1/task-search';
       const operation = operationFor(request.url);
-      if (!operation && (!taskSearch || !options.taskRetrieval)) throw new HttpError(404, 'Unknown semantic query operation.');
+      if (!operation) throw new HttpError(404, 'Unknown semantic query operation.');
       const body = await readJson(request);
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]);
       let result: unknown;
-      if (taskSearch) {
-        validateTaskRetrievalRequest(body);
-        result = await options.taskRetrieval!.search(body, signal);
-      } else {
-        const handler = options.queryPort[operation!] as (request: unknown, signal?: AbortSignal) => Promise<unknown>;
-        result = await handler.call(options.queryPort, body, signal);
-      }
+      const handler = options.queryPort[operation] as (request: unknown, signal?: AbortSignal) => Promise<unknown>;
+      result = await handler.call(options.queryPort, body, signal);
       if (!response.destroyed) send(response, 200, result);
     } catch (error) {
       if (error instanceof HttpError) {

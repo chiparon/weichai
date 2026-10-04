@@ -27,7 +27,7 @@ describe('semantic-index MCP executable startup', () => {
     try {
       await client.connect(transport, { timeout: 15000 });
       pid = transport.pid;
-      expect((await client.listTools()).tools.some((tool) => tool.name === 'search_task_context')).toBe(true);
+      expect((await client.listTools()).tools.some((tool) => tool.name === 'list_repositories')).toBe(true);
       expect(errors).toEqual([]);
       expect(stderr).toContain('ForeXplore semantic-index MCP server is running on stdio.');
     } finally {

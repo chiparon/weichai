@@ -13,7 +13,7 @@ public sealed record AssetEvent(
     string? AttachmentId = null)
 {
     // Kept as an init property so existing six-argument fixtures remain valid.
-    public WorkflowState State { get; init; } = WorkflowState.Approved;
+    public WorkflowState State { get; init; }
 }
 
 public sealed record AttachmentInput(

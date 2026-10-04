@@ -1,41 +1,42 @@
 # AssetUpgradeGateway
 
-This is a fresh .NET target project for the enterprise asset-upgrade benchmark.
-It is intentionally a scaffold: the public surface and invariants are fixed,
-while the implementation is left for an agent under evaluation.
+This .NET 8 solution is a complete project skeleton for the enterprise asset
+upgrade benchmark. It preserves the target-facing data types, ports, services,
+policies, application layer, domain layer, adapter layer, telemetry surface,
+and solution file.
 
-The module receives enterprise asset events and coordinates tenant checks,
-attachment quarantine, workflow dispatch, retryable delivery, scheduled
-reconciliation, and idempotent audit records.
+Production files define the project structure and API contracts only. Method
+bodies are intentionally unimplemented; there is no working attachment,
+workflow, reconciliation, order, policy, or adapter behavior for the Agent to
+reuse. Constructors may wire dependencies and initialize data structures, but
+must not make business decisions.
 
-## Target boundaries
+## Implementation scope
 
-The target is intentionally organized around ports. `AssetUpgradeService` owns
-attachment intake and workflow submission; `ReconciliationService` owns due
-retry processing; `OrderPluginBridge` owns validation, inventory reservation
-and the atomic commit boundary. `Contracts.cs` contains only target-facing
-data and status values. `Ports.cs` contains replaceable identity, queue,
-workflow, inventory, persistence and audit dependencies.
+Implement all four requirements in `requirements/`:
 
-The implementation bodies are left unfinished for the evaluated Agent. The
-historical projects are evidence sources, not dependencies of this project.
-The Agent must adapt their ideas to these new C# contracts instead of importing
-their APIs or changing the historical repositories.
+* `AssetUpgradeService` handles attachment intake and approved workflow event
+delivery.
+* `ReconciliationService` handles scheduled retries for due events.
+* `OrderPluginBridge` validates and commits an order through the declared
+ports.
 
-## Current scaffold size
+The existing namespaces and files provide seams, not a prescribed algorithm.
+Implement the behavior in cohesive layers and add production components where
+needed. Keep infrastructure vendor-neutral and do not change the historical
+repositories.
 
-The production scaffold keeps the four benchmark entry points unfinished while
-exposing the public seams needed by a larger implementation. Supporting layers
-now cover attachment policy and scanning, workflow envelopes and retry state,
-order pricing and inventory, tenant quotas, reconciliation leases/checkpoints,
-plugin registration, in-memory adapters, telemetry, and scenario fixtures. The
-C# target currently contains about **3,000 lines across 30+ source and test
-files**; a completed benchmark implementation is expected to stay in the
-**3,000–4,000 line** band and add behavior at these seams rather than filler. The target deliberately
-has no completed reference implementation: its evidence comes from the mixed
-history repositories and the acceptance conditions.
+The completed target is expected to contain roughly **3,000–4,000 production
+C# lines**. Treat this as a scope check: meet it through real validation, state
+handling, retry and compensation behavior, and adapters. Do not add generated
+filler or duplicate abstractions to reach a line count. Evaluation is based on
+behavior and code quality.
 
-The size is a planning guardrail for a realistic upgrade task. Behavior is
-still graded by the acceptance conditions and hidden tests: generated filler
-that does not enforce tenant isolation, quarantine, retry, idempotency, or
-atomic order commit does not satisfy the benchmark.
+## Run locally
+
+```bash
+dotnet build AssetUpgradeGateway.sln
+```
+
+Hidden acceptance tests are stored outside this project and run after the
+Coding Agent finishes.

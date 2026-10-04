@@ -16,7 +16,7 @@ beforeAll(async () => {
         response.end(JSON.stringify({ status: 'ok', storage: 'seekdb' }));
         return;
       }
-      if (request.url === '/v1/search' && request.method === 'POST') {
+      if (request.url === '/v1/test-echo' && request.method === 'POST') {
         let body = '';
         request.on('data', (chunk: Buffer) => {
           body += chunk.toString();
@@ -59,7 +59,7 @@ describe('localFetch', () => {
 
   it('performs POST requests with a JSON body', async () => {
     if (!serverAvailable) return;
-    const response = await localFetch(`${baseUrl}/v1/search`, {
+    const response = await localFetch(`${baseUrl}/v1/test-echo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: 'hello world' }),

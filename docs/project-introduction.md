@@ -198,7 +198,7 @@ packages/workflow-core ----> packages/contracts
                                      |
               +----------------------+----------------------+
               |                      |                      |
-       code-indexer         retrieval-service      adaptation-service
+       code-indexer       code-intelligence-service  adaptation-service
 ```
 
 各模块职责如下：
@@ -209,7 +209,7 @@ packages/workflow-core ----> packages/contracts
 | `packages/contracts` | 检索、候选、适配、补丁和模块符号的共享类型 |
 | `packages/workflow-core` | 工作流状态、状态转换和能力端口 |
 | `services/code-indexer` | 仓库发现、语言解析、符号和依赖索引 |
-| `services/retrieval-service` | 多路召回、过滤、重排与 Top-K 返回 |
+| `services/code-intelligence-service` | 版本化 SeekDB 索引、模块建模、多视图召回与候选排序 |
 | `services/adaptation-service` | 翻译、桥接、接口映射、补丁生成和验证 |
 
 核心工作流不依赖某个具体 IDE。VS Code 插件、Trae 二次开发或自建 Agent 都可以作为宿主，通过相同端口连接模块树、检索服务和工作区编辑能力。

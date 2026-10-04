@@ -104,7 +104,7 @@ describe('adaptation HTTP adapters', () => {
 
   it('replaces both remote workflow ports as one service boundary', () => {
     const ports = withAdaptationService(
-      { adaptation: { adapt: vi.fn() }, backfill: { apply: vi.fn() }, search: {} as never },
+      { adaptation: { adapt: vi.fn() }, backfill: { apply: vi.fn() } },
       { baseUrl: 'http://localhost' },
     );
 

@@ -11,7 +11,7 @@ describe('checkServiceHealth', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })),
     );
-    const health = await checkServiceHealth('http://127.0.0.1:8787');
+    const health = await checkServiceHealth('http://127.0.0.1:8788');
     expect(health.healthy).toBe(true);
     expect(health.reachable).toBe(true);
   });
@@ -24,7 +24,7 @@ describe('checkServiceHealth', () => {
           new Response(JSON.stringify({ error: 'SeekDB connection refused' }), { status: 503 }),
       ),
     );
-    const health = await checkServiceHealth('http://127.0.0.1:8787');
+    const health = await checkServiceHealth('http://127.0.0.1:8788');
     expect(health.healthy).toBe(false);
     expect(health.reachable).toBe(true);
     expect(health.detail).toContain('503');
@@ -33,7 +33,7 @@ describe('checkServiceHealth', () => {
 
   it('distinguishes unreachable endpoints', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new Error('fetch failed'))));
-    const health = await checkServiceHealth('http://127.0.0.1:8787');
+    const health = await checkServiceHealth('http://127.0.0.1:8788');
     expect(health.healthy).toBe(false);
     expect(health.reachable).toBe(false);
     expect(health.detail).toContain('无法连接');

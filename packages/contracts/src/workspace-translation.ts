@@ -18,6 +18,9 @@ export interface WorkspaceEvidenceScope {
   projectId?: string;
 }
 
+/** Shared ceiling for revision-scoped history evidence queries. */
+export const MAX_RETRIEVAL_SCOPES = 64;
+
 export interface WorkspaceTranslationRequest {
   spec: string;
   sourceLanguage: string;

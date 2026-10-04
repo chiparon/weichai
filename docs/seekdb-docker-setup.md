@@ -28,7 +28,7 @@ docker compose version
 项目使用的配置文件是：
 
 ```text
-services/retrieval-service/docker-compose.yml
+services/code-intelligence-service/infra/docker-compose.yml
 ```
 
 核心配置如下：
@@ -67,7 +67,7 @@ Compose 还配置了健康检查，每 10 秒通过 `mysqladmin ping` 检查一�
 ## 3. 启动 SeekDB
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml up -d
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml up -d
 ```
 
 作用：
@@ -104,7 +104,7 @@ Seekdb started
 ## 5. 检查容器状态
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml ps
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml ps
 ```
 
 作用：显示该 Compose 项目中的容器、镜像、运行状态和端口映射。
@@ -156,11 +156,11 @@ location 时应通过 Docker Desktop 设置操作，不能直接移动内部数�
 
 ```bash
 docker volume ls
-docker volume inspect retrieval-service_seekdb-data
+docker volume inspect code-intelligence-service_seekdb-data
 ```
 
 Compose 会在卷名前添加项目名。本次实际创建并验证的卷名是
-`retrieval-service_seekdb-data`。
+`code-intelligence-service_seekdb-data`。
 
 ## 8. 配置连接 SeekDB
 
@@ -170,7 +170,7 @@ SeekDB 容器启动后，还需要配置 retrieval service。以下不是 Docker
 创建本地配置文件：
 
 ```bash
-cp services/retrieval-service/.env.example services/retrieval-service/.env
+cp services/code-intelligence-service/.env.example CODE_INTELLIGENCE_* environment variables
 ```
 
 该文件配置 SeekDB 地址、数据库、表、向量维度和 embedding provider。
@@ -181,13 +181,11 @@ cp services/retrieval-service/.env.example services/retrieval-service/.env
 ## 9. 初始化检索表和代码索引
 
 ```bash
-npm run schema --workspace @forexplore/retrieval-service
 ```
 
 作用：在 `forexplore` 数据库中创建或更新 `code_symbols` 表、向量索引和全文索引。
 
 ```bash
-npm run index:corpus --workspace @forexplore/retrieval-service -- --replace
 ```
 
 作用：
@@ -201,28 +199,11 @@ npm run index:corpus --workspace @forexplore/retrieval-service -- --replace
 开发环境默认使用 `hash` embedding，适合离线联调；生产质量语义检索应配置
 OpenAI-compatible embedding 服务。
 
-## 10. 启动并验证 retrieval service
+## 10. 启动并验证代码智能索引
 
-```bash
-npm run dev:retrieval
-```
-
-作用：启动 ForeXplore retrieval HTTP service。它连接 SeekDB，并在
-`http://127.0.0.1:8787` 提供检索 API。
-
-在另一个终端检查：
-
-```bash
-curl http://127.0.0.1:8787/health
-```
-
-正常返回：
-
-```json
-{"status":"ok","storage":"seekdb"}
-```
-
-该响应证明 HTTP service 和 SeekDB 两层连接都正常。
+索引由扩展宿主在导入目标工程或参考工程时按 revision 建立。SeekDB 只需要
+保持运行；可通过 `docker compose ... ps` 检查容器状态，并在工作台的工程状态
+面板查看索引进度和 active revision。
 
 ## 11. 启动 VS Code 扩展
 
@@ -237,31 +218,31 @@ npm run dev:extension
 停止容器但保留容器和数据：
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml stop
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml stop
 ```
 
 重新启动已停止的容器：
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml start
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml start
 ```
 
 删除容器和网络，但保留命名卷数据：
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml down
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml down
 ```
 
 重新创建并启动容器：
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml up -d
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml up -d
 ```
 
 删除容器并同时删除数据库卷：
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml down -v
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml down -v
 ```
 
 最后一条命令会永久删除 SeekDB 数据库和代码索引，只应在明确需要完全重建时使用；执行前先做一次备份。
@@ -294,7 +275,7 @@ retrieval service 的 `forexplore` 库可以从语料重建，不在备份范围
 
 1. `npm run data:backup -- --database <库名>`。
 2. 修改 `docker-compose.yml` 中固定的镜像标签和摘要。
-3. `docker compose -f services/retrieval-service/docker-compose.yml up -d` 重建容器（命名卷保留）。
+3. `docker compose -f services/code-intelligence-service/infra/docker-compose.yml up -d` 重建容器（命名卷保留）。
 4. 启动后若旧库无法打开，删除卷重建容器，再用 `data:restore` 恢复到新库。
 
 ### 表结构迁移

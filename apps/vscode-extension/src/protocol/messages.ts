@@ -6,9 +6,6 @@ import type {
   ApplyResult,
   ModuleTarget,
   SearchCandidate,
-  ContextPacket,
-  TaskRetrievalRequest,
-  RepositoryRevisionScope,
 } from '@forexplore/contracts';
 import type {
   ModuleExplorerPresentation,
@@ -39,14 +36,6 @@ export interface PanelSettingsPresentation {
   topK: number;
 }
 
-export interface TaskSearchIntent {
-  requirement: string;
-  scope: 'target' | 'all';
-  granularity: NonNullable<TaskRetrievalRequest['granularity']>;
-}
-
-export type TaskSearchTargetScope = RepositoryRevisionScope & { projectId?: string };
-
 /** How a user asked for a target project directory. */
 export type TargetWorkspaceAddMode = 'browse' | 'input' | 'workspace';
 
@@ -68,8 +57,6 @@ export type HostToWebviewMessage =
   | { type: 'WORKSPACE_TRANSLATION_ERROR'; requestId: string; message: string }
   | { type: 'INIT'; payload: PanelInitPayload }
   | { type: 'SEARCH_RESULT'; candidates: SearchCandidate[] }
-  | { type: 'TASK_SEARCH_RESULT'; requestId: string; packet: ContextPacket }
-  | { type: 'TASK_SEARCH_ERROR'; requestId: string; message: string }
   | { type: 'ADAPT_RESULT'; result: AdaptationResult }
   | { type: 'MODULE_TRANSLATION_READY'; targetId: string; candidateId: string; moduleScopeId: string }
   | { type: 'APPLY_RESULT'; result: ApplyResult }
@@ -95,10 +82,8 @@ export type WebviewToHostMessage =
   | { type: 'BROWSE_REFERENCE_FOLDERS'; requestId: string }
   | { type: 'CONFIGURE_MODEL_KEY' }
   | { type: 'CLEAR_MODEL_KEY' }
-  | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; packetId?: string; evidenceIds?: string[]; runId?: string; moduleScopeId?: string }
+  | { type: 'WORKSPACE_TRANSLATION'; requestId: string; action: 'describe' | 'start' | 'read' | 'cancel' | 'resume' | 'rollback'; profileId?: string; runId?: string; moduleScopeId?: string }
   | { type: 'READY' }
-  | { type: 'START_TASK_SEARCH'; requestId: string; targetScope: TaskSearchTargetScope; request: TaskSearchIntent }
-  | { type: 'CANCEL_TASK_SEARCH'; requestId: string }
   | { type: 'LOAD_MODULE_CHILDREN'; requestId: string; request: ModuleChildrenRequest }
   | { type: 'ADD_TARGET_WORKSPACE'; mode: 'browse' | 'input' | 'workspace' }
   | {
@@ -133,8 +118,6 @@ const hostMessageTypes = new Set<string>([
   'WORKSPACE_TRANSLATION_ERROR',
   'INIT',
   'SEARCH_RESULT',
-  'TASK_SEARCH_RESULT',
-  'TASK_SEARCH_ERROR',
   'ADAPT_RESULT',
   'MODULE_TRANSLATION_READY',
   'APPLY_RESULT',
@@ -194,21 +177,15 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     case 'SETTINGS_VISIBILITY_CHANGED':
       return hasOnlyKeys(message, ['type', 'open']) && typeof message.open === 'boolean';
     case 'WORKSPACE_TRANSLATION': {
-      if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'packetId', 'evidenceIds', 'runId', 'moduleScopeId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
+      if (!Object.keys(message).every(key => ['type', 'requestId', 'action', 'profileId', 'runId', 'moduleScopeId'].includes(key)) || !isOpaqueIdentifier(message.requestId)) return false;
       if (message.action === 'describe') return message.moduleScopeId === undefined
         ? hasOnlyKeys(message, ['type', 'requestId', 'action'])
         : hasOnlyKeys(message, ['type', 'requestId', 'action', 'moduleScopeId']) && typeof message.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(message.moduleScopeId);
       if (message.action === 'start') {
-        // Evidence is optional because a host-owned module scope can supply the
-        // context; when a packet is given, its selection must stay well formed.
-        const evidence = message.packetId === undefined && message.evidenceIds === undefined
-          ? true
-          : isOpaqueIdentifier(message.packetId) && Array.isArray(message.evidenceIds) &&
-            message.evidenceIds.length > 0 && message.evidenceIds.length <= 60 && message.evidenceIds.every(isOpaqueIdentifier);
-        return isOpaqueIdentifier(message.profileId) && message.runId === undefined && evidence &&
+        return isOpaqueIdentifier(message.profileId) && message.runId === undefined &&
           (message.moduleScopeId === undefined || typeof message.moduleScopeId === 'string' && /^[a-f0-9]{64}$/.test(message.moduleScopeId));
       }
-      return ['read', 'cancel', 'resume', 'rollback'].includes(String(message.action)) && message.profileId === undefined && message.packetId === undefined && message.evidenceIds === undefined &&
+      return ['read', 'cancel', 'resume', 'rollback'].includes(String(message.action)) && message.profileId === undefined &&
         message.moduleScopeId === undefined &&
         typeof message.runId === 'string' && /^[a-f0-9-]{36}$/.test(message.runId);
     }
@@ -223,11 +200,7 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
         (request.query === undefined || (typeof request.query === 'string' && request.query.length <= 200)) &&
         (request.status === undefined || ['all', 'implemented', 'unimplemented', 'unknown'].includes(request.status as string));
     }
-    case 'START_TASK_SEARCH':
-      return hasOnlyKeys(message, ['type', 'requestId', 'targetScope', 'request']) &&
-        isOpaqueIdentifier(message.requestId) && isTaskSearchScope(message.targetScope) && isTaskSearchIntent(message.request);
     case 'BROWSE_REFERENCE_FOLDERS':
-    case 'CANCEL_TASK_SEARCH':
       return hasOnlyKeys(message, ['type', 'requestId']) && isOpaqueIdentifier(message.requestId);
     case 'ADD_TARGET_WORKSPACE':
       return hasOnlyKeys(message, ['type', 'mode']) && typeof message.mode === 'string' && ['browse', 'input', 'workspace'].includes(message.mode);
@@ -299,23 +272,6 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
     default:
       return false;
   }
-}
-
-function isTaskSearchScope(value: unknown): value is TaskSearchTargetScope {
-  if (typeof value !== 'object' || value === null) return false;
-  const scope = value as Record<string, unknown>;
-  return Object.keys(scope).every((key) => ['repositoryId', 'analysisRevision', 'projectId'].includes(key)) &&
-    isOpaqueIdentifier(scope.repositoryId) && isOpaqueIdentifier(scope.analysisRevision) &&
-    (scope.projectId === undefined || isOpaqueIdentifier(scope.projectId));
-}
-
-function isTaskSearchIntent(value: unknown): value is TaskSearchIntent {
-  if (typeof value !== 'object' || value === null) return false;
-  const request = value as Record<string, unknown>;
-  return hasOnlyKeys(request, ['requirement', 'scope', 'granularity']) &&
-    typeof request.requirement === 'string' && Boolean(request.requirement.trim()) && request.requirement.length <= 8_000 &&
-    ['target', 'all'].includes(String(request.scope)) &&
-    ['auto', 'function', 'class', 'module', 'subsystem'].includes(String(request.granularity));
 }
 
 /** IDs are looked up by the host; this rejects control data, not local paths. */

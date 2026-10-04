@@ -11,15 +11,15 @@ public enum ValidationSeverity { Info, Warning, Error }
 
 public sealed record ValidationIssue(string Code, string Message, ValidationSeverity Severity)
 {
-    public bool BlocksOperation => Severity == ValidationSeverity.Error;
+    public bool BlocksOperation => throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent.");
 }
 
 public sealed record PolicyResult(
     bool Allowed,
     IReadOnlyList<ValidationIssue> Issues)
 {
-    public static PolicyResult Allow() => new(true, Array.Empty<ValidationIssue>());
-    public static PolicyResult Deny(params ValidationIssue[] issues) => new(false, issues);
+    public static PolicyResult Allow() { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
+    public static PolicyResult Deny(params ValidationIssue[] issues) { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
 }
 
 public sealed record OperationContext(

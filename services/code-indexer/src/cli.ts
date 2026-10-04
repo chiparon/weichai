@@ -5,7 +5,7 @@
  *   tsx src/cli.ts <corpusRoot...>
  *   tsx src/cli.ts ../../fixtures/code-corpus ../../fixtures/translation-datasets
  *
- * 输出每行一个 IndexedCodeDocument JSON，可管道给 retrieval-service:
+ * 输出每行一个 IndexedCodeDocument JSON，可供代码智能索引导入:
  *   tsx src/cli.ts ../../fixtures/code-corpus > symbols.jsonl
  */
 import path from 'node:path';

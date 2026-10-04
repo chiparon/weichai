@@ -30,10 +30,10 @@ export function FooterStatus({
   return (
     <footer className="app-footer">
       <span
-        className={serviceDot(serviceStatus?.retrieval)}
+        className={serviceDot(serviceStatus?.moduleSearch)}
         title={serviceStatus?.message ?? ''}
       >
-        检索 {serviceLabel(serviceStatus?.retrieval)}
+        候选模块 {serviceLabel(serviceStatus?.moduleSearch)}
       </span>
       <span
         className={serviceDot(serviceStatus?.adaptation)}

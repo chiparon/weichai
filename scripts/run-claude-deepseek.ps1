@@ -27,5 +27,5 @@ $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $model
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $model
 $env:CLAUDE_CODE_SUBAGENT_MODEL = $model
 
-& claude @ClaudeArgs
+& claude --setting-sources project,local @ClaudeArgs
 exit $LASTEXITCODE

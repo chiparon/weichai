@@ -1,4 +1,3 @@
-export const DEFAULT_RETRIEVAL_URL = 'http://127.0.0.1:8787';
 export const DEFAULT_ADAPTATION_URL = 'http://127.0.0.1:8788';
 
 const HEALTH_TIMEOUT_MS = 2_000;

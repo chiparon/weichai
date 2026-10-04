@@ -4,8 +4,6 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AssetUpgradeGateway", "src\AssetUpgradeGateway\AssetUpgradeGateway.csproj", "{0B4A1B0A-0D3A-4C4A-9A8F-4E7D4D1F2A01}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AssetUpgradeGateway.Tests", "tests\AssetUpgradeGateway.Tests\AssetUpgradeGateway.Tests.csproj", "{3E3B1D76-8B4B-4D7B-98B7-4A3E5D9B4B02}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -16,9 +14,5 @@ Global
 		{0B4A1B0A-0D3A-4C4A-9A8F-4E7D4D1F2A01}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0B4A1B0A-0D3A-4C4A-9A8F-4E7D4D1F2A01}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0B4A1B0A-0D3A-4C4A-9A8F-4E7D4D1F2A01}.Release|Any CPU.Build.0 = Release|Any CPU
-		{3E3B1D76-8B4B-4D7B-98B7-4A3E5D9B4B02}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{3E3B1D76-8B4B-4D7B-98B7-4A3E5D9B4B02}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{3E3B1D76-8B4B-4D7B-98B7-4A3E5D9B4B02}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{3E3B1D76-8B4B-4D7B-98B7-4A3E5D9B4B02}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

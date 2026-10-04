@@ -18,8 +18,6 @@ import type {
   ProjectRecord,
   ProjectAnalysisPort, ProjectAnalysisResult, ProjectAnalysisScope, ProjectAnalysisRecord,
   StructuralIndex,
-  TaskRetrievalRequest,
-  ContextPacket,
 } from '@forexplore/contracts';
 import type { SemanticQueryPort } from '@forexplore/workflow-core';
 import type {
@@ -27,10 +25,8 @@ import type {
   CodeIntelligenceRepositoryPresentation,
   CodeIntelligenceSummaryPresentation,
 } from './ui-types';
-import type { TaskSearchIntent, TaskSearchTargetScope } from './protocol/messages';
 import { projectAnalysisPresentation } from './project-analysis-presentation';
 import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope } from '@forexplore/contracts';
-import type { TaskCandidateReranker } from '../../../services/code-intelligence-service/src/task-reranker';
 import type { ModuleReranker } from '../../../services/code-intelligence-service/src/module-reranker';
 
 /** Local-only SeekDB configuration; credentials never cross a UI boundary. */
@@ -41,14 +37,20 @@ export interface SeekDbRuntimeConfig {
   password: string;
   database: string;
   vectorDimension?: number;
-  embedding?: { url: string; apiKey: string; model: string; supportsDimensions?: boolean; queryPrefix?: string; documentPrefix?: string };
+  /**
+   * `variant` names the inference device and precision that produced the vectors
+   * ("dml-fp16"). It is part of the embedding identity, so declaring a different
+   * variant makes the store re-embed instead of reusing vectors from the other
+   * provider.
+   */
+  embedding?: { url: string; apiKey: string; model: string; supportsDimensions?: boolean; queryPrefix?: string;
+    documentPrefix?: string; variant?: string };
 }
 
 /** The narrow host composition input intentionally excludes scanners/DB handles from callers. */
 export interface CreateCodeIntelligenceRuntimeOptions {
   seekdb?: SeekDbRuntimeConfig;
   moduleReranker?: { url: string; model: string; timeoutMs?: number };
-  taskCandidateReranker?: TaskCandidateReranker;
   moduleCandidateReranker?: ModuleReranker;
 }
 
@@ -110,9 +112,6 @@ export interface CodeIntelligenceRuntime {
   javaCsharpSpecializedProvider?: HostJavaCsharpSpecializedProvider;
   queryPort: SemanticQueryPort;
   projectAnalysis?: ProjectAnalysisPort;
-  taskRetrieval?: {
-    search(request: TaskRetrievalRequest, signal?: AbortSignal): Promise<ContextPacket>;
-  };
   moduleImplementationSearch?: {
     search(request: {
       target: ModuleTarget;
@@ -139,7 +138,6 @@ interface CodeIntelligenceServiceModule {
   };
   createSemanticQueryHttpServer(options: {
     queryPort: SemanticQueryPort;
-    taskRetrieval?: CodeIntelligenceRuntime['taskRetrieval'];
     bearerToken?: string;
   }): Server;
 }
@@ -225,7 +223,6 @@ export interface CodeIntelligenceHostOptions {
   /** Test seam; production uses the code-intelligence service transport. */
   semanticQueryServerFactory?: (options: {
     queryPort: SemanticQueryPort;
-    taskRetrieval?: CodeIntelligenceRuntime['taskRetrieval'];
     bearerToken?: string;
   }) => Server;
 }
@@ -511,20 +508,6 @@ export class CodeIntelligenceHost {
     const runtime = await this.runtime();
     const server = this.#semanticQueryServerFactory({
       queryPort: await this.semanticQueryPort(),
-      ...(runtime.taskRetrieval ? { taskRetrieval: {
-        search: async (request: TaskRetrievalRequest, signal?: AbortSignal) => {
-          if (!Array.isArray(request.scopes) || request.scopes.length < 1 || request.scopes.length > MAX_RETRIEVAL_SCOPES ||
-            request.scopes.some((scope) => !this.#visibleRepositoryIds.has(scope.repositoryId))) {
-            throw new Error('Requested repositories are outside this window.');
-          }
-          for (const scope of request.scopes) {
-            signal?.throwIfAborted();
-            const revision = await runtime.store.getRevision(scope);
-            if (!revision || !['ready', 'superseded'].includes(revision.status)) throw new Error('Requested revision is not available for read-only queries.');
-          }
-          return runtime.taskRetrieval!.search(request, signal);
-        },
-      } } : {}),
       ...(options.bearerToken ? { bearerToken: options.bearerToken } : {}),
     });
     const endpoint = `http://127.0.0.1:${port}`;
@@ -613,42 +596,6 @@ export class CodeIntelligenceHost {
     }
     if (scopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`历史范围超过 ${MAX_RETRIEVAL_SCOPES} 个版本，请缩小参考工程范围。`);
     return scopes;
-  }
-
-  async searchTaskContext(requestId: string, targetScope: TaskSearchTargetScope, request: TaskSearchIntent,
-    signal?: AbortSignal): Promise<ContextPacket> {
-    signal?.throwIfAborted();
-    const runtime = await this.runtime();
-    if (!runtime.taskRetrieval) throw new Error('当前代码智能运行时未提供任务检索能力。');
-    if (!this.#visibleRepositoryIds.has(targetScope.repositoryId)) throw new Error('所选工程不在当前窗口的检索范围内。');
-    const repository = await runtime.registry.get(targetScope.repositoryId);
-    const revision = await runtime.store.getRevision(targetScope);
-    if (!repository || !revision || !['ready', 'superseded'].includes(revision.status)) {
-      throw new Error('所选代码版本尚不可查询，请先完成基础索引。');
-    }
-    if (targetScope.projectId) {
-      const projects = await runtime.queryPort.listProjects(targetScope, signal);
-      if (!projects.projects.some((project) => project.value.projectId === targetScope.projectId)) {
-        throw new Error('所选项目不属于当前代码版本。');
-      }
-    }
-    const scopes: TaskRetrievalRequest['scopes'] = [{ ...targetScope, role: 'target' }];
-    if (request.scope === 'all') {
-      for (const reference of await runtime.registry.list?.() ?? []) {
-        if (reference.repositoryId === targetScope.repositoryId || !this.#visibleRepositoryIds.has(reference.repositoryId) ||
-          reference.role !== 'history' || !reference.activeRevision) continue;
-        const scope = { repositoryId: reference.repositoryId, analysisRevision: reference.activeRevision, role: 'reference' as const };
-        if ((await runtime.store.getRevision(scope))?.status === 'ready') scopes.push(scope);
-      }
-    }
-    signal?.throwIfAborted();
-    return runtime.taskRetrieval.search({
-      requestId,
-      requirement: request.requirement.trim(),
-      granularity: request.granularity,
-      scopes,
-      budget: { maxLatencyMs: 30_000 },
-    }, signal);
   }
 
   /** Returns the active structural index for trusted host-side presentation. */
@@ -917,6 +864,9 @@ export class CodeIntelligenceHost {
           await runtime.coordinator.run({
             repositoryId: repository.repositoryId,
             mode: request.forceFull || !repository.activeRevision ? 'full' : 'incremental',
+            // A forced full scan is a rebuild request: it must not return the
+            // previous revision's search projection when sources happen to match.
+            ...(request.forceFull ? { rebuild: true } : {}),
           });
           scannedRepositoryIds.push(repository.repositoryId);
           const current = await runtime.registry.get(repository.repositoryId);
@@ -1414,6 +1364,11 @@ export function codeIntelligenceRuntimeOptionsFromEnvironment(
         supportsDimensions: environment.CODE_INTELLIGENCE_EMBEDDING_SUPPORTS_DIMENSIONS !== 'false',
         queryPrefix: environment.CODE_INTELLIGENCE_EMBEDDING_QUERY_PREFIX ?? '',
         documentPrefix: environment.CODE_INTELLIGENCE_EMBEDDING_DOCUMENT_PREFIX ?? '',
+        // Which device and precision produced a vector changes the vector, so it
+        // belongs to the model identity that scopes embedding reuse. Without it a
+        // projection can silently keep vectors from a different provider, which is
+        // how a q8/CPU index survived a switch to the GPU.
+        variant: environment.CODE_INTELLIGENCE_EMBEDDING_VARIANT?.trim() || undefined,
       } } : {}),
     },
   };

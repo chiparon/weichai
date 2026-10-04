@@ -1,36 +1,33 @@
 # 启动指南
 
-## Mock 模式
+## 一键启动
+
+在仓库根目录执行：
 
 ```sh
 npm install
-npm run dev
+npm run dev:extension -- --folder fixtures/target-system/commons-fileupload-java-skeleton
 ```
 
-## 全后端模式
+启动脚本会准备 SeekDB、Embedding 和本地模块重排服务，启动适配服务，并打开
+VS Code Extension Development Host。需要跳过某个依赖时可使用
+`--skip-seek-db` 或 `--skip-services`。
 
-### 1. SeekDB + 检索服务
+## 手动启动适配服务
+
+如果不使用一键启动，先准备 SeekDB：
 
 ```sh
-cd services/retrieval-service && docker compose up -d
-npm run schema --workspace @forexplore/retrieval-service
-npm run index:corpus --workspace @forexplore/retrieval-service
-npm run dev:retrieval
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml up -d
 ```
 
-### 2. 适配服务
+然后配置适配服务并启动：
 
 ```sh
 DEEPSEEK_API_KEY="sk-xxx" \
-ADAPTATION_PROJECT_ROOT="/绝对路径/fixtures/target-system/forexplore-csharp-workspace" \
-ADAPTATION_ANALYSIS_ROOT="/绝对路径/目标仓库/.forexplore/analysis" \
+ADAPTATION_PROJECT_ROOT="/absolute/path/to/target" \
 npm run dev:adaptation
 ```
 
-### 3. 前端
-
-```sh
-VITE_RETRIEVAL_API_URL="http://localhost:8787" \
-VITE_ADAPTATION_API_URL="http://localhost:4001" \
-npm run dev
-```
+扩展宿主负责目标工程和参考工程的索引、模块候选检索以及证据范围；适配服务
+只负责模块分析、翻译、编译验证和回填。

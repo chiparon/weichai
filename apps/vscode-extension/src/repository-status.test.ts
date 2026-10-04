@@ -24,7 +24,7 @@ const baseStatuses: RepositoryStatus[] = [
 describe('decorateRepositoryStatuses', () => {
   it('directs usable paths to the code-intelligence status', () => {
     const serviceStatus: ServiceStatus = {
-      retrieval: 'connected',
+      moduleSearch: 'connected',
       adaptation: 'connected',
       executionMode: 'real',
     };
@@ -38,7 +38,7 @@ describe('decorateRepositoryStatuses', () => {
 
   it('keeps unusable paths untouched', () => {
     const serviceStatus: ServiceStatus = {
-      retrieval: 'connected',
+      moduleSearch: 'connected',
       adaptation: 'error',
       executionMode: 'real',
     };

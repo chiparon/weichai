@@ -146,7 +146,7 @@ try {
   }
   const scope = await prepareModuleTranslationScope({ workspaceRoot: targetRoot, target, candidate: top,
     requirement, decisionNotes: 'Use .ts extensions in imports and keep public parameters typed as unknown.', includeCandidateContext: false });
-  const queryServer = createSemanticQueryHttpServer({ queryPort: intelligence.queryPort, taskRetrieval: intelligence.taskRetrieval });
+    const queryServer = createSemanticQueryHttpServer({ queryPort: intelligence.queryPort });
   await new Promise<void>(resolve => queryServer.listen(0, '127.0.0.1', resolve));
   cleanups.push(() => new Promise<void>((resolve, reject) => queryServer.close(e => e ? reject(e) : resolve())));
   const queryUrl = `http://127.0.0.1:${(queryServer.address() as AddressInfo).port}`;

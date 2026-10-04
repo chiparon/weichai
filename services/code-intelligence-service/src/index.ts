@@ -28,9 +28,6 @@ import {
 import { ModuleImplementationSearchService } from './module-implementation-search.js';
 import { LocalModuleReranker, type ModuleRerankerConfig } from './module-reranker.js';
 import { ProjectAnalysisCoordinator, type ProjectAnalysisOptions } from './project-analysis.js';
-import { TaskRetrievalService } from './task-retrieval.js';
-import type { QueryExpansionPort } from './query-expansion.js';
-import type { TaskCandidateReranker } from './task-reranker.js';
 import type { ModuleReranker } from './module-reranker.js';
 
 export { LocalModuleReranker, type ModuleReranker, type ModuleRerankerConfig } from './module-reranker.js';
@@ -90,7 +87,6 @@ export interface CreateCodeIntelligenceRuntimeOptions {
   store?: IndexStore;
   seekdb?: SeekDbIndexStoreConfig;
   moduleReranker?: ModuleRerankerConfig;
-  taskCandidateReranker?: TaskCandidateReranker;
   moduleCandidateReranker?: ModuleReranker;
   languageRegistry?: LanguageRegistry;
   scanner?: StructuralScanner;
@@ -104,8 +100,6 @@ export interface CreateCodeIntelligenceRuntimeOptions {
   registryOptions?: RepositoryRegistryOptions;
   coordinatorOptions?: AnalysisCoordinatorOptions;
   projectAnalysis?: Omit<ProjectAnalysisOptions, 'store'>;
-  /** Undefined follows RECAST_QUERY_EXPANSION; null disables offline query expansion explicitly. */
-  queryExpansion?: QueryExpansionPort | null;
   initialize?: boolean;
 }
 
@@ -119,7 +113,6 @@ export interface CodeIntelligenceRuntime {
   queryPort: SemanticQueryPort;
   moduleImplementationSearch: ModuleImplementationSearchService;
   projectAnalysis: ProjectAnalysisCoordinator;
-  taskRetrieval: TaskRetrievalService;
   close(): Promise<void>;
 }
 
@@ -170,7 +163,6 @@ export async function createCodeIntelligenceRuntime(
   });
   const moduleImplementationSearch = new ModuleImplementationSearchService(store, moduleReranker);
   const projectAnalysis = new ProjectAnalysisCoordinator({ store, ...options.projectAnalysis });
-  const taskRetrieval = new TaskRetrievalService(store, { expansion: options.queryExpansion, reranker: options.taskCandidateReranker });
   const coordinator = new AnalysisCoordinator(
     registry,
     store,
@@ -187,7 +179,6 @@ export async function createCodeIntelligenceRuntime(
     queryPort,
     moduleImplementationSearch,
     projectAnalysis,
-    taskRetrieval,
     async close(): Promise<void> {
       await projectAnalysis.idle();
       if (ownsStore) await store.close?.();
@@ -199,15 +190,3 @@ export const runtimeInternals = { languageCapabilities };
 export { ProjectAnalysisCoordinator, projectAnalysisProfile, projectAnalysisObjective, projectPlanHash, validateProjectResult } from './project-analysis.js';
 export { buildAdaptiveModuleProposal, adaptiveModuleAlgorithm, type AdaptiveModuleOptions } from './module-hierarchy.js';
 export { buildProjectModuleProposal, moduleModelingAlgorithm } from './module-modeling.js';
-export { TaskRetrievalService, validateTaskRetrievalRequest } from './task-retrieval.js';
-export { contextTokenCount } from './context-compiler.js';
-export {
-  LexiconQueryExpansion,
-  NoQueryExpansion,
-  expandQuery,
-  queryExpansionFromEnvironment,
-  QUERY_EXPANSION_MAX_TERMS,
-  QUERY_EXPANSION_MAX_CHARS,
-  type QueryExpansionPort,
-  type QueryExpansionResult,
-} from './query-expansion.js';

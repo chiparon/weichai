@@ -12,7 +12,7 @@ export type ExecutionMode = 'real';
 export type ServiceConnection = 'connected' | 'unconfigured' | 'error';
 
 export interface ServiceStatus {
-  retrieval: ServiceConnection;
+  moduleSearch: ServiceConnection;
   adaptation: ServiceConnection;
   executionMode: ExecutionMode;
   message?: string;

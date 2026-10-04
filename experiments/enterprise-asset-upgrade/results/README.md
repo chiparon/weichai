@@ -8,6 +8,8 @@
 - `task-prompt.md`：发送给 Coding Agent 的提示词；
 - `agent-stream.jsonl`：Agent 的完整输出日志；
 - `run-manifest.json`、`run-result.json`：模型、隔离边界和退出状态。
+- `hidden-evaluation.json`、`hidden-evaluation.log`：Agent 退出后由工作区外
+  的独立验收器生成的逐条件结果和质量分数。
 
 脚本只复制 `target-project/` 和需求文件，不复制或注册
 `source-repositories/` 历史资产。baseline 只调用一个 Coding Agent，使用

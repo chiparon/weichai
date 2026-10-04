@@ -1,25 +1,21 @@
 # RECAST
 
 RECAST is the competition-facing product name for the ForeXplore codebase. It
-combines task-driven code context retrieval and code reuse/migration in the VS
-Code extension, backed by shared offline repository indexes. Both product chains
-(ForeXplore reuse/migration and RECAST retrieval) are hosted by the extension.
+provides one module-based code reuse and migration workflow in the VS Code
+extension, backed by shared offline repository indexes.
 
-The [guochuang implementation guide](docs/guochuang-implementation.zh-CN.md) covers
-evidence handoff, multi-file generation, behavioral verification, and labeled retrieval evaluation.
-The [module translation guide](docs/module-pipeline-repair.zh-CN.md) covers selecting a retrieved module,
+The [module translation guide](docs/module-pipeline-repair.zh-CN.md) covers selecting a reference module,
 preparing its file scope, running translation and write-back, and reviewing or rolling back the changes.
-The [enterprise history benchmark](docs/enterprise-history-benchmark.zh-CN.md) provides eight connected,
-executable business repositories, synthetic version history, bilingual tasks and reproducible retrieval controls.
+The repository fixtures provide reusable reference projects for local module matching experiments.
 
 ## Repository layout
 
-- `apps/vscode-extension`: primary VS Code extension application (both product chains).
+- `apps/vscode-extension`: primary VS Code extension application.
 - `packages/contracts`: shared request, result, symbol, and patch types.
 - `packages/workflow-core`: workflow state machine and implementation ports.
-- `services/retrieval-service`: SeekDB-backed semantic, structural, and hybrid search.
+- `services/code-intelligence-service`: versioned SeekDB indexing, module modeling, and module candidate search.
 - `services/adaptation-mcp-server`: local stdio MCP server for guarded translation tools.
-- `services`: backend boundaries for indexing, retrieval, and adaptation services.
+- `services`: backend boundaries for indexing, code intelligence, and adaptation services.
 - `fixtures`: target workspaces and cross-language code corpus fixtures.
 - `tests`: repository-level contract, integration, and end-to-end tests.
 - `docs`: architecture material, prototypes, reports, and historical work logs.
@@ -30,13 +26,12 @@ executable business repositories, synthetic version history, bilingual tasks and
 Run all commands below from the repository root. The full workflow requires
 Node.js/npm, Docker with Compose for SeekDB, and the compiler for the selected
 target language. The adaptation registry supports TypeScript (`tsc`), Python,
-Java, C#, Rust, and Go; the retrieval layer needs none of them.
+Java, C#, Rust, and Go.
 
 Install the workspace dependencies and create local environment files:
 
 ```bash
 npm install
-cp services/retrieval-service/.env.example services/retrieval-service/.env
 cp services/adaptation-service/.env.example services/adaptation-service/.env
 ```
 
@@ -44,68 +39,34 @@ The checked-in examples use these local endpoints:
 
 | Component | Address | Environment file |
 | --- | --- | --- |
-| Retrieval API | `http://127.0.0.1:8787` | `services/retrieval-service/.env` |
+| Code-intelligence index | local extension host + SeekDB | `CODE_INTELLIGENCE_*` environment variables |
 | Adaptation API | `http://127.0.0.1:8788` | `services/adaptation-service/.env` |
-| SeekDB | `127.0.0.1:2881` | `services/retrieval-service/.env` |
+| SeekDB | `127.0.0.1:2881` | `services/code-intelligence-service/infra/docker-compose.yml` |
 
 Embedding and DeepSeek API keys stay in server-side `.env` files and are never
 exposed to the extension Webview.
 
-### Configure retrieval
+### Configure code intelligence
 
-Start the development SeekDB container, create the schema, and index the sample
-code corpus:
+Start the development SeekDB container. The extension creates and updates the
+versioned structural and module-search projections when a target or reference
+project is imported:
 
 ```bash
-docker compose -f services/retrieval-service/docker-compose.yml up -d
-npm run schema --workspace @forexplore/retrieval-service
-npm run index:corpus --workspace @forexplore/retrieval-service -- --replace
+docker compose -f services/code-intelligence-service/infra/docker-compose.yml up -d
 ```
 
-The default retrieval environment uses the offline 384-dimensional hash
-encoder. It is deterministic and suitable for local integration testing:
+Configure the SeekDB and embedding variables before starting the extension:
 
 ```env
-SEEKDB_VECTOR_DIMENSION=384
-SEEKDB_EMBEDDING_PROVIDER=hash
+CODE_INTELLIGENCE_SEEKDB_DATABASE=forexplore
+CODE_INTELLIGENCE_SEEKDB_VECTOR_DIMENSION=384
+CODE_INTELLIGENCE_EMBEDDING_URL=http://127.0.0.1:4021/v1/embeddings
 ```
 
-For model-backed semantic embeddings, edit
-`services/retrieval-service/.env`:
-
-```env
-SEEKDB_EMBEDDING_PROVIDER=openai
-SEEKDB_EMBEDDING_URL=https://api.openai.com/v1/embeddings
-SEEKDB_EMBEDDING_API_KEY=<server-side-key>
-SEEKDB_EMBEDDING_MODEL=text-embedding-3-small
-SEEKDB_VECTOR_DIMENSION=1536
-```
-
-The provider can be any OpenAI-compatible embeddings endpoint. Its output
-dimension must match `SEEKDB_VECTOR_DIMENSION`. Changing the encoder, model, or
-dimension requires rebuilding the table/index so stored documents and queries
-use the same vector space. See `services/retrieval-service/README.md` and
-`docs/seekdb-docker-setup.md` for the detailed database and indexing guide.
-
-### Configure reranking
-
-The retrieval service supports an optional LLM-based reranking pass that
-scores candidates on behavioural-semantic match (not just vector distance or
-full-text relevance). Edit `services/retrieval-service/.env`:
-
-```env
-RERANK_PROVIDER=deepseek
-DEEPSEEK_API_BASE=https://api.deepseek.com/v1
-DEEPSEEK_API_KEY=<server-side-key>
-DEEPSEEK_MODEL=deepseek-v4-flash
-```
-
-Leave `RERANK_PROVIDER=none` (the default) to skip LLM reranking entirely.
-Individual requests can also set `"rerank": false` on the `SearchRequest`
-payload to opt out per-request while keeping the global config.
-
-See `services/retrieval-service/README.md` for the full reranking pipeline
-description, scoring dimensions, and candidate-contract repair behaviour.
+The code-intelligence service uses the configured embedding endpoint for module
+summary, symbol, and source-fragment projections. Adaptation owns the optional
+module cross-encoder reranking and translation model calls.
 
 ### Configure adaptation
 
@@ -151,10 +112,9 @@ the tool boundary.
 
 ### Start the application
 
-Start retrieval and adaptation:
+Start the adaptation backend when running it separately:
 
 ```bash
-npm run dev:retrieval
 npm run dev:adaptation
 ```
 
@@ -182,11 +142,10 @@ window instead of opening a new one. Close that window to get a fresh one.
 `npm run dev` is an alias for `npm run dev:extension`. Do not append
 `adaptation` to it; start `npm run dev:adaptation` separately when needed.
 
-To run each layer independently, use `npm run dev:retrieval` and
-`npm run dev:adaptation`. Verify the backend services:
+To run the adaptation backend independently, use `npm run dev:adaptation`.
+Verify the backend service:
 
 ```bash
-curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8788/health
 ```
 
@@ -194,11 +153,9 @@ curl http://127.0.0.1:8788/health
 
 ```bash
 npm run dev
-npm run dev:retrieval
 npm run dev:adaptation
 npm run dev:extension
 npm run build
-npm run build:retrieval
 npm run build:adaptation
 npm test
 ```
@@ -210,5 +167,5 @@ service and Claude Code workflow themselves are language-neutral.
 
 ## Development guide
 
-See the complete Chinese handoff guide for the workspace, indexing, retrieval,
+See the complete Chinese handoff guide for the workspace, indexing,
 and module-tree changes in `apps/vscode-extension/README.md`.

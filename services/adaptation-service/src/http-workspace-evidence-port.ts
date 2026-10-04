@@ -1,4 +1,4 @@
-import type { ContextPacket, TaskRetrievalRequest, WorkspaceEvidenceScope } from "@forexplore/contracts";
+import type { WorkspaceEvidenceScope } from "@forexplore/contracts";
 import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 import type {
   WorkspaceEvidenceExcerpt,
@@ -23,9 +23,9 @@ interface ErrorPayload {
 }
 
 /**
- * Uses the host's existing task-retrieval route, so on-demand evidence follows
- * exactly the same revision, visibility and budgeting rules as the UI search:
- * the host validates every scope against its visible, published revisions.
+ * Uses the host's revision-scoped semantic query routes. The migration Agent
+ * asks for a bounded requirement and receives source excerpts from the
+ * explicitly published history revisions.
  */
 export class HttpWorkspaceEvidencePort implements WorkspaceEvidencePort {
   readonly #endpoint: URL;
@@ -51,45 +51,35 @@ export class HttpWorkspaceEvidencePort implements WorkspaceEvidencePort {
     if (request.scopes.length > MAX_RETRIEVAL_SCOPES) throw new Error(`At most ${MAX_RETRIEVAL_SCOPES} evidence scopes are supported; no repositories were dropped.`);
     const scopes = request.scopes;
     if (scopes.length === 0) return { evidence: [], characters: 0, notes: ["No history revision is in scope."] };
-    const body: TaskRetrievalRequest = {
-      requestId: `evidence-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      requirement: request.requirement,
-      granularity: "auto",
-      scopes: scopes.map((scope) => ({
-        repositoryId: scope.repositoryId,
-        analysisRevision: scope.analysisRevision,
-        ...(scope.projectId ? { projectId: scope.projectId } : {}),
-        role: "reference" as const,
-      })),
-      budget: { maxTokens: this.#maxTokens, maxLatencyMs: 30_000, maxFiles: 12, maxSourceLines: 800 },
+    const combined = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.#timeoutMs)]);
+    const headers = { "content-type": "application/json", ...(this.#bearerToken ? { authorization: `Bearer ${this.#bearerToken}` } : {}) };
+    const post = async <T>(path: string, body: unknown): Promise<T> => {
+      const response = await this.#fetch(new URL(path, this.#endpoint), { method: "POST", headers, body: JSON.stringify(body), signal: combined });
+      if (!response.ok) {
+        let detail: ErrorPayload | undefined;
+        try { detail = await response.json() as ErrorPayload; } catch { /* a host error need not be JSON */ }
+        throw new Error((typeof detail?.error?.message === "string" ? detail.error.message : `Semantic evidence query failed with status ${response.status}.`).slice(0, 512));
+      }
+      return await response.json() as T;
     };
-    const response = await this.#fetch(new URL("v1/task-search", this.#endpoint), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(this.#bearerToken ? { authorization: `Bearer ${this.#bearerToken}` } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.#timeoutMs)]),
-    });
-    if (!response.ok) {
-      let detail: ErrorPayload | undefined;
-      try { detail = await response.json() as ErrorPayload; } catch { /* a host error need not be JSON */ }
-      const message = typeof detail?.error?.message === "string"
-        ? detail.error.message
-        : `Semantic evidence query failed with status ${response.status}.`;
-      throw new Error(message.slice(0, 512));
+    type SymbolHit = { repositoryId: string; analysisRevision: string; evidenceId: string; relativePath: string; sourceRange?: { startLine: number; startColumn: number; endLine: number; endColumn: number }; value: { name?: string; relativePath: string; sourceRange: { startLine: number; startColumn: number; endLine: number; endColumn: number } } };
+    type SymbolResponse = { symbols?: SymbolHit[] };
+    type ExcerptResponse = { excerpt?: { repositoryId: string; analysisRevision: string; evidenceId: string; relativePath: string; value: { text: string; truncated: boolean } } | null };
+    const evidence: WorkspaceEvidenceExcerpt[] = [];
+    for (const scope of scopes) {
+      const result = await post<SymbolResponse>("v1/semantic-query/searchSymbols", { ...scope, query: request.requirement, ...(scope.projectId ? { projectIds: [scope.projectId] } : {}), limit: Math.min(request.limit * 2, 20) });
+      for (const hit of result.symbols ?? []) {
+        if (evidence.length >= request.limit) break;
+        const range = hit.value?.sourceRange;
+        if (!range) continue;
+        const excerpt = await post<ExcerptResponse>("v1/semantic-query/readSourceExcerpt", { repositoryId: scope.repositoryId, analysisRevision: scope.analysisRevision, relativePath: hit.value.relativePath, sourceRange: range, maxChars: Math.min(8_000, this.#maxTokens * 4) });
+        const value = excerpt.excerpt;
+        if (!value) continue;
+        evidence.push({ id: `${scope.repositoryId}:${scope.analysisRevision}:${hit.evidenceId}`, repositoryId: scope.repositoryId, analysisRevision: scope.analysisRevision, relativePath: hit.value.relativePath, content: value.value.text, truncated: value.value.truncated });
+      }
+      if (evidence.length >= request.limit) break;
     }
-    const packet = await response.json() as ContextPacket;
-    const evidence: WorkspaceEvidenceExcerpt[] = packet.evidence.map((item) => ({
-      id: item.evidenceId,
-      repositoryId: item.repositoryId,
-      analysisRevision: item.analysisRevision,
-      relativePath: item.relativePath,
-      content: item.content,
-      truncated: item.truncated,
-    }));
-    const notes = [...new Set([...(packet.gaps ?? []).map((gap) => gap.code), ...(packet.status === "partial" ? ["RETRIEVAL_PARTIAL"] : [])])];
+    const notes = evidence.some((item) => item.truncated) ? ["SOURCE_EXCERPT_TRUNCATED"] : [];
     return {
       evidence,
       characters: evidence.reduce((sum, item) => sum + item.content.length, 0),

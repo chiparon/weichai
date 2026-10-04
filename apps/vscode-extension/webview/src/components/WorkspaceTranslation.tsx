@@ -7,8 +7,8 @@ const statuses: Record<WorkspaceTranslationRun['status'], string> = { analyzing:
   completed: '执行完成，待审阅', failed: '执行失败', cancelled: '已取消', interrupted: '执行已中断', 'rolling-back': '正在回滚', 'rolled-back': '已回滚' };
 const running = new Set(['analyzing', 'translating', 'compiling', 'testing', 'rolling-back']);
 
-export function WorkspaceTranslation({ provider, packetId, evidenceIds, moduleScopeId, onFinished, onRunChange }: {
-  provider: TranslationProvider; packetId?: string; evidenceIds?: readonly string[]; moduleScopeId?: string;
+export function WorkspaceTranslation({ provider, moduleScopeId, onFinished, onRunChange }: {
+  provider: TranslationProvider; moduleScopeId?: string;
   onFinished?: (completed: boolean) => void; onRunChange?: (run?: WorkspaceTranslationRun) => void;
 }) {
   const [profile, setProfile] = useState<TranslationResult['profile']>();
@@ -27,11 +27,8 @@ export function WorkspaceTranslation({ provider, packetId, evidenceIds, moduleSc
     const attempt = ++generation.current;
     setBusy(true); setError(''); setReviewed(false);
     try {
-      // A host-owned module scope supplies the context, so the page may start
-      // without task evidence; otherwise the selected evidence is mandatory.
       const start = { action: name, profileId: profile?.profileId,
-        ...(moduleScopeId ? { moduleScopeId } : {}),
-        ...(packetId === undefined ? {} : { packetId, evidenceIds: [...(evidenceIds ?? [])] }) };
+        ...(moduleScopeId ? { moduleScopeId } : {}) };
       const result = await provider(name === 'start' ? start : { action: name, runId: run?.id ?? resumeId.trim() });
       if (generation.current === attempt) { setRun(result.run); runChange.current?.(result.run); if (result.run) setResumeId(result.run.id); }
     } catch (cause) { if (generation.current === attempt) setError(cause instanceof Error ? cause.message : '翻译操作失败'); }
@@ -48,7 +45,7 @@ export function WorkspaceTranslation({ provider, packetId, evidenceIds, moduleSc
   }, [run?.status]);
 
   const moduleScoped = Boolean(profile?.moduleScopeId);
-  const canStart = Boolean(profile) && !busy && (moduleScoped || (evidenceIds?.length ?? 0) > 0);
+  const canStart = Boolean(profile) && !busy && moduleScoped;
   /** The service is working right now: the page shows the phase animation. */
   const active = Boolean(run && running.has(run.status));
 

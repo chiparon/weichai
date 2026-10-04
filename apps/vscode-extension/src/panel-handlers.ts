@@ -14,7 +14,7 @@ export const awaitedWebviewActions = new Set<unknown>([
 /** Host replies a user waits for; dropping one of them stalls the panel. */
 export const awaitedHostReplies = new Set<unknown>([
   'SEARCH_RESULT', 'ADAPT_RESULT', 'APPLY_RESULT', 'ERROR', 'MODULE_TRANSLATION_READY',
-  'MODULE_CHILDREN', 'MODULE_CHILDREN_ERROR', 'TASK_SEARCH_RESULT', 'TASK_SEARCH_ERROR',
+  'MODULE_CHILDREN', 'MODULE_CHILDREN_ERROR',
   'WORKSPACE_TRANSLATION_RESULT', 'WORKSPACE_TRANSLATION_ERROR', 'TARGET_WORKSPACE_RESULT',
 ]);
 

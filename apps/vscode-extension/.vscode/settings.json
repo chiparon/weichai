@@ -5,7 +5,6 @@
     "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/target-project"
   ],
   "forexplore.repositoryPaths": [
-    "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/reference-project-java",
     "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/apache-camel",
     "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/flowable-engine",
     "${workspaceFolder}/../../experiments/enterprise-asset-upgrade/source-repositories/keycloak",

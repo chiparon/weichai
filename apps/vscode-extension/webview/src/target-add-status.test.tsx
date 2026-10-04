@@ -27,13 +27,13 @@ async function mountPanel(initialMode: 'search' | 'migration' = 'search') {
     postMessage: (message: unknown) => { posted.push(message as WebviewToHostMessage); } });
   const container = document.createElement('div'); document.body.append(container);
   reactRoot = createRoot(container);
-  await act(async () => reactRoot!.render(<App initialMode={initialMode} />));
+  await act(async () => reactRoot!.render(<App />));
   const post = (message: HostToWebviewMessage) => window.dispatchEvent(new MessageEvent('message', { data: message }));
   const postRaw = (data: unknown) => window.dispatchEvent(new MessageEvent('message', { data }));
   await act(async () => post({ type: 'INIT', payload: { target: null, workspaceRoot: '',
     settings: { repositoryPaths: [], topK: 4 }, repositoryStatuses: [], moduleExplorer: unselectedTarget,
     codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
-    serviceStatus: { retrieval: 'connected', adaptation: 'unconfigured', executionMode: 'real' },
+    serviceStatus: { moduleSearch: 'connected', adaptation: 'unconfigured', executionMode: 'real' },
     searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } }));
   return { container, post, postRaw, posted };
 }

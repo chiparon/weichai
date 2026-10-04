@@ -222,30 +222,12 @@ kbd {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--fg);
 }
+.workbench-mode-label { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; margin-left: 20px; color: var(--fg); font-size: 12px; }
 
 /* Error banner */
 
-.workbench-modes { display: flex; align-items: center; gap: 4px; margin-right: auto; margin-left: 20px; }
-.workbench-modes button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 6px 12px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.workbench-modes button[aria-pressed="true"] { color: var(--fg); background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .migration-progress { padding: 4px 0 16px; }
 .migration-progress .step-rail { justify-content: center; }
-.task-search { max-width: 1100px; margin: 0 auto; padding: 16px 12px 4px; min-width: 0; }
-.task-search-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-.section-kicker { color: var(--muted); font-size: 11px; }
-.task-search h1 { font-size: 21px; margin: 8px 0 0; line-height: 1.5; }
-.engine-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.engine-status i { width: 6px; height: 6px; background: var(--warning); border-radius: 50%; }
-.engine-status.is-connected i { background: var(--ok); }
-.task-query-label { display: block; margin-bottom: 8px; font-size: 12px; }
-.task-query { display: block; width: 100%; min-height: 114px; max-height: 320px; resize: vertical; padding: 14px; border: 1px solid var(--input-border); border-radius: 4px; color: var(--input-fg); background: var(--input-bg); line-height: 1.7; }
-.task-query::placeholder { color: var(--muted); }
-.task-search-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
-.task-search-controls label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; }
-.task-search-controls select { height: 32px; max-width: 100%; border: 1px solid var(--border); background: var(--surface); color: var(--fg); border-radius: 4px; padding: 0 9px; }
-.task-search-controls > .primary-action { margin-left: auto; min-height: 32px; }
-.search-scope-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; margin: 14px 0 24px; overflow-wrap: anywhere; }
-.search-scope-line span:last-child { margin-left: auto; }
 .context-empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; border-top: 1px solid var(--border); color: var(--muted); }
 .context-empty strong { font-size: 12px; font-weight: 400; }
 .context-heading { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); padding: 18px 0 12px; }
@@ -274,7 +256,6 @@ kbd {
 .context-export strong { font-size: 12px; }
 .context-export span { font-size: 11px; color: var(--muted); }
 .context-export-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-.task-search-error, .context-export .task-search-error { color: var(--error); }
 .context-result-status { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 14px 0; font-size: 11px; color: var(--muted); }
 .context-result-status > span:first-child { color: var(--ok); }
 .context-result-status > .context-partial { color: var(--warning, #d3b35c); }
@@ -283,20 +264,13 @@ kbd {
 .context-gaps ul { margin: 10px 0 0; padding-left: 20px; }
 .context-gaps li { margin: 5px 0; overflow-wrap: anywhere; }
 .context-gaps code { display: block; overflow-wrap: anywhere; }
-.task-search button:disabled { opacity: .45; cursor: default; }
 
 @media (max-width: 900px) {
-  .task-search-heading { flex-wrap: wrap; gap: 10px; }
   .context-evidence { grid-template-columns: minmax(0, 1fr); }
   .context-detail { border-left: none; border-top: 1px solid var(--border); }
 }
 @media (max-width: 520px) {
   .app-header { flex-wrap: wrap; }
-  .workbench-modes { order: 3; width: 100%; margin: 0; }
-  .workbench-modes button { flex: 1; }
-  .task-search { padding: 8px 0; }
-  .task-search h1 { font-size: 18px; }
-  .task-search-controls > .primary-action { width: 100%; margin-left: 0; }
   .context-export-actions { width: 100%; }
   .migration-progress .step-label { display: none; }
 }

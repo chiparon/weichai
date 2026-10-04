@@ -58,7 +58,7 @@ const payload = { target: null, workspaceRoot: '', settings: { repositoryPaths: 
     stats: { modules: 0, files: 0, types: 0, methods: 0, implemented: 0, unimplemented: 0, unknown: 0, dependencies: 0 },
     summary: { exists: false, path: '.forexplore/module-summary.json' } } },
   codeIntelligence: { status: 'ready', storage: 'memory', repositories: [] },
-  serviceStatus: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' },
+  serviceStatus: { moduleSearch: 'connected', adaptation: 'connected', executionMode: 'real' },
   searchProvider: 'SeekDB', adaptationProvider: 'DeepSeek' } as any;
 
 const output = { appendLine: (line: string) => api.logLines.push(line) };
@@ -144,7 +144,7 @@ describe('translation panel handoff', () => {
     publishPanelMessage(undefined, { type: 'MODULE_TRANSLATION_READY', targetId: 't', candidateId: 'c',
       moduleScopeId: 'a'.repeat(64) }, output);
     publishPanelMessage(undefined, { type: 'SERVICE_STATUS',
-      status: { retrieval: 'connected', adaptation: 'connected', executionMode: 'real' } }, output);
+      status: { moduleSearch: 'connected', adaptation: 'connected', executionMode: 'real' } }, output);
 
     expect(api.logLines).toContain('[forexplore] dropped MODULE_TRANSLATION_READY: no panel is attached.');
     expect(api.logLines.some((line) => line.includes('SERVICE_STATUS'))).toBe(false);

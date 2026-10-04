@@ -5,23 +5,15 @@ using AssetUpgradeGateway;
 public static class DomainExtensions
 {
     public static bool ContainsAll(this InventoryReservation reservation, IReadOnlyList<OrderLine> lines)
-        => lines.All(line => reservation.Contains(line.Sku, line.Quantity));
-
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
     public static bool IsTerminal(this WorkflowState state)
-        => state is WorkflowState.Completed or WorkflowState.Failed;
-
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
     public static bool IsTerminal(this EventProcessingStage stage)
-        => stage is EventProcessingStage.Completed or EventProcessingStage.DeadLettered;
-
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
     public static long MerchandiseTotal(this OrderRequest order)
-        => order.Lines.Sum(line => checked((long)line.Quantity * line.UnitPriceMinor));
-
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
     public static string StableFingerprint(this AttachmentInput attachment)
-    {
-        var hash = System.Security.Cryptography.SHA256.HashData(attachment.Content.Span);
-        return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
     public static AssetEvent WithState(this AssetEvent assetEvent, WorkflowState state)
-        => assetEvent with { State = state };
+    { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
 }

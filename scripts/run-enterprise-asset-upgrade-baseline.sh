@@ -13,6 +13,12 @@ requirements_source="$target_source/requirements"
 results_root="${BASELINE_RESULTS_ROOT:-$dataset_root/results}"
 run_id="${BASELINE_RUN_ID:-baseline-$(date -u +%Y%m%dT%H%M%SZ)}"
 prompt_file=""
+agent_shell="${BASELINE_AGENT:-claude}"
+# DeepSeek's public API model id deepseek-flash serves DeepSeek-V4.1-Flash.
+# Claude Code maps a claude-sonnet model name to that DeepSeek model. The
+# sonnet [1m] alias keeps the long context mode while remaining accepted by
+# the current Claude Code model registry.
+model="${BASELINE_MODEL:-claude-sonnet-4-6[1m]}"
 
 usage() {
   cat <<'EOF'
@@ -21,10 +27,14 @@ Usage: scripts/run-enterprise-asset-upgrade-baseline.sh [options]
 Options:
   --prompt-file FILE   Use an additional task prompt instead of the default.
   --run-id ID          Store this run under experiments/enterprise-asset-upgrade/results/ID.
+  --agent NAME         Agent shell: claude (default) or codex.
+  --model MODEL        Claude shell model alias (default: claude-sonnet-4-6[1m]).
   --help               Show this help.
 
 Environment:
-  CLAUDE_BIN            Coding Agent executable, defaults to claude.
+  CODEX_BIN             Codex executable, defaults to codex.
+  CLAUDE_BIN            Claude executable when --agent claude is selected.
+  DEEPSEEK_API_KEY      DeepSeek key used by the Claude Code Anthropic adapter.
   BASELINE_RESULTS_ROOT  Override the results directory.
 EOF
 }
@@ -37,6 +47,12 @@ while (($#)); do
     --run-id)
       (($# >= 2)) || { echo "--run-id requires an id" >&2; exit 2; }
       run_id="$2"; shift 2 ;;
+    --agent)
+      (($# >= 2)) || { echo "--agent requires a name" >&2; exit 2; }
+      agent_shell="$2"; shift 2 ;;
+    --model)
+      (($# >= 2)) || { echo "--model requires a value" >&2; exit 2; }
+      model="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -89,7 +105,13 @@ cat > "$run_dir/run-manifest.json" <<EOF
 {
   "runId": "${run_id}",
   "kind": "coding-agent-baseline",
-  "model": "${DEEPSEEK_MODEL:-deepseek-v4-flash}",
+  "provider": "deepseek",
+  "apiBase": "https://api.deepseek.com/anthropic",
+  "settingSources": "project,local",
+  "model": "${model}",
+  "apiModel": "deepseek-flash",
+  "effectiveModel": "DeepSeek-V4.1-Flash",
+  "agentShell": "${agent_shell}",
   "workspace": "target-project",
   "requirements": "requirements",
   "historyExposed": false,
@@ -97,11 +119,23 @@ cat > "$run_dir/run-manifest.json" <<EOF
 }
 EOF
 
-launcher="${CLAUDE_BIN:-claude}"
+if [[ "$agent_shell" == "codex" ]]; then
+  launcher="${CODEX_BIN:-codex}"
+elif [[ "$agent_shell" == "claude" ]]; then
+  launcher="${CLAUDE_BIN:-claude}"
+else
+  echo "Unsupported agent shell: $agent_shell (expected codex or claude)" >&2
+  exit 2
+fi
 command -v "$launcher" >/dev/null 2>&1 || { echo "Coding Agent executable not found: $launcher" >&2; exit 127; }
+if [[ "$agent_shell" == "claude" && "${BASELINE_DRY_RUN:-0}" != "1" ]]; then
+  [[ -n "${DEEPSEEK_API_KEY:-}" ]] || { echo "DEEPSEEK_API_KEY is required for Claude Code + DeepSeek." >&2; exit 1; }
+fi
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'Starting baseline in %s\n' "$run_dir"
-printf 'Model: Coding Agent default\n'
+printf 'Agent shell: %s\n' "$agent_shell"
+printf 'Provider: deepseek\n'
+printf 'Model: %s\n' "$model"
 printf 'History repositories exposed: no\n'
 
 if [[ "${BASELINE_DRY_RUN:-0}" == "1" ]]; then
@@ -109,19 +143,31 @@ if [[ "${BASELINE_DRY_RUN:-0}" == "1" ]]; then
   agent_status=0
 else
   set +e
-  (
-    cd "$run_dir/target-project"
-    # --bare prevents repository-local settings and MCP configuration from being
-    # discovered. The explicit prompt is the only task context supplied here.
-    "$launcher" \
-      --bare \
-      --no-session-persistence \
-      --permission-mode bypassPermissions \
-      --allow-dangerously-skip-permissions \
-      --verbose \
-      --output-format stream-json \
-      -p "$(cat "$run_dir/task-prompt.md")"
-  ) 2>&1 | tee "$run_dir/agent-stream.jsonl"
+  if [[ "$agent_shell" == "codex" ]]; then
+    (cd "$run_dir/target-project" && "$launcher" exec \
+      --model "$model" --cd "$run_dir/target-project" \
+      --sandbox danger-full-access --skip-git-repo-check --ephemeral --json \
+      -o "$run_dir/agent-final.txt" - < "$run_dir/task-prompt.md") \
+      2>&1 | tee "$run_dir/agent-stream.jsonl"
+  else
+    (
+      cd "$run_dir/target-project"
+      ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" \
+      ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY" \
+      ANTHROPIC_API_KEY="$DEEPSEEK_API_KEY" \
+      ANTHROPIC_MODEL="$model" \
+      ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
+      ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
+      ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
+      CLAUDE_CODE_SUBAGENT_MODEL="$model" \
+      CLAUDE_CODE_EFFORT_LEVEL="max" \
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW="786432" \
+      "$launcher" --bare --setting-sources project,local --no-session-persistence --permission-mode bypassPermissions \
+        --allow-dangerously-skip-permissions --verbose --output-format stream-json \
+        --model "$model" \
+        -p "$(cat "$run_dir/task-prompt.md")"
+    ) 2>&1 | tee "$run_dir/agent-stream.jsonl"
+  fi
   agent_status=${PIPESTATUS[0]}
   set -e
 fi
@@ -133,6 +179,8 @@ out, run_id, started, finished, status, log_path = sys.argv[1:]
 root = pathlib.Path(out).parent
 files = [p for p in (root / "target-project").rglob("*") if p.is_file() and ".git" not in p.parts]
 stream_result = {}
+turn_result = {}
+thread_id = None
 for line in pathlib.Path(log_path).read_text(errors="replace").splitlines():
     try:
         event = json.loads(line)
@@ -140,10 +188,13 @@ for line in pathlib.Path(log_path).read_text(errors="replace").splitlines():
         continue
     if event.get("type") == "result":
         stream_result = event
-usage = stream_result.get("usage", {})
+    if event.get("type") == "thread.started":
+        thread_id = event.get("thread_id")
+    if event.get("type") == "turn.completed":
+        turn_result = event
+usage = stream_result.get("usage", {}) or turn_result.get("usage", {})
 model_usage = stream_result.get("modelUsage", {})
 model_name = next(iter(model_usage), None)
-model_stats = model_usage.get(model_name, {}) if model_name else {}
 result = {
     "runId": run_id,
     "kind": "coding-agent-baseline",
@@ -156,23 +207,84 @@ result = {
     "agentLog": str(root / "agent-stream.jsonl"),
     "historyExposed": False,
     "resultFileCount": len(files),
-    "agentSessionId": stream_result.get("session_id"),
+    "agentSessionId": stream_result.get("session_id") or thread_id,
     "agentModel": model_name,
     "durationApiMs": stream_result.get("duration_api_ms"),
     "durationMs": stream_result.get("duration_ms"),
-    "totalCostUsd": stream_result.get("total_cost_usd"),
     "inputTokens": usage.get("input_tokens"),
     "outputTokens": usage.get("output_tokens"),
     "cacheCreationInputTokens": usage.get("cache_creation_input_tokens"),
     "cacheReadInputTokens": usage.get("cache_read_input_tokens"),
     "thinkingTokens": usage.get("output_tokens_details", {}).get("thinking_tokens"),
-    "modelUsage": model_stats,
+    "modelUsage": model_usage,
+}
+manifest = json.loads((root / "run-manifest.json").read_text())
+result["provider"] = manifest.get("provider")
+result["configuredApiBase"] = manifest.get("apiBase")
+result["settingSources"] = manifest.get("settingSources")
+result["agentShell"] = manifest.get("agentShell")
+result["apiModel"] = manifest.get("apiModel")
+result["effectiveModel"] = manifest.get("effectiveModel")
+result["agentModelUsageKeys"] = list(model_usage)
+result["agentModel"] = manifest.get("model") or result["agentModel"]
+result["claudeCodeListCostEstimateUsd"] = stream_result.get("total_cost_usd")
+result["providerBilling"] = {
+    "provider": manifest.get("provider"),
+    "amountUsd": None,
+    "status": "not_reported_by_run_telemetry",
+    "note": "Claude Code's list-price estimate is not provider billing data.",
 }
 pathlib.Path(out).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+PY
+
+# Run the evaluator only after the Coding Agent has exited. The evaluator lives
+# outside target-project and is never copied into the Agent workspace.
+hidden_evaluator="$dataset_root/evaluation/run-hidden-evaluation.sh"
+hidden_status=2
+if [[ -x "$hidden_evaluator" ]]; then
+  set +e
+  "$hidden_evaluator" \
+    --target "$run_dir/target-project" \
+    --output "$run_dir/hidden-evaluation.json" \
+    2>&1 | tee "$run_dir/hidden-evaluation.log"
+  hidden_status=${PIPESTATUS[0]}
+  set -e
+else
+  echo "Hidden evaluator not found: $hidden_evaluator" | tee "$run_dir/hidden-evaluation.log"
+fi
+
+python3 - "$run_dir/run-result.json" "$run_dir/hidden-evaluation.json" "$hidden_status" <<'PY'
+import json, pathlib, sys
+result_path, evaluation_path, status = sys.argv[1:]
+result = json.loads(pathlib.Path(result_path).read_text())
+evaluation = pathlib.Path(evaluation_path)
+result["hiddenEvaluation"] = {
+    "status": int(status),
+    "report": str(evaluation),
+}
+if evaluation.is_file():
+    try:
+        report = json.loads(evaluation.read_text())
+    except json.JSONDecodeError:
+        report = None
+    if isinstance(report, dict):
+        result["hiddenEvaluation"].update({
+            "total": report.get("Total"),
+            "passed": report.get("Passed"),
+            "failed": report.get("Failed"),
+            "score": report.get("Score"),
+            "requirementTotal": report.get("RequirementTotal"),
+            "requirementPassed": report.get("RequirementPassed"),
+            "qualityTotal": report.get("QualityTotal"),
+            "qualityPassed": report.get("QualityPassed"),
+        })
+pathlib.Path(result_path).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 PY
 
 printf 'Baseline exit code: %s\n' "$agent_status"
 printf 'Result code copy: %s\n' "$run_dir/target-project"
 printf 'Agent log: %s\n' "$run_dir/agent-stream.jsonl"
 printf 'Run result: %s\n' "$run_dir/run-result.json"
+printf 'Hidden evaluation exit code: %s\n' "$hidden_status"
+printf 'Hidden evaluation: %s\n' "$run_dir/hidden-evaluation.json"
 exit "$agent_status"

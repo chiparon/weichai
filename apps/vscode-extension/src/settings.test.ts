@@ -1,4 +1,5 @@
 // @vitest-environment node
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LLM_SETTINGS, normaliseConfiguredPaths } from '@forexplore/contracts';
 const config = vi.hoisted(() => ({ get: vi.fn((_key: string, fallback: unknown) => fallback), inspect: vi.fn(), update: vi.fn() }));
@@ -73,10 +74,13 @@ describe('AI user settings', () => {
 
   it('expands named workspace folders in array settings', () => {
     workspaceFolders.push({ name: 'asset-upgrade-target', uri: { scheme: 'file', fsPath: '/datasets/asset-upgrade/target-project' } });
-    expect(resolveWorkspaceConfiguredPath('${workspaceFolder:asset-upgrade-target}/src')).toBe('/datasets/asset-upgrade/target-project/src');
+    // The helper resolves against the real filesystem, so the expectation has to be
+    // resolved the same way: on Windows a rooted POSIX value becomes E:\datasets\...
+    const expected = path.resolve('/datasets/asset-upgrade/target-project', 'src');
+    expect(resolveWorkspaceConfiguredPath('${workspaceFolder:asset-upgrade-target}/src')).toBe(expected);
     config.get.mockImplementation((key: string, fallback: unknown) => key === 'repositoryPaths'
       ? ['${workspaceFolder:asset-upgrade-target}/src'] : fallback);
-    expect(loadSettings().repositoryPaths).toEqual(['/datasets/asset-upgrade/target-project/src']);
+    expect(loadSettings().repositoryPaths).toEqual([expected]);
     workspaceFolders.length = 0;
     config.get.mockImplementation((_key: string, fallback: unknown) => fallback);
   });

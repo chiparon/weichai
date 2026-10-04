@@ -1361,7 +1361,7 @@ async function synchronizeCodeIntelligenceResult(
   options: SynchronizationOptions = {},
 ): Promise<Awaited<ReturnType<CodeIntelligenceHost['synchronize']>>> {
   const updateStatus = (presentation: CodeIntelligencePresentation) => {
-    activeServices?.setRetrievalReady(retrievalAvailable(presentation));
+    activeServices?.setModuleSearchReady(retrievalAvailable(presentation));
     if (activeServices) publish({ type: 'SERVICE_STATUS', status: activeServices.serviceStatus });
   };
   try {

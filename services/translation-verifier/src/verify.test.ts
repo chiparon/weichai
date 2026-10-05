@@ -1,3 +1,4 @@
+import { bindTestRunner } from "./host/test-runner.js";
 import { describe, expect, it, afterEach } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -101,7 +102,7 @@ describe("createVerifier", () => {
     expect(task.userPrompt).toContain("src/target.py");
     expect(task.terminalTools).toEqual(["finish", "report_uncertain"]);
 
-    const context = {
+    const resolvedContext = {
       state: {},
       runtime: {
         sourceLanguage: testInput.sourceLanguage,
@@ -118,6 +119,7 @@ describe("createVerifier", () => {
         targetTest: { executable: "python3", args: ["-m", "pytest"] },
       },
     };
+    const context = { ...resolvedContext, runner: bindTestRunner(resolvedContext) };
     const toolNames = task.tools.map((factory) => factory(context).name);
     expect(toolNames).toEqual([
       "list_source_files",

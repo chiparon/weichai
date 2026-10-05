@@ -1,3 +1,4 @@
+import { bindTestRunner } from "./test-runner.js";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import {
@@ -90,11 +91,12 @@ export function createAgentHost<Result = unknown>(
         traceEvent(runId, "run.started"),
       );
       try {
-        const context: ToolContext = {
+        const resolvedContext = {
           state: {},
           budget,
           runtime: await resolveToolContext(task.taskContext),
         };
+        const context: ToolContext = { ...resolvedContext, runner: bindTestRunner(resolvedContext) };
         const tools = bindTools(task, context);
         const result = await runAgentLoop({
           client: options.modelClient,

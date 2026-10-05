@@ -1,5 +1,5 @@
-import { MAVEN_COVERAGE_GOALS } from "./maven-coverage.js";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { MAVEN_COVERAGE_GOALS } from "./test-runner.js";
+import { access, readFile, realpath, stat, readdir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import type { VerificationInput } from "../types.js";
 import {
@@ -36,6 +36,8 @@ export async function resolveTestEnvironment(
       return resolveJavaEnvironment(root);
     case "javascript":
       return resolveNodeEnvironment(root);
+    case "csharp":
+      return resolveDotnetEnvironment(root);
     case "python":
       return resolvePythonEnvironment(root);
     default:
@@ -81,6 +83,22 @@ async function resolveJavaEnvironment(root: string): Promise<TestEnvironment> {
   };
 }
 
+async function resolveDotnetEnvironment(root: string): Promise<TestEnvironment> {
+  const entries = await readdir(root, { recursive: true });
+  const projects: string[] = [];
+  for (const name of entries) {
+    const path = name.replaceAll("\\", "/");
+    if (!path.endsWith(".csproj") || path.split("/").some(part => ["obj", "bin", ".git"].includes(part))) continue;
+    const text = await readText(join(root, path));
+    if (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(text) || /Include=["']Microsoft\.NET\.Test\.Sdk["']/i.test(text)) projects.push(path);
+  }
+  if (projects.length !== 1) throw new Error("C# target project must contain exactly one standard dotnet test project.");
+  const project = projects[0];
+  const directory = project.includes("/") ? project.slice(0, project.lastIndexOf("/")) : "";
+  if (!directory) throw new Error("C# test project must be in a dedicated test directory.");
+  return { framework: "dotnet", testRoots: await validateTestRoots(root, [directory], "dotnet"), targetTest: { executable: "dotnet", args: ["test", project] } };
+}
+
 async function resolvePythonEnvironment(root: string): Promise<TestEnvironment> {
   const configFiles = ["pytest.ini", "pyproject.toml", "setup.cfg"];
   const configs: ProjectConfig[] = [];
@@ -104,7 +122,9 @@ async function resolvePythonEnvironment(root: string): Promise<TestEnvironment> 
     framework: "pytest",
     testRoots,
     targetTest: {
-      executable: process.platform === "win32" ? "python.exe" : "python3",
+      executable: await fileExists(join(root, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python"))
+        ? join(root, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python")
+        : process.platform === "win32" ? "python.exe" : "python3",
       args: ["-m", "pytest"],
     },
   };
@@ -229,6 +249,7 @@ function normalizeConfiguredRoot(value: string, framework: string): string {
   let normalized = value.trim().replace(/\\/g, "/");
   normalized = normalized.replace(/^\$\{project\.basedir\}\/?/, "");
   normalized = normalized.replace(/^\$rootDir\/?/, "");
+  normalized = normalized.replace(/^<rootDir>\/?/, "");
   if (!normalized || normalized.includes("\0") || normalized.startsWith("/") || normalized.split("/").some((part) => part === "..")) {
     throw new Error(`Invalid ${framework} test root: ${value}`);
   }
@@ -320,8 +341,9 @@ function asStringRecord(value: unknown): Record<string, string> {
   );
 }
 
-function normalizeLanguage(value: string): "java" | "javascript" | "python" | "unsupported" {
+function normalizeLanguage(value: string): "java" | "javascript" | "python" | "csharp" | "unsupported" {
   const language = value.trim().toLowerCase();
+  if (["c#", "csharp", "cs", "c-sharp"].includes(language)) return "csharp";
   if (language === "java") return "java";
   if (["javascript", "typescript", "node", "node.js", "js", "ts"].includes(language)) return "javascript";
   if (["python", "python3", "py"].includes(language)) return "python";

@@ -1,3 +1,4 @@
+import type { BoundTestRunner } from "../test-runner.js";
 import type { TargetFunctionCoverage, VerificationFunction } from "../../types.js";
 import type { AgentRunBudget } from "../agent.js";
 import { readFile } from "node:fs/promises";
@@ -22,7 +23,8 @@ export type TestRunner =
   | "gradle"
   | "pytest"
   | "jest"
-  | "vitest";
+  | "vitest"
+  | "dotnet";
 
 export type TargetTest = {
   executable: string;
@@ -80,6 +82,7 @@ export type ToolContext = {
   state: ToolState;
   budget?: AgentRunBudget;
   runtime: ToolRuntimeContext;
+  runner: BoundTestRunner;
 };
 
 export function relativePath(value: unknown, label = "path"): string {

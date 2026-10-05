@@ -1,3 +1,4 @@
+import { bindTestRunner } from "../test-runner.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ function toolContext(
   state: ToolState = {},
   targetTest: TargetTest = { executable: process.execPath, args: ["-e", ""] },
 ): ToolContext {
-  return {
+  const context = {
     state,
     runtime: {
       sourceLanguage: "Python",
@@ -36,10 +37,11 @@ function toolContext(
       sourceDirectory: "src",
       targetDirectory: "src",
       testRoots: ["tests/agent"],
-      testRunner: "jest",
+      testRunner: "jest" as const,
       targetTest,
     },
   };
+  return { ...context, runner: bindTestRunner(context) };
 }
 
 afterEach(async () => {
@@ -49,6 +51,29 @@ afterEach(async () => {
 });
 
 describe("verification host tools", () => {
+  it("executes an injected runner without selecting a language or framework", async () => {
+    const root = await mkdtemp(join(tmpdir(), "translation-verifier-bound-runner-"));
+    roots.push(root);
+    await mkdir(join(root, "tests/agent"), { recursive: true });
+    await writeFile(join(root, "tests/agent/example.custom"), "test");
+    const context = toolContext(root, root);
+    const calls: string[] = [];
+    context.runner = {
+      async run(path) {
+        calls.push(path);
+        return {
+          status: "success", timedOut: false, exitCode: 0, stdout: "bound runner", stderr: "", durationMs: 1,
+          tests: { executed: 1, passed: 1, failed: 0, skipped: 0 },
+          coverage: { status: "available", targetFunction: { name: "target_fn", executed: true, lineCoverage: 100, branchCoverage: null } },
+        };
+      },
+    };
+    const result = await createRunTargetTestsTool()(context).execute({ path: "tests/agent/example.custom" });
+    expect(calls).toEqual(["tests/agent/example.custom"]);
+    expect(result).toMatchObject({ status: "success", stdout: "bound runner", tests: { executed: 1 }, coverage: { status: "available" } });
+    expect(context.state.lastTargetTest).toBe(result);
+  });
+
   it("lists files only in strategy-authorized directories", async () => {
     const root = await mkdtemp(join(tmpdir(), "translation-verifier-tools-"));
     roots.push(root);

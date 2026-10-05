@@ -32,6 +32,7 @@ function toolContext(
       targetProjectPath,
       sourcePath: "src/source.py",
       targetPath: "src/target.java",
+      targetFunction: { path: "src/target.java", name: "target_fn" },
       sourceDirectory: "src",
       targetDirectory: "src",
       testRoots: ["tests/agent"],
@@ -85,7 +86,7 @@ describe("verification host tools", () => {
     });
   });
 
-  it("reads project files and finish uses the Host test result", async () => {
+  it("does not accept a passing process without test and coverage evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "translation-verifier-tools-"));
     roots.push(root);
     const sourceRoot = join(root, "source");
@@ -154,11 +155,39 @@ describe("verification host tools", () => {
           translationStatus: "success",
         }),
       ),
-    ).resolves.toMatchObject({
-      testExecutionStatus: "success",
-      translationStatus: "success",
-      targetTest: { status: "success", stdout: "verified" },
+    ).rejects.toThrow("at least one executed, passing test");
+  });
+
+  it("accepts Host function coverage without enforcing a percentage threshold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "translation-verifier-tools-")); roots.push(root);
+    const targetFunction = { name: "target_fn", executed: true, lineCoverage: 25, branchCoverage: null };
+    const context = toolContext(root, root, {
+      lastTargetTest: {
+        status: "success", timedOut: false, exitCode: 0, stdout: "", stderr: "", durationMs: 1,
+        tests: { executed: 1, passed: 1, failed: 0, skipped: 0 },
+        coverage: { status: "available", targetFunction },
+      },
     });
+    const finish = createFinishTool()(context);
+    const input = finish.parse({ testExecutionStatus: "success", translationStatus: "success" });
+    expect((await finish.execute(input)).targetTest.coverage).toEqual({ status: "available", targetFunction });
+    expect(() => finish.parse({ ...input, targetFunction })).toThrow("finish requires");
+    context.state.lastTargetTest!.coverage = { status: "available", targetFunction: { ...targetFunction, executed: false } };
+    await expect(finish.execute(input)).rejects.toThrow("not executed");
+    context.state.lastTargetTest!.coverage = { status: "unavailable", reason: "report missing" };
+    await expect(finish.execute(input)).rejects.toThrow("report missing");
+    context.state.lastTargetTest!.tests = { executed: 0, passed: 0, failed: 0, skipped: 1 };
+    await expect(finish.execute(input)).rejects.toThrow("at least one executed");
+  });
+
+  it("invalidates a previous successful run even if the next run cannot start", async () => {
+    const root = await mkdtemp(join(tmpdir(), "translation-verifier-tools-")); roots.push(root);
+    const context = toolContext(root, root, {
+      lastTargetTest: { status: "success", timedOut: false, exitCode: 0, stdout: "", stderr: "", durationMs: 1 },
+    });
+    const run = createRunTargetTestsTool()(context);
+    await expect(run.execute(run.parse({ path: "tests/agent/missing.js" }))).rejects.toThrow("does not exist");
+    expect(context.state.lastTargetTest).toBeUndefined();
   });
 
   it("allows a new test path inside a Host-configured test root", async () => {

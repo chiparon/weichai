@@ -1,3 +1,4 @@
+import type { TargetFunctionCoverage, VerificationFunction } from "../../types.js";
 import type { AgentRunBudget } from "../agent.js";
 import { readFile } from "node:fs/promises";
 import { lstatSync, realpathSync } from "node:fs";
@@ -29,6 +30,18 @@ export type TargetTest = {
   timeoutMs?: number;
 };
 
+export type TestSummary = {
+  /** Tests actually executed, excluding skipped tests. */
+  executed: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+};
+
+export type TargetCoverageResult =
+  | { status: "available"; targetFunction: TargetFunctionCoverage }
+  | { status: "unavailable"; reason: string };
+
 export type TargetTestResult = {
   status: "success" | "failure";
   timedOut: boolean;
@@ -37,6 +50,8 @@ export type TargetTestResult = {
   stdout: string;
   stderr: string;
   durationMs: number;
+  tests?: TestSummary;
+  coverage?: TargetCoverageResult;
 };
 
 export type AgentTaskContext = {
@@ -46,6 +61,7 @@ export type AgentTaskContext = {
   targetProjectPath: string;
   sourcePath: string;
   targetPath: string;
+  targetFunction: VerificationFunction;
 };
 
 export type ToolRuntimeContext = AgentTaskContext & {

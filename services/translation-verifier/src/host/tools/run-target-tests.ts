@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { prepareMavenCoverage, collectMavenCoverage } from "../maven-coverage.js";
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import {
@@ -56,6 +58,7 @@ export function createRunTargetTestsTool(): HostToolFactory {
       parse: parseRunTargetTestsInput,
       async execute(input) {
         context.budget?.assertActive();
+        context.state.lastTargetTest = undefined;
         const result = await runTargetTests(context, testRoots, input.path);
         context.budget?.assertActive();
         context.state.lastTargetTest = result;
@@ -89,7 +92,10 @@ async function runTargetTests(
   }
 
   const testArgs = testFileArgs(testPath, context.runtime.testRunner);
-  const args = [...context.runtime.targetTest.args, ...testArgs];
+  const coverageRun = context.runtime.testRunner === "maven"
+    ? await prepareMavenCoverage(context.runtime.targetProjectPath)
+    : undefined;
+  const args = [...context.runtime.targetTest.args, ...(coverageRun?.args ?? []), ...testArgs];
   const timeoutMs = Math.min(
     context.runtime.targetTest.timeoutMs ?? 300_000,
     context.budget?.remainingMs() ?? Number.POSITIVE_INFINITY,
@@ -154,8 +160,14 @@ async function runTargetTests(
     }, timeoutMs);
   });
 
+  const evidence = coverageRun
+    ? await collectMavenCoverage(context.runtime.targetProjectPath, context.runtime.targetFunction)
+    : { coverage: { status: "unavailable" as const, reason: `Coverage collection is not implemented for ${context.runtime.testRunner}.` } };
+  if (coverageRun) await rm(coverageRun.dataDirectory, { recursive: true, force: true });
+
   return {
-    status: result.timedOut || result.exitCode !== 0 ? "failure" : "success",
+    ...evidence,
+    status: result.timedOut || result.exitCode !== 0 || ("tests" in evidence && (evidence.tests?.failed ?? 0) > 0) ? "failure" : "success",
     timedOut: result.timedOut,
     exitCode: result.exitCode,
     ...(result.signal ? { signal: result.signal } : {}),

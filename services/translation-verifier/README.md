@@ -67,10 +67,24 @@ The public result is always normalized to:
 type VerificationResult = {
   status: "success" | "failure";
   issue?: VerificationIssue;
+  targetFunction?: {
+    name: string;
+    executed: boolean;
+    lineCoverage: number | null;
+    branchCoverage: number | null;
+  };
 };
 ```
 
-A successful `finish` produces `status: "success"` when the Host observed a passing target test and the Agent reported a successful translation. A failed test or failed translation produces `status: "failure"`. `report_uncertain` also produces `status: "failure"` with an issue describing why verification could not be completed reliably.
+A successful `finish` produces `status: "success"` only when the Host observed a passing target test, at least one test actually executed, no tests failed, and fresh coverage identifies the requested target function as executed. The Agent cannot provide or override coverage values. Percentages do not have a minimum threshold; `null` indicates no measurable lines or branches. A failed test or failed translation produces `status: "failure"`. `report_uncertain` also produces `status: "failure"` with an issue describing why verification could not be completed reliably.
+
+## Target Function Coverage
+
+The task's target function identity (path, name, and optional signature) is bound by the Host. `run_target_tests` still accepts only a test path. Its result includes test counts and either available method coverage or an explicit unavailable reason. `finish` and `report_uncertain` preserve this evidence, and the strategy exposes available function coverage in the public result.
+
+The first supported coverage runner is Maven. The Host uses pinned JaCoCo 0.8.13 prepare-agent/report goals around the selected Surefire test. It removes previous JaCoCo XML and Surefire reports, uses a unique execution-data file for each run, and reads standard `target/site/jacoco/jacoco.xml` and `target/surefire-reports/TEST-*.xml` reports. Custom report directories and multi-module aggregation are not yet supported; missing reports prevent successful verification. Maven may need to download JaCoCo from its configured repository on the first run.
+
+Function matching uses the Java package, source filename, method name, and optional JVM descriptor or ordinary Java parameter signature. Ambiguous identities and unsupported signatures return unavailable evidence rather than selecting a different method. Gradle, pytest, Jest, and Vitest can still execute tests, but coverage collection is not yet implemented for them, so they must report uncertainty rather than finish successfully.
 
 ## Model Adapter Boundary
 

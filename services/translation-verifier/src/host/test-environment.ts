@@ -1,3 +1,4 @@
+import { MAVEN_COVERAGE_GOALS } from "./maven-coverage.js";
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import type { VerificationInput } from "../types.js";
@@ -75,7 +76,7 @@ async function resolveJavaEnvironment(root: string): Promise<TestEnvironment> {
     testRoots,
     targetTest: {
       executable: await wrapperOrCommand(root, candidate.framework === "maven" ? "mvnw" : "gradlew"),
-      args: ["test"],
+      args: candidate.framework === "maven" ? [...MAVEN_COVERAGE_GOALS] : ["test"],
     },
   };
 }

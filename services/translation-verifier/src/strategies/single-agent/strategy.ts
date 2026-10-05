@@ -26,13 +26,14 @@ export type SingleAgentTerminalResult = FinishResult | ReportUncertainResult;
 function toVerificationResult(
   result: SingleAgentTerminalResult,
 ): VerificationResult {
-  if ("translationStatus" in result) {
-    return {
-      status: result.translationStatus,
-      ...(result.issue ? { issue: result.issue } : {}),
-    };
-  }
-  return { status: "failure", issue: result.issue };
+  const targetFunction = result.targetTest.coverage?.status === "available"
+    ? result.targetTest.coverage.targetFunction
+    : undefined;
+  return {
+    status: "translationStatus" in result ? result.translationStatus : "failure",
+    ...(result.issue ? { issue: result.issue } : {}),
+    ...(targetFunction ? { targetFunction: { ...targetFunction } } : {}),
+  };
 }
 
 export function createSingleAgentTask(
@@ -47,6 +48,7 @@ export function createSingleAgentTask(
       targetProjectPath: input.targetProjectPath,
       sourcePath: input.subject.sourceFunction.path,
       targetPath: input.subject.targetFunction.path,
+      targetFunction: { ...input.subject.targetFunction },
     },
     systemPrompt: [
       "You are a translation verification agent.",
@@ -55,6 +57,8 @@ export function createSingleAgentTask(
       "Use only the provided tools and project-relative paths.",
       "Inspect the relevant source and target files before making a judgment.",
       "Create a focused test for the target function in an authorized target test root, run it with run_target_tests, and use the Host result as the test status.",
+      "Successful verification requires an executed passing test and Host coverage showing the target function was executed. Coverage percentages are evidence, not minimum thresholds.",
+      "If coverage is unavailable, investigate the reported reason or call report_uncertain; never invent coverage values.",
       "After the final test run, call finish with matching testExecutionStatus and translationStatus.",
       "If finish is rejected, treat the reported Host test status and output as authoritative; correct the status or continue investigating before trying to finish again.",
       "If the task cannot be verified reliably, call report_uncertain instead of guessing.",

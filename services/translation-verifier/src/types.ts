@@ -47,9 +47,19 @@ export type VerificationIssue = {
   description: string;
 };
 
+export type TargetFunctionCoverage = {
+  name: string;
+  executed: boolean;
+  /** Percentage from 0 to 100; null when no lines can be measured. */
+  lineCoverage: number | null;
+  /** Percentage from 0 to 100; null when the function has no branches. */
+  branchCoverage: number | null;
+};
+
 export type VerificationResult = {
   status: "success" | "failure";
   issue?: VerificationIssue;
+  targetFunction?: TargetFunctionCoverage;
 };
 
 export type VerificationPhase = "prepare" | "verify";

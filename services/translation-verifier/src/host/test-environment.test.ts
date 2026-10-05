@@ -1,3 +1,4 @@
+import { MAVEN_COVERAGE_GOALS } from "./maven-coverage.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ describe("resolveTestEnvironment", () => {
     ).resolves.toEqual({
       framework: "maven",
       testRoots: ["custom-tests/java", "custom-tests/resources"],
-      targetTest: { executable: "mvn", args: ["test"] },
+      targetTest: { executable: "mvn", args: [...MAVEN_COVERAGE_GOALS] },
     });
   });
 

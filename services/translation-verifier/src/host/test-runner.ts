@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { parseJacocoReport, parseSurefireReport, parseCobertura, parseIstanbul, parseJUnit, parseNodeTests, parsePythonCoverage, parseTrx, jsonReport, type PythonFunction } from "./coverage-reports.js";
 import { MAX_TEST_OUTPUT_CHARS, readProjectFile, resolveSafePath, type FunctionGroupTestRun, type FunctionGroupTestRunner, type ToolContext, type TargetTestResult, type TargetCoverageResult, type TestSummary } from "./tools/common.js";
+import type { VerificationReason } from "../types.js";
 
 const JACOCO = "org.jacoco:jacoco-maven-plugin:0.8.13";
 export const MAVEN_COVERAGE_GOALS = [`${JACOCO}:prepare-agent`, "test", `${JACOCO}:report`] as const;
@@ -56,6 +57,11 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
       const functionsResult = functions.map((mapping, index) => {
         const coverage = result.coverage[index];
         const executed = coverage?.status === "available" && coverage.targetFunction.executed;
+        const reason: VerificationReason = result.status === "failure"
+          ? "test-failed"
+          : coverage?.status !== "available"
+            ? "coverage-unavailable"
+            : executed ? "verified" : "not-executed";
         return {
           source: { ...mapping.source },
           target: { ...mapping.target },
@@ -63,6 +69,7 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
           executed,
           lineCoverage: coverage?.status === "available" ? coverage.targetFunction.lineCoverage : null,
           branchCoverage: coverage?.status === "available" ? coverage.targetFunction.branchCoverage : null,
+          reason,
         };
       });
       return {
@@ -74,6 +81,7 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
+        reason: result.status === "failure" ? "test-failed" : functionsResult.some((item) => item.reason === "coverage-unavailable") ? "coverage-unavailable" : functionsResult.some((item) => item.reason === "not-executed") ? "not-executed" : "verified",
       } satisfies FunctionGroupTestRun;
     },
   };
@@ -276,12 +284,6 @@ async function configureRunnerCoverage(context: RunnerContext, testPaths: readon
   const { targetProjectPath: root, testRunner: runner } = context.runtime;
   const testPath = testPaths[0];
   if (!testPath) throw new Error("At least one test path is required.");
-  // Unit fixtures may inject a direct Node process as a deterministic timeout
-  // command. It is not a Jest executable, so appending Jest coverage flags
-  // would make the process exit immediately and hide the timeout behavior.
-  if (context.runtime.targetTest.executable === process.execPath && context.runtime.targetTest.args[0] === "-e") {
-    return { dataDirectory, args: [] };
-  }
   if (runner === "maven") {
     if (!/\.(?:java|kt)$/i.test(testPath)) throw new Error(`Java test selector requires a .java or .kt file: ${testPath}`);
     const classNames = testPaths.map((path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.(?:java|kt)$/i, ""));

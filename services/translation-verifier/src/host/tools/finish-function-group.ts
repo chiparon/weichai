@@ -19,6 +19,15 @@ export type FinishFunctionGroupResult = FinishFunctionGroupInput & {
 function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): FunctionGroupTestRun {
   const latest = runs[runs.length - 1];
   if (!latest) throw new Error("Run run_function_group_tests before finish_function_group.");
+  const tests = runs.reduce(
+    (total, run) => ({
+      executed: total.executed + run.tests.executed,
+      passed: total.passed + run.tests.passed,
+      failed: total.failed + run.tests.failed,
+      skipped: total.skipped + run.tests.skipped,
+    }),
+    { executed: 0, passed: 0, failed: 0, skipped: 0 },
+  );
   const byFunction = new Map<string, FunctionGroupTestRun["functions"][number]>();
   for (const run of runs) {
     for (const item of run.functions) {
@@ -34,6 +43,7 @@ function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): Functio
   return {
     ...latest,
     status: runs.some((run) => run.status === "failure") ? "failure" : "success",
+    tests,
     testPaths: [...new Set(runs.flatMap((run) => run.testPaths))],
     functions: [...byFunction.values()],
     failures: runs.flatMap((run) => run.failures),

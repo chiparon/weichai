@@ -152,5 +152,6 @@ describe("function-group tools", () => {
     const result = await tool.execute(tool.parse({ testExecutionStatus: "success", translationStatus: "success" }));
     expect(result.functionGroupTest.functions.map(({ target }) => target.name).sort()).toEqual(["a", "b"]);
     expect(result.functionGroupTest.testPaths).toEqual(["tests/a.test.py", "tests/b.test.py"]);
+    expect(result.functionGroupTest.tests).toEqual({ executed: 2, passed: 2, failed: 0, skipped: 0 });
   });
 });

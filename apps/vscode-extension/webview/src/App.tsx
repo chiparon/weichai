@@ -173,7 +173,8 @@ export default function App() {
           // Dropping a reply for another selection used to leave this panel
           // waiting forever with no error, which reads as "translation is
           // running" while nothing is. Report it and release the pending state.
-          if (message.targetId !== targetIdRef.current || message.candidateId !== candidateIdRef.current) {
+          const directFallback = message.candidateId === 'direct-fallback';
+          if (message.targetId !== targetIdRef.current || (directFallback ? candidateIdRef.current !== null : message.candidateId !== candidateIdRef.current)) {
             const reason = '宿主返回的模块翻译作用域不属于当前选择的模块候选；请重新选择候选后再发起翻译。';
             setError(reason);
             dispatch({ type: 'ADAPT_FAILURE', message: reason });
@@ -298,7 +299,8 @@ export default function App() {
 
   function handleAdapt(): void {
     const candidate = selectedCandidate(state);
-    if (!state.target || !candidate) return;
+    const directFallback = state.target?.kind === 'module' && state.candidates.length === 0 && state.requirement.trim().length > 0;
+    if (!state.target || (!candidate && !directFallback)) return;
     setError(null);
     dispatch({ type: 'ADAPT_START' });
     bus.post({

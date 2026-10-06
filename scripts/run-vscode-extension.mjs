@@ -9,7 +9,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkPlatformWorkspace } from './check-platform-workspace.mjs';
@@ -27,6 +28,10 @@ Options:
   --skip-seek-db       Do not run docker compose for SeekDB.
   --skip-services      Do not start local embedding/reranking dependencies.
   --folder <path>      Folder to open in the Extension Development Host.
+  --preloaded          Open the ignored preloaded-workbench profile without scanning.
+  --workspace <path>   .code-workspace file for --preloaded.
+  --database <name>    SeekDB database for --preloaded.
+  --user-data-dir <p>  Isolated VS Code user-data directory for --preloaded.
   --help               Show this help.
 
 The Extension Development Host opens after dependency services are ready.
@@ -37,7 +42,10 @@ also accepted so existing Windows command lines remain compatible.`);
 }
 
 function parseArgs(argv) {
-  const options = { skipSeekDb: false, skipServices: false, folder: undefined };
+  const options = {
+    skipSeekDb: false, skipServices: false, preloaded: false,
+    folder: undefined, database: undefined, userDataDir: undefined,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     const normalized = argument.toLowerCase();
@@ -51,6 +59,40 @@ function parseArgs(argv) {
     }
     if (['--skip-services', '--skipservices', '-skipservices'].includes(normalized)) {
       options.skipServices = true;
+      continue;
+    }
+    if (normalized === '--preloaded') {
+      options.preloaded = true;
+      continue;
+    }
+    if (normalized === '--database') {
+      options.database = argv[++index];
+      if (!options.database) throw new Error(`${argument} requires a database name.`);
+      continue;
+    }
+    if (normalized.startsWith('--database=')) {
+      options.database = argument.slice(argument.indexOf('=') + 1);
+      if (!options.database) throw new Error(`${argument} requires a database name.`);
+      continue;
+    }
+    if (normalized === '--workspace') {
+      options.folder = argv[++index];
+      if (!options.folder) throw new Error(`${argument} requires a workspace path.`);
+      continue;
+    }
+    if (normalized.startsWith('--workspace=')) {
+      options.folder = argument.slice(argument.indexOf('=') + 1);
+      if (!options.folder) throw new Error(`${argument} requires a workspace path.`);
+      continue;
+    }
+    if (normalized === '--user-data-dir') {
+      options.userDataDir = argv[++index];
+      if (!options.userDataDir) throw new Error(`${argument} requires a directory.`);
+      continue;
+    }
+    if (normalized.startsWith('--user-data-dir=')) {
+      options.userDataDir = argument.slice(argument.indexOf('=') + 1);
+      if (!options.userDataDir) throw new Error(`${argument} requires a directory.`);
       continue;
     }
     if (normalized === '--folder' || normalized === '-folder') {
@@ -144,8 +186,24 @@ function setDefault(name, value) {
   if (!process.env[name]) process.env[name] = value;
 }
 
-function configureEnvironment() {
-  setDefault('CODE_INTELLIGENCE_SEEKDB_DATABASE', 'forexplore_javafileupload_flow_20260913');
+function configureEnvironment(options) {
+  if (options.preloaded) {
+    // The preloaded window is deliberately opt-in. It uses the same runtime
+    // composition as dev:extension, while making the bootstrap mode explicit
+    // to the trusted extension host.
+    process.env.FOREXPLORE_PRELOADED = '1';
+    process.env.FOREXPLORE_AUTO_OPEN_PANEL = '1';
+    if (options.database) process.env.CODE_INTELLIGENCE_SEEKDB_DATABASE = options.database;
+  } else {
+    // Do not let a stale shell variable turn the ordinary entry into the
+    // preloaded profile after a previous local demo run.
+    delete process.env.FOREXPLORE_PRELOADED;
+    delete process.env.FOREXPLORE_AUTO_OPEN_PANEL;
+    delete process.env.FOREXPLORE_PRELOADED_MANIFEST;
+  }
+  setDefault('CODE_INTELLIGENCE_SEEKDB_DATABASE', options.preloaded
+    ? 'forexplore_asset_upgrade_20261004'
+    : 'forexplore_javafileupload_flow_20260913');
   setDefault('CODE_INTELLIGENCE_SEEKDB_PORT', process.env.SEEKDB_PORT || '2881');
   setDefault('CODE_INTELLIGENCE_EMBEDDING_URL', `http://127.0.0.1:${process.env.FOREXPLORE_EMBEDDING_PORT || '4021'}/v1/embeddings`);
   setDefault('CODE_INTELLIGENCE_EMBEDDING_MODEL', 'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78');
@@ -159,11 +217,71 @@ function configureEnvironment() {
   setDefault('CODE_INTELLIGENCE_EMBEDDING_VARIANT', 'dml-fp16');
 }
 
+/**
+ * When WSL invokes the Windows `code` launcher, only variables listed in
+ * WSLENV reach the Windows extension host. Keep the runtime contract intact
+ * across that boundary without forwarding the entire WSL environment.
+ */
+function configureWslEnvironmentPassthrough() {
+  if (process.platform === 'win32') return;
+  const prefixes = ['FOREXPLORE_', 'CODE_INTELLIGENCE_', 'ADAPTATION_', 'RECAST_', 'SEEKDB_'];
+  const explicit = ['DEEPSEEK_API_KEY', 'SEMANTIC_QUERY_PORT_TOKEN', 'CODEX_BIN', 'CODEX_MODEL'];
+  const pathNames = new Set([
+    'FOREXPLORE_PRELOADED_MANIFEST', 'FOREXPLORE_PRELOADED_WORKSPACE',
+    'FOREXPLORE_MODEL_CACHE', 'FOREXPLORE_EMBEDDING_TOOLS', 'RECAST_SERVICES_LOG_DIR',
+  ]);
+  const names = Object.keys(process.env).filter(name => prefixes.some(prefix => name.startsWith(prefix)) || explicit.includes(name));
+  const entries = (process.env.WSLENV ?? '').split(':').filter(Boolean);
+  for (const name of names) {
+    if (entries.some(entry => entry.split('/')[0] === name)) continue;
+    entries.push(`${name}/${pathNames.has(name) || /(?:PATH|ROOT|DIR|FILE|CACHE|TOOLS)$/i.test(name) ? 'p' : 'w'}`);
+  }
+  if (entries.length) process.env.WSLENV = entries.join(':');
+}
+
 
 function resolveFolder(folder) {
   const resolved = path.resolve(repoRoot, folder);
   if (!existsSync(resolved)) throw new Error(`Folder does not exist: ${resolved}`);
   return resolved;
+}
+
+function workspaceConfiguredRoots(workspacePath) {
+  try {
+    const workspace = JSON.parse(readFileSync(workspacePath, 'utf8'));
+    const folders = Array.isArray(workspace.folders) ? workspace.folders : [];
+    return folders
+      .filter((folder) => folder && typeof folder.path === 'string')
+      .map((folder) => path.resolve(path.dirname(workspacePath), folder.path));
+  } catch {
+    return [];
+  }
+}
+
+function defaultPreloadedWorkspace() {
+  const candidates = [];
+  if (process.env.FOREXPLORE_PRELOADED_WORKSPACE?.trim()) {
+    candidates.push(process.env.FOREXPLORE_PRELOADED_WORKSPACE.trim());
+  }
+  candidates.push(path.join(repoRoot, 'experiments', 'enterprise-asset-upgrade', 'AssetUpgradeGateway.code-workspace'));
+  // The source checkout and the materialized enterprise corpus can live in
+  // different platform workspaces. Prefer the workspace whose configured
+  // folders actually exist, while keeping the normal checkout as the fallback.
+  try {
+    const platforms = JSON.parse(readFileSync(path.join(repoRoot, '.recast-platforms.json'), 'utf8'));
+    if (process.platform !== 'win32' && typeof platforms.windowsMountRoot === 'string') {
+      candidates.push(path.join(platforms.windowsMountRoot, 'experiments', 'enterprise-asset-upgrade', 'AssetUpgradeGateway.code-workspace'));
+    }
+  } catch {
+    // The mapping is optional outside the two platform workspaces.
+  }
+  return candidates
+    .map((candidate) => path.resolve(repoRoot, candidate))
+    .filter((candidate, index, all) => all.indexOf(candidate) === index && existsSync(candidate))
+    .sort((left, right) => {
+      const score = (candidate) => workspaceConfiguredRoots(candidate).filter((root) => existsSync(root)).length;
+      return score(right) - score(left);
+    })[0];
 }
 
 
@@ -219,8 +337,14 @@ async function startSeekDb(options) {
 
 
 /** Open the Extension Development Host and settle when its launcher process exits. */
-function launchHost(options) {
+async function launchHost(options) {
   const args = [`--extensionDevelopmentPath=${extensionRoot}`];
+  if (options.preloaded) {
+    args.push('--new-window');
+    const userDataDir = path.resolve(repoRoot, options.userDataDir || '.recast-preloaded/vscode-user-data');
+    await mkdir(userDataDir, { recursive: true });
+    args.push('--user-data-dir', userDataDir);
+  }
   if (options.folder) args.push(options.folder);
   const vscode = spawn(vscodeCommand, shellArgs(args), {
     cwd: repoRoot,
@@ -242,17 +366,37 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   process.chdir(repoRoot);
   checkPlatformWorkspace(repoRoot);
-  configureEnvironment();
+  configureEnvironment(options);
+
+  if (options.preloaded && !options.folder) {
+    options.folder = defaultPreloadedWorkspace();
+    if (!options.folder) {
+      throw new Error('找不到预置工作区。请使用 --workspace <path> 或 FOREXPLORE_PRELOADED_WORKSPACE 指定 .code-workspace 文件。');
+    }
+  }
 
 
   ensureVsCodeExtension('redhat.java');
   if (!await startSeekDb(options)) throw new Error('SeekDB startup failed; resolve the Docker error above before opening the development host.');
+
+  if (options.preloaded) {
+    const { preparePreloadedWorkspace } = await import('./prepare-preloaded-workspace.mjs');
+    const database = process.env.CODE_INTELLIGENCE_SEEKDB_DATABASE;
+    const prepared = await preparePreloadedWorkspace({
+      workspacePath: options.folder,
+      outputDirectory: path.join(repoRoot, '.recast-preloaded', database),
+      database,
+    });
+    process.env.FOREXPLORE_PRELOADED_MANIFEST = prepared.manifestPath;
+    console.log(`Preloaded workbench: ${prepared.manifest.repositories.length} persisted repositories bound from ${database}.`);
+  }
 
   requireSuccess(npmCommand, ['run', 'build:extension'], 'Extension build');
 
   if (options.folder) options.folder = resolveFolder(options.folder);
 
   await startServices(options);
+  configureWslEnvironmentPassthrough();
   console.log('Dependencies are ready; opening the development host.');
   console.log('VS Code keeps one development host per extension path: close the existing window to get a new one.');
   await launchHost(options);

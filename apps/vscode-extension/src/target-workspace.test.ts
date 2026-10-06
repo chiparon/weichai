@@ -205,6 +205,11 @@ it('compares Windows targets case- and separator-insensitively', () => {
   expect(sameTargetPath(target, `${equivalent}-other`)).toBe(false);
 });
 
+it('matches Windows and WSL spellings of the same repository', () => {
+  expect(sameTargetPath('E:\\CS\\devsys\\weichai\\experiments\\enterprise-asset-upgrade\\target-project',
+    '/mnt/e/cs/devsys/weichai/experiments/enterprise-asset-upgrade/target-project')).toBe(true);
+});
+
 /**
  * An empty or quoted-to-empty entry used to resolve to this process's working
  * directory, which is a real folder: the window then reported a target the user

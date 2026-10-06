@@ -39,6 +39,32 @@ export async function prepareModuleTranslationScope(input: {
   return { ...scope, fileHashes };
 }
 
+/**
+ * Prepare a module translation when retrieval has no usable history candidate.
+ * The target write scope and requirement context are still host-derived; only
+ * the Agent route changes to the direct Translator fallback.
+ */
+export async function prepareDirectModuleTranslationScope(input: {
+  workspaceRoot: string; target: ModuleTarget; requirement: string; decisionNotes: string;
+}): Promise<WorkspaceTranslationModuleScope> {
+  const { target } = input;
+  if (target.kind !== 'module' || !target.module) {
+    throw new Error('需求直实现兜底需要当前目标模块及其文件清单。');
+  }
+  const scope = buildModuleTranslationScope({
+    workspaceRoot: await realpath(input.workspaceRoot),
+    targetModule: { ...target.module, name: target.name, language: target.language },
+    requirement: [input.requirement.trim(), input.decisionNotes.trim()].filter(Boolean).join('\n补充约束：'),
+    candidates: [],
+    includeCandidateContext: false,
+  });
+  const fileHashes: Record<string, string> = {};
+  for (const file of scope.profile.writeFiles) {
+    fileHashes[file] = await moduleFileHash(scope.profile.workspaceRoot, file);
+  }
+  return { ...scope, translationMode: 'direct-translator', fileHashes };
+}
+
 export async function moduleFileHash(root: string, file: string): Promise<string> {
   const fullPath = await realpath(path.resolve(root, file));
   const relative = path.relative(await realpath(root), fullPath);

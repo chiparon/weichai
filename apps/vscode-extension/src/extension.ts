@@ -3,11 +3,12 @@ import { setModelCredentialProvider } from './local-fetch';
 import { BackendProcess, type BackendLaunchConfiguration } from './backend-process';
 import { ConfiguredModelReranker } from './model-reranker';
 import { WorkspaceTranslationHost } from './workspace-translation-host';
-import { prepareModuleTranslationScope } from './module-translation-handoff';
+import { prepareDirectModuleTranslationScope, prepareModuleTranslationScope } from './module-translation-handoff';
 import { localFetch } from './local-fetch';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import { DEFAULT_LLM_SETTINGS } from '@forexplore/contracts';
 import type {
   AdaptationResult,
   FilePatch,
@@ -52,10 +53,12 @@ import { RepositoryHealthCheck } from './repository-health';
 import { decorateRepositoryStatuses } from './repository-status';
 import { ServiceManager } from './service-manager';
 import { loadSettings, savePanelSettings, type ExtensionSettings } from './settings';
+import { loadPreloadedBindings, preloadedRepositoryId } from './preloaded-workspace';
 import {
   addTargetWorkspace,
   pendingTargetImportKey,
   readPendingTargetImport,
+  sameTargetPath,
   selectedTargetWorkspaceFolders,
   type PendingTargetImport,
 } from './target-workspace';
@@ -118,13 +121,50 @@ let activeRun: ActiveMigrationRun | null = null;
 let moduleExplorerTargets = new Map<string, ModuleTarget>();
 let moduleExplorerChildren: ExplorerChildrenIndex = new Map();
 let activeCodeIntelligenceHost: CodeIntelligenceHost | null = null;
+let preloadedRepositoryBindings = new Map<string, string>();
+let preloadedProjectBindings = new Map<string, string>();
 /** One-shot startup chain, created by the first explicit use of the workbench. */
 let codeIntelligenceStartup: Promise<void> | undefined;
 let startupCancellation: AbortController | undefined;
 const startupProgressListeners = new Set<(progress: RepositoryIndexingProgress) => void>();
 
+/**
+ * The preloaded launcher points the host at a database whose revisions and
+ * module artifacts were built before the window opened. It is intentionally
+ * an environment opt-in so the normal development entry keeps its existing
+ * scan and modeling behavior.
+ */
+function isPreloadedLaunch(): boolean {
+  return process.env.FOREXPLORE_PRELOADED === '1';
+}
+
+function preloadedSynchronizationOptions(): Pick<SynchronizationOptions, 'scan' | 'repairStaleIndexing'> {
+  return isPreloadedLaunch() ? { scan: false, repairStaleIndexing: true } : {};
+}
+
+/**
+ * An isolated preloaded profile cannot read the ordinary profile's
+ * SecretStorage. The launcher still inherits the process environment, so a
+ * default DeepSeek key (or an explicitly supplied preloaded key) can be used
+ * without copying encrypted credential files between profiles.
+ */
+function preloadedModelApiKey(): string | undefined {
+  if (!isPreloadedLaunch()) return undefined;
+  const explicit = process.env.FOREXPLORE_MODEL_KEY?.trim();
+  if (explicit) return explicit;
+  const settings = loadSettings().llm;
+  if (settings.provider === 'deepseek' && settings.apiBase === DEFAULT_LLM_SETTINGS.apiBase) {
+    return process.env.DEEPSEEK_API_KEY?.trim() || undefined;
+  }
+  return undefined;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl, () => loadSettings().llm, backendEndpoint));
+  const preloadedBindings = loadPreloadedBindings();
+  preloadedRepositoryBindings = preloadedBindings.repositoryIds;
+  preloadedProjectBindings = preloadedBindings.projectIds;
+  setModelCredentialProvider(createModelCredentialProvider(context.secrets, () => loadSettings().adaptationApiUrl,
+    () => loadSettings().llm, backendEndpoint, preloadedModelApiKey));
   context.subscriptions.push({ dispose: () => setModelCredentialProvider(undefined) });
   context.subscriptions.push(
     context.secrets.onDidChange(() => { void publishModelKeyStatus(context); }),
@@ -180,9 +220,10 @@ export function activate(context: vscode.ExtensionContext): void {
           return localFetch(endpoint, init);
         }),
       onChange: () => { void publishProjectView(codeIntelligence).catch((error) => output.appendLine(String(error))); },
-      modelKeyRefusal: () => modelKeyRefusalReason(context.secrets, loadSettings().adaptationApiUrl, loadSettings().llm),
+      modelKeyRefusal: () => modelKeyRefusalReason(context.secrets, loadSettings().adaptationApiUrl, loadSettings().llm, preloadedModelApiKey),
       onModelRefusal: (reason) => reportModelRefusal(context, reason),
       identityStore: context.globalState,
+      initialSelectedProjects: preloadedProjectBindings,
       output,
     });
   } catch (error) {
@@ -251,7 +292,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // The explicit import owns the cancellable scan. A second automatic
       // scan here would run ahead of its notification and ignore its token.
       if (readPendingTargetImport(context.globalState.get(pendingTargetImportKey(vscode.env.sessionId)))) return;
-      void refreshModuleExplorer(codeIntelligence, { scanNewOnly: true }).catch((error) => output.appendLine(String(error)));
+      void refreshModuleExplorer(codeIntelligence, isPreloadedLaunch()
+        ? { ...preloadedSynchronizationOptions() }
+        : { scanNewOnly: true })
+        .catch((error) => output.appendLine(String(error)));
     }),
     createWorkbenchLauncher({ context, services, health, codeIntelligence, output }, output),
     { dispose: () => codeIntelligence.dispose() },
@@ -274,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): void {
       showPanel(context, services, health, codeIntelligence, output),
     ),
     vscode.commands.registerCommand('forexplore.checkRepositories', async () => {
-      const index = await synchronizeCodeIntelligence(codeIntelligence, { scan: false });
+      const index = await synchronizeCodeIntelligence(codeIntelligence, { ...preloadedSynchronizationOptions(), scan: false });
       const statuses = await refreshRepositoryStatus(services, health);
       const summary = summarizeRepositoryStatus(statuses);
       void vscode.window.showInformationMessage(
@@ -332,11 +376,24 @@ export function activate(context: vscode.ExtensionContext): void {
   void resumeInterruptedTargetImport(
     { context, services, health, codeIntelligence, output }, output,
   ).catch((error) => output.appendLine(`[forexplore] resume failed: ${String(error)}`));
+
+  // A preloaded window is intended to open directly on the populated
+  // workbench. The command is scheduled after activation so all registrations
+  // above are complete; ordinary dev:extension windows never take this path.
+  if (isPreloadedLaunch() && process.env.FOREXPLORE_AUTO_OPEN_PANEL === '1') {
+    setTimeout(() => {
+      void Promise.resolve(vscode.commands.executeCommand('forexplore.showPanel'))
+        .catch((error) => output.appendLine(`[forexplore] preloaded panel failed: ${String(error)}`));
+    }, 0);
+  }
 }
 
 async function publishModelKeyStatus(context: vscode.ExtensionContext, message?: string): Promise<void> {
   let configured = false;
-  try { configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl, loadSettings().llm))); }
+  try {
+    configured = Boolean(await context.secrets.get(modelCredentialId(loadSettings().adaptationApiUrl, loadSettings().llm))) ||
+      Boolean(preloadedModelApiKey());
+  }
   catch { message ??= '当前后端地址不支持插件 API Key；仅支持本机地址。'; }
   // A new key (or a cleared one) makes the previous refusal stale.
   reportedModelRefusals.clear();
@@ -455,6 +512,7 @@ function ensureCodeIntelligenceStarted(
       // write before capturing directory metadata for the immutable source snapshot.
       .then(() => synchronizeCodeIntelligence(host.codeIntelligence, {
         signal: controller.signal,
+        ...preloadedSynchronizationOptions(),
         onProgress: progress => {
           controls.onProgress?.(progress);
           for (const listener of startupProgressListeners) listener(progress);
@@ -763,7 +821,10 @@ async function updatePanelSettings(
   publish({ type: 'SETTINGS_UPDATED', settings: saved });
   await publishModelKeyStatus(host.context);
   try {
-    const codeIntelligence = await synchronizeCodeIntelligence(host.codeIntelligence, { scanNewOnly: true, scanRoles: ['history'] });
+    const codeIntelligence = await synchronizeCodeIntelligence(host.codeIntelligence,
+      isPreloadedLaunch()
+        ? { ...preloadedSynchronizationOptions() }
+        : { scanNewOnly: true, scanRoles: ['history'] });
     const [statuses, explorer] = await Promise.all([
       refreshRepositoryStatus(host.services, host.health),
       buildProjectExplorer(host.codeIntelligence, activeRun?.target),
@@ -928,7 +989,7 @@ async function resumeInterruptedTargetImport(
       publish({ type: 'TARGET_WORKSPACE_PROGRESS', phase: 'indexing', message: indexingProgressMessage(update) }) });
     // Startup owns the cancellable notification and already scanned this
     // selection. Publish its verdict without another notification or scan.
-    await refreshModuleExplorer(host.codeIntelligence, { scan: false, throwErrors: true });
+    await refreshModuleExplorer(host.codeIntelligence, { ...preloadedSynchronizationOptions(), scan: false, throwErrors: true });
   } catch (error) {
     if (isIndexingCancellation(error)) {
       publish({ type: 'TARGET_WORKSPACE_RESULT', outcome: 'cancelled', mode: pending.mode,
@@ -951,8 +1012,16 @@ async function selectWorkspaceTarget(targetId: string): Promise<void> {
     if (!target) throw new Error('该目标不属于当前 Host 静态分析快照。');
     if (!activeCodeIntelligenceHost) throw new Error('索引尚未初始化。');
     const selected = (await activeCodeIntelligenceHost.explorerData()).find((item) => item.selectedTarget);
-    const workspaceFolder = selectedTargetWorkspaceFolders().find((folder) =>
-      path.resolve(folder.uri.fsPath).toLowerCase() === path.resolve(selected?.repository.localPath ?? '').toLowerCase());
+    const selectedRepository = selected?.repository;
+    const workspaceFolder = selectedTargetWorkspaceFolders().find((folder) => {
+      if (sameTargetPath(folder.uri.fsPath, selectedRepository?.localPath ?? '')) return true;
+      // A preloaded database may have been built from the other checkout
+      // (`/mnt/e/...` versus `/home/...`). The launcher binds both spellings
+      // to the same opaque repository ID, which is the authoritative match
+      // when no filesystem path alias can connect the two roots.
+      return Boolean(selectedRepository) &&
+        preloadedRepositoryId(preloadedRepositoryBindings, folder.uri.fsPath) === selectedRepository?.repositoryId;
+    });
     if (!workspaceFolder) throw new Error('所选工程不属于已打开的 VS Code 工作区。');
     const canonicalPath = canonicalWorkspacePath(workspaceFolder.uri.fsPath, target.path);
     const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, ...canonicalPath.split('/'));
@@ -1027,25 +1096,29 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
   const log = (line: string) => host.output.appendLine(`[forexplore] ${line}`);
   try {
     const run = requireActiveRun();
-    const candidate = selectedRunCandidate(run);
-    log(`translation requested: target=${run.target.id} candidate=${candidate.id} kinds=${run.target.kind}/${candidate.kind}`);
-    if (run.target.kind === 'module' || candidate.kind === 'module') {
+    const candidate = run.selectedCandidateId ? selectedRunCandidate(run) : undefined;
+    if (!candidate && run.target.kind !== 'module') throw new Error('当前目标没有可用候选，只有模块目标支持按需求直实现。');
+    log(`translation requested: target=${run.target.id} candidate=${candidate?.id ?? 'direct-fallback'} kinds=${run.target.kind}/${candidate?.kind ?? 'direct-translator'}`);
+    if (run.target.kind === 'module' || candidate?.kind === 'module') {
       if (!vscode.workspace.isTrusted) throw new Error('请先信任工作区。');
       await assertTargetUnchanged(run);
       assertModuleDocumentsSaved(run);
       const selectionVersion = moduleSelectionVersion;
       await host.services.ensureStarted();
-      const evidenceScopes = await host.codeIntelligence.historyEvidenceScopes(candidate.sourceModule!);
-      const historyView = await host.codeIntelligence.createHistoryModuleView({
-        workspaceRoot: run.workspaceFolder.uri.fsPath,
-        repositoryId: candidate.sourceModule!.repositoryId,
-        analysisRevision: candidate.sourceModule!.analysisRevision,
-        projectId: candidate.sourceModule!.projectId,
-        moduleId: candidate.sourceModule!.moduleId,
-        sourceFiles: candidate.sourceModule!.sourceFiles ?? [candidate.path],
-      });
-      const scope = await prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
-        target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes, historyView });
+      const scope = await (candidate ? (async () => {
+        const evidenceScopes = await host.codeIntelligence.historyEvidenceScopes(candidate.sourceModule!);
+        const historyView = await host.codeIntelligence.createHistoryModuleView({
+          workspaceRoot: run.workspaceFolder.uri.fsPath,
+          repositoryId: candidate.sourceModule!.repositoryId,
+          analysisRevision: candidate.sourceModule!.analysisRevision,
+          projectId: candidate.sourceModule!.projectId,
+          moduleId: candidate.sourceModule!.moduleId,
+          sourceFiles: candidate.sourceModule!.sourceFiles ?? [candidate.path],
+        });
+        return prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
+          target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes, historyView });
+      })() : prepareDirectModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
+        target: run.target, requirement: run.requirement, decisionNotes }));
       if (activeRun !== run || selectionVersion !== moduleSelectionVersion) {
         // A silent return here leaves the panel waiting for a reply that will
         // never come, which is indistinguishable from a running translation.
@@ -1055,8 +1128,8 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
       }
       const moduleScopeId = workspaceTranslation.rememberModuleScope(scope);
       log(`module translation scope prepared: ${moduleScopeId} writeFiles=${scope.profile.writeFiles.length} `
-        + `targetId=${run.target.id} candidateId=${candidate.id}`);
-      publish({ type: 'MODULE_TRANSLATION_READY', targetId: run.target.id, candidateId: candidate.id, moduleScopeId });
+        + `targetId=${run.target.id} candidateId=${candidate?.id ?? 'direct-fallback'}`);
+      publish({ type: 'MODULE_TRANSLATION_READY', targetId: run.target.id, candidateId: candidate?.id ?? 'direct-fallback', moduleScopeId });
       log('module translation handoff published'
         + `${TranslationPanel.current ? '' : ' (no panel is attached, so the reply was dropped)'}; `
         + 'the workspace translation service is not called before this handoff succeeds.');
@@ -1068,7 +1141,7 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
     log(`requesting /v1/adapt for target=${run.target.id}.`);
     const rawResult = await host.services.getAdaptationPort().adapt({
       target: run.target,
-      candidate,
+      candidate: candidate!,
       requirement: run.requirement,
       strategy: 'translate',
       decisionNotes,
@@ -1164,7 +1237,7 @@ async function refreshPanelStatus(host: ExtensionHost): Promise<void> {
     publish({ type: 'SERVICE_STATUS', status });
     const [statuses, codeIntelligence] = await Promise.all([
       refreshRepositoryStatus(host.services, host.health),
-      synchronizeCodeIntelligence(host.codeIntelligence, { scan: false }),
+      synchronizeCodeIntelligence(host.codeIntelligence, { ...preloadedSynchronizationOptions(), scan: false }),
     ]);
     publish({ type: 'REPOSITORY_STATUS', statuses });
     publish({ type: 'CODE_INTELLIGENCE_STATUS', presentation: codeIntelligence });
@@ -1343,14 +1416,19 @@ function codeIntelligenceRepositoryInputs(): Array<{
   localPath: string;
   displayName?: string;
   role: 'history' | 'target';
+  repositoryId?: string;
 }> {
   const settings = loadSettings();
-  const history = settings.repositoryPaths.map((localPath) => ({
+  const bind = <T extends { localPath: string }>(input: T): T & { repositoryId?: string } => {
+    const repositoryId = preloadedRepositoryId(preloadedRepositoryBindings, input.localPath);
+    return repositoryId ? { ...input, repositoryId } : input;
+  };
+  const history = settings.repositoryPaths.map((localPath) => bind({
     localPath,
     role: 'history' as const,
   }));
   const targets = selectedTargetWorkspaceFolders()
-    .map((folder) => ({
+    .map((folder) => bind({
       localPath: folder.uri.fsPath,
       displayName: folder.name,
       role: 'target' as const,

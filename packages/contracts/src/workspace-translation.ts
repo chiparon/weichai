@@ -41,6 +41,9 @@ export interface WorkspaceHistoryView {
 /** Shared ceiling for revision-scoped history evidence queries. */
 export const MAX_RETRIEVAL_SCOPES = 64;
 
+/** How the host asks the workspace Agent to implement a translation. */
+export type WorkspaceTranslationMode = "analyzer-translator" | "direct-translator";
+
 export interface WorkspaceTranslationRequest {
   spec: string;
   sourceLanguage: string;
@@ -58,6 +61,8 @@ export interface WorkspaceTranslationRequest {
   evidenceScopes?: WorkspaceEvidenceScope[];
   /** Optional host-created source snapshot for direct Agent inspection. */
   historyView?: WorkspaceHistoryView;
+  /** Host-selected fallback when no usable historical implementation exists. */
+  translationMode?: WorkspaceTranslationMode;
 }
 
 /** One on-demand evidence query, recorded so the run stays auditable. */
@@ -158,6 +163,10 @@ export interface WorkspaceTranslationRun {
       outputChars?: number;
       usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
       readFiles?: string[];
+      /** Bounded Analyzer final output retained for invalid-plan diagnosis. */
+      analyzerOutput?: string;
+      analyzerOutputTruncated?: boolean;
+      analyzerOutputError?: string;
     }>;
     /** Number of changed source lines across the accepted diff. */
     incrementalLines?: number;

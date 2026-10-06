@@ -119,7 +119,7 @@ export function CandidatesStage({
           <div className="candidate-empty" role="status">
             <PackageSearch size={24} />
             <strong>没有找到可复用实现</strong>
-            <span>返回“定义任务”调整目标或需求后重新检索。</span>
+            <span>可以按当前需求直接生成目标模块代码。</span>
           </div>
         )}
       </section>
@@ -155,10 +155,10 @@ export function CandidatesStage({
           type="button"
           className="primary-action"
           onClick={onAdapt}
-          disabled={adapting || !candidate}
+          disabled={adapting || (!candidate && !(state.target?.kind === 'module' && state.candidates.length === 0 && state.requirement.trim().length > 0))}
         >
           {adapting ? <span className="spinner" /> : <Sparkles size={15} />}
-          {adapting ? '正在准备适配…' : candidate?.kind === 'module' || state.target?.kind === 'module' ? '准备模块翻译与回填' : !candidate ? '请选择一个具体实现' : '使用所选实现生成适配'}
+          {adapting ? '正在准备适配…' : candidate?.kind === 'module' || state.target?.kind === 'module' ? (candidate ? '准备模块翻译与回填' : '按需求直接生成模块') : !candidate ? '请选择一个具体实现' : '使用所选实现生成适配'}
         </button>
       </section>
     </div>

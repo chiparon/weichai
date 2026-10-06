@@ -113,11 +113,12 @@ export function object(value: unknown): Record<string, unknown> {
 
 export function validateWorkspaceTranslationRequest(value: unknown): asserts value is WorkspaceTranslationRequest {
   const input = object(value);
-  const allowed = ["spec", "sourceLanguage", "targetLanguage", "context", "workspaceFiles", "writeFiles", "evidenceScopes", "historyView"];
+  const allowed = ["spec", "sourceLanguage", "targetLanguage", "context", "workspaceFiles", "writeFiles", "evidenceScopes", "historyView", "translationMode"];
   if (Object.keys(input).some((key) => !allowed.includes(key)) || !nonempty(input.spec) || input.spec.length > 64_000 ||
     !nonempty(input.sourceLanguage) || !nonempty(input.targetLanguage) ||
     input.sourceLanguage.length > 80 || input.targetLanguage.length > 80 ||
     !stringArray(input.workspaceFiles) || !stringArray(input.writeFiles) ||
+    (input.translationMode !== undefined && !["analyzer-translator", "direct-translator"].includes(String(input.translationMode))) ||
     !input.writeFiles.length || input.writeFiles.length > 128 || input.workspaceFiles.length > 256 ||
     !Array.isArray(input.context) || input.context.length > 256) throw new Error("Invalid workspace translation request.");
   if (input.evidenceScopes !== undefined) {

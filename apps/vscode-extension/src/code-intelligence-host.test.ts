@@ -230,6 +230,40 @@ it('recovers persisted repository identities when a host starts without its iden
   reopened.dispose();
 });
 
+it('loads an explicitly bound cross-platform repository without rewriting its shared registry row', async () => {
+  const indexedRoot = await temporaryRepository('preloaded-source-path');
+  const currentPlatformRoot = await temporaryRepository('preloaded-current-path');
+  const runtime = createRuntime();
+  const firstHost = new CodeIntelligenceHost({ runtimeFactory: async () => runtime });
+  const first = await firstHost.synchronize({ repositories: [{ localPath: indexedRoot, role: 'target' }] });
+  const repositoryId = first.presentation.repositories[0]!.repositoryId;
+  await runtime.registry.setAnalysisStatus!(repositoryId, 'indexing');
+  const persistedBefore = await runtime.registry.get(repositoryId);
+  const scan = vi.spyOn(runtime.coordinator, 'run');
+  const register = vi.spyOn(runtime.registry, 'register');
+  const preloadedHost = new CodeIntelligenceHost({
+    runtimeFactory: async () => runtime,
+    identityStore: new MemoryIdentityStore(),
+  });
+
+  const result = await preloadedHost.synchronize({
+    repositories: [{ repositoryId, localPath: currentPlatformRoot, role: 'target' }],
+    scan: false,
+    repairStaleIndexing: true,
+  });
+
+  expect(result.presentation.repositories).toMatchObject([{ repositoryId, analysisStatus: 'ready' }]);
+  expect(register).not.toHaveBeenCalled();
+  expect(scan).not.toHaveBeenCalled();
+  expect(await runtime.registry.get(repositoryId)).toEqual(persistedBefore);
+  expect(await preloadedHost.activeScopeForPath(currentPlatformRoot)).toEqual({
+    repositoryId,
+    analysisRevision: first.presentation.repositories[0]!.activeRevision,
+  });
+  preloadedHost.dispose();
+  firstHost.dispose();
+});
+
 it('uses lightweight revision metadata for presentation and rejects mismatched hashes', async () => {
   const root = await temporaryRepository('metadata');
   const runtime = createRuntime();

@@ -299,7 +299,18 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
   if (profile) console.log(`      [profile] 召回+聚合(含4并发/仓库)=${Date.now() - profileStart}ms 仓库数=${repositoryIds.length}`);
 
   beginStage('candidatePrepareMs');
-  const result = await mapBounded(hits, 4, async (hit): Promise<SearchCandidate> => {
+  // Older module projections can contain a documentation-only or otherwise
+  // language-less node with a non-empty file list. Such a hit is not a usable
+  // implementation candidate; skip it instead of aborting the whole search.
+  const usableHits = hits.filter((hit) => {
+    try {
+      moduleLanguage(hit.module.language, hit.module.sourceFiles);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const result = await mapBounded(usableHits, 4, async (hit): Promise<SearchCandidate> => {
     signal.throwIfAborted();
     const files = [...new Set(hit.module.sourceFiles)];
     const previewFiles = files.slice(0, 3);

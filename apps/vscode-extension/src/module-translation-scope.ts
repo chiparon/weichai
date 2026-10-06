@@ -1,4 +1,4 @@
-import type { ModuleTarget, WorkspaceEvidenceScope, WorkspaceHistoryView, WorkspaceTranslationContext } from '@forexplore/contracts';
+import type { ModuleTarget, WorkspaceEvidenceScope, WorkspaceHistoryView, WorkspaceTranslationContext, WorkspaceTranslationMode } from '@forexplore/contracts';
 import type { TranslationProfile } from './workspace-translation-host';
 import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 
@@ -56,6 +56,8 @@ export interface ModuleTranslationScope {
    */
   evidenceScopes: WorkspaceEvidenceScope[];
   historyView?: WorkspaceHistoryView;
+  /** Host-selected Agent route; direct-translator is used without history. */
+  translationMode?: WorkspaceTranslationMode;
   contextCharacters: number;
   warnings: string[];
 }

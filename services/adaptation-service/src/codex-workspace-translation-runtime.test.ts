@@ -30,7 +30,9 @@ describe("CodexWorkspaceTranslationRuntime", () => {
       await writeFile(join(history, "manifest.json"), JSON.stringify({ repositoryId: "history", analysisRevision: "rev-1", moduleId: "legacy", runId: "00000000-0000-0000-0000-000000000001", files: [{ path: "Legacy.cs", sha256: createHash("sha256").update(historyContent).digest("hex") }] }));
       const codex = join(scripts, "fake-codex.mjs");
       await writeFile(codex, `#!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+mkdirSync('.aws', { recursive: true });
+mkdirSync('.git', { recursive: true });
 const history = readFileSync('history-view/Legacy.cs', 'utf8');
 const hiddenWasVisible = existsSync('target/hidden.txt');
 const output = process.argv[process.argv.indexOf('--output-last-message') + 1];
@@ -84,5 +86,78 @@ if (!existsSync('CODEX_IMPLEMENTATION_PLAN.json')) {
       })).toThrow(/Invalid workspace-relative file path/);
       await runtime.shutdown();
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("uses the direct Translator route when history is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-runtime-direct-test-"));
+    const scripts = await mkdtemp(join(tmpdir(), "codex-direct-script-test-"));
+    try {
+      await writeFile(join(root, "src.cs"), "class Target { }\n");
+      const codex = join(scripts, "fake-direct-codex.mjs");
+      await writeFile(codex, `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+const output = process.argv[process.argv.indexOf('--output-last-message') + 1];
+const prompt = process.argv.at(-1) ?? '';
+if (!prompt.includes('Direct Translator Codex')) process.exit(7);
+writeFileSync('target/src.cs', 'class Target { public int Answer() => 42; }\\n');
+writeFileSync(output, 'done');
+`);
+      await chmod(codex, 0o755);
+      const runtime = new CodexWorkspaceTranslationRuntime({
+        workspaceRoot: root,
+        compileCommand: { executable: process.execPath, args: ["-e", "process.exit(0)"], timeoutMs: 5_000 },
+        codexCommand: codex,
+        maxModelTurns: 2,
+        timeoutMs: 30_000,
+      });
+      const run = runtime.start({
+        spec: "Implement Answer directly from the requirement.", sourceLanguage: "C#", targetLanguage: "C#",
+        context: [{ id: "target", kind: "summary", content: "Target module" }], workspaceFiles: ["src.cs"], writeFiles: ["src.cs"],
+        translationMode: "direct-translator",
+      });
+      const completed = await eventually(() => runtime.get(run.id), value => ["completed", "failed", "cancelled"].includes(value.status));
+      expect(completed.status).toBe("completed");
+      expect(completed.modelTurns).toBe(1);
+      expect(completed.agent?.stages?.map(stage => stage.stage)).toEqual(["translator"]);
+      expect(completed.plan?.summary).toContain("No usable historical candidate");
+      expect(await readFile(join(root, "src.cs"), "utf8")).toContain("Answer() => 42");
+      await runtime.shutdown();
+    } finally {
+      await Promise.all([rm(root, { recursive: true, force: true }), rm(scripts, { recursive: true, force: true })]);
+    }
+  });
+
+  it("records invalid Analyzer JSON and its validation error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-runtime-analyzer-log-test-"));
+    const scripts = await mkdtemp(join(tmpdir(), "codex-analyzer-log-script-test-"));
+    try {
+      await writeFile(join(root, "src.cs"), "class Target { }\n");
+      const codex = join(scripts, "fake-invalid-analyzer.mjs");
+      await writeFile(codex, `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+const output = process.argv[process.argv.indexOf('--output-last-message') + 1];
+writeFileSync(output, JSON.stringify({ summary: 'missing mappings and steps' }));
+`);
+      await chmod(codex, 0o755);
+      const runtime = new CodexWorkspaceTranslationRuntime({
+        workspaceRoot: root,
+        compileCommand: { executable: process.execPath, args: ["-e", "process.exit(0)"], timeoutMs: 5_000 },
+        codexCommand: codex,
+        maxModelTurns: 2,
+        timeoutMs: 30_000,
+      });
+      const run = runtime.start({
+        spec: "Implement the target.", sourceLanguage: "C#", targetLanguage: "C#",
+        context: [{ id: "target", kind: "summary", content: "Target module" }], workspaceFiles: ["src.cs"], writeFiles: ["src.cs"],
+      });
+      const failed = await eventually(() => runtime.get(run.id), value => ["completed", "failed", "cancelled"].includes(value.status));
+      expect(failed.status).toBe("failed");
+      const analyzer = failed.agent?.stages?.find(stage => stage.stage === "analyzer");
+      expect(analyzer?.analyzerOutput).toContain("missing mappings and steps");
+      expect(analyzer?.analyzerOutputError).toContain("Plan requires summary, mappings, dependencies and implementation steps");
+      await runtime.shutdown();
+    } finally {
+      await Promise.all([rm(root, { recursive: true, force: true }), rm(scripts, { recursive: true, force: true })]);
+    }
   });
 });

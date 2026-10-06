@@ -3,6 +3,7 @@ import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { normaliseConfiguredPath, normaliseConfiguredPaths } from '@forexplore/contracts';
+import { platformLocalPath } from '../../../services/code-intelligence-service/src/platform-path';
 import type { TargetWorkspaceAddMode, TargetWorkspacePhase } from './protocol/messages';
 import { resolveWorkspaceConfiguredPaths } from './settings';
 
@@ -71,18 +72,34 @@ function targetPathKeys(value: string): string[] {
   const configured = normaliseConfiguredPath(value);
   if (configured === undefined) return [];
   const add = (candidate: string) => {
-    const normalized = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+    const normalizedCandidate = candidate.replaceAll('\\', '/').replace(/\/+$/, '') || '/';
+    // `/mnt/<drive>/...` is a Windows filesystem path when seen from WSL,
+    // whose mount remains case-insensitive even though the host process is
+    // Linux. Treat it like a drive-letter path for comparison purposes.
+    const windowsFilesystemPath = /^[A-Za-z]:\//.test(normalizedCandidate) ||
+      /^\/mnt\/[A-Za-z](?:\/|$)/.test(normalizedCandidate);
+    const normalized = process.platform === 'win32' || windowsFilesystemPath
+      ? normalizedCandidate.toLowerCase()
+      : normalizedCandidate;
     keys.add(normalized);
-    // VS Code may report a Windows path with either separator.
-    if (process.platform === 'win32') keys.add(normalized.replaceAll('\\', '/'));
   };
-  const resolved = path.resolve(configured);
-  add(resolved);
-  try {
-    add(realpathSync(resolved));
-  } catch {
-    // An unreachable entry keeps its resolved form; an unusable directory is
-    // reported separately when it is the newly chosen one.
+
+  // A persisted repository row can have been written by the other platform:
+  // Windows stores `E:\\...`, while WSL stores `/mnt/e/...`. Translate the
+  // spelling before resolving it locally so both forms produce the same key.
+  // Keep the raw spelling too because a path may not exist on this machine
+  // when it is only being compared with another persisted value.
+  add(configured);
+  const candidates = new Set([configured, platformLocalPath(configured)]);
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    add(resolved);
+    try {
+      add(realpathSync(resolved));
+    } catch {
+      // An unreachable entry keeps its resolved form; an unusable directory is
+      // reported separately when it is the newly chosen one.
+    }
   }
   return [...keys];
 }

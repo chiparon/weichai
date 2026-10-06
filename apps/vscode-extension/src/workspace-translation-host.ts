@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { moduleFileHash } from './module-translation-handoff';
-import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView, type WorkspaceTranslationContext, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
+import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView, type WorkspaceTranslationContext, type WorkspaceTranslationMode, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
 import type { HostToWebviewMessage, WebviewToHostMessage } from './protocol/messages';
 
 export interface TranslationProfile {
@@ -16,7 +16,8 @@ export type TranslationIntent = Extract<WebviewToHostMessage, { type: 'WORKSPACE
 
 /**
  * A host-owned translation scope derived from a selected target module and its
- * retrieved history candidates. The page may only refer to it by opaque id, so
+ * retrieved history candidates, or an explicit direct-translation fallback.
+ * The page may only refer to it by opaque id, so
  * a Webview can neither widen the write set nor inject source or a path.
  */
 export interface WorkspaceTranslationModuleScope {
@@ -29,6 +30,8 @@ export interface WorkspaceTranslationModuleScope {
   evidenceScopes?: WorkspaceEvidenceScope[];
   /** Host-created source snapshot; only its manifest and opaque metadata reach the run record. */
   historyView?: WorkspaceHistoryView;
+  /** Host-selected Agent route; direct-translator is used without history. */
+  translationMode?: WorkspaceTranslationMode;
   /** Bounded, non-blocking observations about the derived scope. */
   warnings?: string[];
   /** Snapshot captured by the host when the user prepares a module translation. */
@@ -114,6 +117,7 @@ export class WorkspaceTranslationHost {
         const input = { spec: scope ? moduleSpec(scope, undefined) : '',
           sourceLanguage: profile!.sourceLanguage, targetLanguage: profile!.targetLanguage,
           workspaceFiles: profile!.workspaceFiles, writeFiles: profile!.writeFiles, context,
+          ...(scope?.translationMode ? { translationMode: scope.translationMode } : {}),
           ...(evidenceScopes.length ? { evidenceScopes } : {}),
           ...(scope?.historyView ? { historyView: structuredClone(scope.historyView) } : {}) };
         // Do not repeat a write request if the UI delivers the same operation twice.

@@ -7,9 +7,10 @@
  * the target project without a window, so an enterprise dataset can be measured
  * end to end:
  *
- *   index target -> module plan -> Top-1 history candidate per module ->
- *   prepareModuleTranslationScope -> host-created history-view ->
- *   CodexWorkspaceTranslationRuntime -> host compile/verification gates
+ *   index target -> module plan -> Top-1 history candidate when available
+ *   (otherwise direct Translator fallback) -> translation scope ->
+ *   host-created history-view -> CodexWorkspaceTranslationRuntime ->
+ *   host compile/verification gates
  *
  *   npx tsx scripts/run-target-module-pipeline.mts --target experiments/enterprise-asset-upgrade/target-project --dry-run
  *   npx tsx scripts/run-target-module-pipeline.mts --target <path> --top-k 1 --out results/module-pipeline.json
@@ -19,6 +20,7 @@
  *   --database <name>    SeekDB database (default forexplore_asset_upgrade_20261004)
  *   --top-k <n>          retrieval width; Top-1 means 1 (default 1)
  *   --max-modules <n>    stop after n modules (default 0 = every module)
+ *   --module <text>      translate only modules whose name or id contains text
  *   --repos <a,b,c>      retrieval scope; default every indexed asset repository.
  *                        The dataset's tasks each name two to four assets, and a
  *                        narrower scope also keeps one module search inside the
@@ -45,7 +47,7 @@ import { dirname, join, resolve } from 'node:path';
 import mysql from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { parse as parseEnvironmentFile } from 'dotenv';
-import type { Language, ModuleTarget, ProjectModule, ProjectModuleProposal, SearchCandidate, WorkspaceCompileCommand } from '@forexplore/contracts';
+import type { Language, ModuleTarget, ProjectModule, ProjectModuleProposal, SearchCandidate, WorkspaceCompileCommand, WorkspaceTranslationRun } from '@forexplore/contracts';
 import {
   CodeIntelligenceHost,
   codeIntelligenceRuntimeOptionsFromEnvironment,
@@ -54,7 +56,7 @@ import {
 } from '../apps/vscode-extension/src/code-intelligence-host.js';
 import { requestSemanticModuleMigrationProposal } from '../apps/vscode-extension/src/module-plan-client.js';
 import { HttpModuleHierarchyPlanner } from '../apps/vscode-extension/src/module-hierarchy-client.js';
-import { prepareModuleTranslationScope } from '../apps/vscode-extension/src/module-translation-handoff.js';
+import { prepareDirectModuleTranslationScope, prepareModuleTranslationScope } from '../apps/vscode-extension/src/module-translation-handoff.js';
 import { WorkspaceTranslationHost } from '../apps/vscode-extension/src/workspace-translation-host.js';
 import { CodexWorkspaceTranslationRuntime } from '../services/adaptation-service/src/codex-workspace-translation-runtime.js';
 import { createHttpServer } from '../services/adaptation-service/src/http-server.js';
@@ -72,7 +74,7 @@ const flag = (name: string): boolean => process.argv.includes(`--${name}`);
 
 if (flag('help')) {
   console.log('usage: npx tsx scripts/run-target-module-pipeline.mts --target <path> [--database <name>] ' +
-    '[--top-k <n>] [--max-modules <n>] [--dry-run] [--out <json>]');
+    '[--top-k <n>] [--max-modules <n>] [--module <text>] [--dry-run] [--out <json>]');
   process.exit(0);
 }
 
@@ -85,6 +87,7 @@ const topK = Number(argument('top-k', '1'));
 if (!Number.isInteger(topK) || topK < 1 || topK > 10) throw new Error('--top-k must be between 1 and 10 (Top-1 means 1).');
 const maxModules = Number(argument('max-modules', '0'));
 if (!Number.isInteger(maxModules) || maxModules < 0) throw new Error('--max-modules must be a non-negative integer.');
+const moduleFilter = argument('module')?.trim().toLocaleLowerCase();
 const dryRun = flag('dry-run');
 const outputPath = resolve(argument('out', 'results/target-module-pipeline.json')!);
 const adaptationApiUrl = argument('adaptation', process.env.ADAPTATION_API_URL ?? 'http://127.0.0.1:8788')!;
@@ -210,6 +213,27 @@ function resolveVerification(): { command: WorkspaceCompileCommand; protectedFil
   return { command: parsed.command, protectedFiles: parsed.protectedFiles as string[] };
 }
 
+/** Normalize project-analysis language labels before constructing a ModuleTarget. */
+function targetLanguage(value: string | undefined, sourceFiles: readonly string[]): Language {
+  const normalized = value?.trim().toLowerCase();
+  const aliases: Record<string, Language> = {
+    typescript: 'TypeScript', javascript: 'TypeScript',
+    python: 'Python', java: 'Java',
+    csharp: 'C#', 'c#': 'C#', cs: 'C#',
+    rust: 'Rust', go: 'Go',
+  };
+  if (normalized && aliases[normalized]) return aliases[normalized]!;
+  const extensionAliases: Record<string, Language> = {
+    ts: 'TypeScript', tsx: 'TypeScript', js: 'TypeScript', jsx: 'TypeScript',
+    py: 'Python', java: 'Java', cs: 'C#', rs: 'Rust', go: 'Go',
+  };
+  for (const file of sourceFiles) {
+    const extension = file.split('.').at(-1)?.toLowerCase();
+    if (extension && extensionAliases[extension]) return extensionAliases[extension]!;
+  }
+  throw new Error(`Unsupported module language: ${value ?? 'unknown'}`);
+}
+
 /**
  * Dependency/plan order over the modules that actually own files. Split nodes carry
  * no file list of their own, so only leaves become translation targets; a dependency
@@ -244,6 +268,8 @@ interface ModuleReport {
   writeFiles?: string[];
   candidate?: { repository: string; name: string; moduleId: string; language: string; score: number; hybrid?: number; rerank?: number; title: string };
   candidatesConsidered?: number;
+  translationMode?: 'analyzer-translator' | 'direct-translator';
+  fallbackReason?: string;
   /** Set when the first history search hit the store's query budget and was retried. */
   retrievalRetry?: string;
   status: 'planned' | 'retrieved' | 'completed' | 'failed' | 'skipped';
@@ -257,6 +283,7 @@ interface ModuleReport {
   wallMs?: number;
   error?: string;
   translationVerification?: FunctionGroupVerificationResult;
+  agent?: WorkspaceTranslationRun['agent'];
 }
 
 const report = {
@@ -432,7 +459,11 @@ try {
   console.log(`  模块 ${proposal.modules?.length ?? 0} 个，其中有文件清单（可翻译）${ordered.length} 个`);
   console.log(`  层级: ${JSON.stringify(proposal.hierarchy)}`);
 
-  const selected = maxModules > 0 ? ordered.slice(0, maxModules) : ordered;
+  const filtered = moduleFilter
+    ? ordered.filter((module) => `${module.name} ${module.id}`.toLocaleLowerCase().includes(moduleFilter))
+    : ordered;
+  const selected = maxModules > 0 ? filtered.slice(0, maxModules) : filtered;
+  if (moduleFilter) console.log(`  模块过滤：${moduleFilter}（匹配 ${selected.length} 个）`);
   const compileCommand = resolveCompileCommand();
   const verification = resolveVerification();
   report.gates = { compile: `${compileCommand.executable} ${compileCommand.args.join(' ')}`,
@@ -467,7 +498,7 @@ try {
   console.log(`\n=== module pipeline（${dryRun ? 'dry-run' : 'real'}，topK=${topK}，模块 ${selected.length}）===`);
   for (const [index, module] of selected.entries()) {
     const started = Date.now();
-    const language = (module.language ?? 'CSharp') as Language;
+    const language = targetLanguage(module.language, module.sourceFiles);
     const requirement = [module.purpose ?? module.description, `目标语言：${language}`, `目标工程：${report.target.project}`]
       .filter(Boolean).join('\n');
     const entry: ModuleReport = { moduleId: module.id, module: module.name, language, sourceFiles: module.sourceFiles,
@@ -503,45 +534,52 @@ try {
       entry.retrievalMs = Date.now() - retrievalStart;
       // A parent/subsystem hit can carry no concrete files in an older module
       // projection. It cannot produce a history-view, so select the first
-      // usable module within the requested retrieval width and report a clean
-      // skip when none is available.
+      // usable module within the requested retrieval width. If none exists,
+      // continue through the direct Translator fallback instead of dropping
+      // the target module entirely.
       const top = candidates.find((candidate) => candidate.kind === 'module' &&
         Boolean(candidate.sourceModule?.sourceFiles?.length));
       if (!top) {
-        entry.status = 'skipped';
-        entry.error = 'no history candidate with source files';
-        console.log('  ✗ 历史候选没有可读取的源文件清单');
-        continue;
+        entry.status = 'retrieved';
+        entry.translationMode = 'direct-translator';
+        entry.fallbackReason = 'no history candidate with source files';
+        console.log('  ! 没有可读取的历史候选，切换到需求直实现 Translator 兜底');
+      } else {
+        if (top.kind !== 'module' || !top.sourceModule) { entry.status = 'skipped'; entry.error = `candidate kind ${top.kind}`; console.log(`  ✗ 候选不是模块：${top.kind}`); continue; }
+        entry.translationMode = 'analyzer-translator';
+        entry.candidate = { repository: top.repository, name: top.sourceModule.name, moduleId: top.sourceModule.moduleId,
+          language: top.language, score: top.score.overall, ...(top.score.hybrid === undefined ? {} : { hybrid: top.score.hybrid }),
+          ...(top.score.rerank === undefined ? {} : { rerank: top.score.rerank }), title: top.title };
+        console.log(`  Top-1: ${top.repository} / ${top.sourceModule.name}  score=${top.score.overall.toFixed(3)}` +
+          `${top.score.hybrid === undefined ? '' : ` hybrid=${top.score.hybrid.toFixed(3)}`}（候选 ${candidates.length}）`);
       }
-      if (top.kind !== 'module' || !top.sourceModule) { entry.status = 'skipped'; entry.error = `candidate kind ${top.kind}`; console.log(`  ✗ 候选不是模块：${top.kind}`); continue; }
-      entry.status = 'retrieved';
-      entry.candidate = { repository: top.repository, name: top.sourceModule.name, moduleId: top.sourceModule.moduleId,
-        language: top.language, score: top.score.overall, ...(top.score.hybrid === undefined ? {} : { hybrid: top.score.hybrid }),
-        ...(top.score.rerank === undefined ? {} : { rerank: top.score.rerank }), title: top.title };
-      console.log(`  Top-1: ${top.repository} / ${top.sourceModule.name}  score=${top.score.overall.toFixed(3)}` +
-        `${top.score.hybrid === undefined ? '' : ` hybrid=${top.score.hybrid.toFixed(3)}`}（候选 ${candidates.length}）`);
 
       let verifierSourceRoot: string | undefined;
       let historyViewRoot: string | undefined;
       try {
-        const historyView = dryRun ? undefined : await codeIntelligence.createHistoryModuleView({
-          workspaceRoot: targetRoot,
-          repositoryId: top.sourceModule.repositoryId,
-          analysisRevision: top.sourceModule.analysisRevision,
-          projectId: top.sourceModule.projectId,
-          moduleId: top.sourceModule.moduleId,
-          sourceFiles: top.sourceModule.sourceFiles ?? [top.path],
-        });
-        historyViewRoot = historyView?.root;
-        // The translation host removes its history view as soon as the run is
-        // completed. Keep a separate read-only copy for the post-translation
-        // #43 verifier; it contains only the selected module files.
-        verifierSourceRoot = historyView ? await mkdtemp(join(tmpdir(), 'forexplore-verifier-history-')) : undefined;
-        if (historyView && verifierSourceRoot) await cp(join(historyView.root, 'source'), verifierSourceRoot, { recursive: true });
-      const scope = await prepareModuleTranslationScope({ workspaceRoot: targetRoot, target, candidate: top,
-        requirement, decisionNotes: '',
-        evidenceScopes: [{ repositoryId: top.sourceModule.repositoryId, analysisRevision: top.sourceModule.analysisRevision }],
-        ...(historyView ? { historyView } : {}) });
+        let scope: Awaited<ReturnType<typeof prepareModuleTranslationScope>>;
+        if (top) {
+          const historyView = dryRun ? undefined : await codeIntelligence.createHistoryModuleView({
+            workspaceRoot: targetRoot,
+            repositoryId: top.sourceModule!.repositoryId,
+            analysisRevision: top.sourceModule!.analysisRevision,
+            projectId: top.sourceModule!.projectId,
+            moduleId: top.sourceModule!.moduleId,
+            sourceFiles: top.sourceModule!.sourceFiles ?? [top.path],
+          });
+          historyViewRoot = historyView?.root;
+          // The translation host removes its history view as soon as the run is
+          // completed. Keep a separate read-only copy for the post-translation
+          // #43 verifier; it contains only the selected module files.
+          verifierSourceRoot = historyView ? await mkdtemp(join(tmpdir(), 'forexplore-verifier-history-')) : undefined;
+          if (historyView && verifierSourceRoot) await cp(join(historyView.root, 'source'), verifierSourceRoot, { recursive: true });
+          scope = await prepareModuleTranslationScope({ workspaceRoot: targetRoot, target, candidate: top,
+            requirement, decisionNotes: '',
+            evidenceScopes: [{ repositoryId: top.sourceModule!.repositoryId, analysisRevision: top.sourceModule!.analysisRevision }],
+            ...(historyView ? { historyView } : {}) });
+        } else {
+          scope = await prepareDirectModuleTranslationScope({ workspaceRoot: targetRoot, target, requirement, decisionNotes: '' });
+        }
       // Experiment hook, off by default. The product scope makes the module's own files the
       // only readable ones, so an Analyzer cannot read the types those files reference and
       // reports a blocker. RECAST_EXPERIMENT_WIDEN_READ_SCOPE=1 adds the rest of the target
@@ -601,7 +639,8 @@ try {
       entry.turns = run.modelTurns;
       entry.acceptance = run.acceptance;
       entry.changedPaths = [...new Set(run.changes.map((change) => change.path))];
-      if (run.status === 'completed' && verifierSourceRoot && modelApiKey) {
+      entry.agent = run.agent;
+      if (run.status === 'completed' && verifierSourceRoot && modelApiKey && top?.sourceModule) {
         const apiName = (value: string | undefined, fallback: string): string => {
           const raw = value?.trim() || fallback;
           const base = raw.split('(')[0]!.split(/::|[.#]/).at(-1)!.trim();

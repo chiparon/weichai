@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type {
   WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceHistoryView,
@@ -35,8 +35,10 @@ const terminalStatuses = new Set<WorkspaceTranslationRun["status"]>(["completed"
 const hash = (value: string | null): string | null => value === null ? null : createHash("sha256").update(value).digest("hex");
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const maxCodexOutput = 4 * 1024 * 1024;
+const maxRecordedAnalyzerOutput = 64 * 1024;
 const generatedDirectoryNames = new Set([".git", ".forexpore", ".codex", ".claude", "node_modules", "bin", "obj", "target", "build", "dist", "test", "tests", "__tests__", "evaluation"]);
 const sensitiveFileNames = new Set([".env", ".env.local", ".env.production", ".npmrc", "id_rsa", "id_ed25519"]);
+const codexMetadataDirectories = new Set([".agents", ".aws", ".codex", ".git"]);
 type CodexStage = "analyzer" | "translator";
 type CodexSandbox = "read-only" | "workspace-write";
 interface CodexInvocation {
@@ -255,38 +257,58 @@ export class CodexWorkspaceTranslationRuntime {
 
   private async execute(run: WorkspaceTranslationRun, signal: AbortSignal, active: { child?: ChildProcess }): Promise<void> {
     this.assertVerification(run);
-    // Reserve one invocation for planning; the remaining configured budget is
-    // shared by Translator implementation and compiler-repair attempts.
-    run.status = "analyzing";
-    run.modelTurns++;
-    this.event(run, "analyzing", "Codex Analyzer：只读目标工程和 history-view，输出结构化 implementation plan");
-    this.save(run);
-    const analysisStage = await this.createStaging(run.request, signal, undefined, true);
-    try {
-      const schemaPath = join(analysisStage.root, "CODEX_ANALYZER_SCHEMA.json");
-      await writeFile(schemaPath, JSON.stringify(analyzerOutputSchema, null, 2) + "\n", { mode: 0o444 });
-      const prompt = this.analyzerPrompt(run.request, analysisStage.historyRoot);
-      const result = await this.invokeCodex(analysisStage.root, prompt, signal, active, "read-only", "analyzer", schemaPath);
-      this.recordInvocation(run, "analyzer", "read-only", prompt, result, run.request.historyView?.files ?? []);
-      if (result.exitCode !== 0) throw new Error(`Codex Analyzer exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
-      await this.assertStagingUnchanged(analysisStage);
-      run.plan = this.parseAnalyzerPlan(result, run.request);
+    const direct = run.request.translationMode === "direct-translator";
+    if (direct) {
+      run.plan = this.directTranslationPlan(run.request);
       run.completedSteps = [];
-      this.event(run, "analyzing", `Codex Analyzer 已提交 ${run.plan.steps.length} 个实现步骤`);
+      run.status = "translating";
+      this.event(run, "translating", "没有可用历史候选，使用需求直实现 Translator 兜底");
       this.save(run);
-    } finally {
-      await rm(analysisStage.root, { recursive: true, force: true }).catch(() => undefined);
+    } else {
+      // Reserve one invocation for planning; the remaining configured budget is
+      // shared by Translator implementation and compiler-repair attempts.
+      run.status = "analyzing";
+      run.modelTurns++;
+      this.event(run, "analyzing", "Codex Analyzer：只读目标工程和 history-view，输出结构化 implementation plan");
+      this.save(run);
+      const analysisStage = await this.createStaging(run.request, signal, undefined, true);
+      try {
+        const schemaPath = join(analysisStage.root, "CODEX_ANALYZER_SCHEMA.json");
+        await writeFile(schemaPath, JSON.stringify(analyzerOutputSchema, null, 2) + "\n", { mode: 0o444 });
+        const prompt = this.analyzerPrompt(run.request, analysisStage.historyRoot);
+        const result = await this.invokeCodex(analysisStage.root, prompt, signal, active, "read-only", "analyzer", schemaPath);
+        this.recordInvocation(run, "analyzer", "read-only", prompt, result, run.request.historyView?.files ?? []);
+        const analyzerStage = run.agent?.stages?.at(-1);
+        if (analyzerStage) analyzerStage.analyzerOutput = boundedAnalyzerOutput(result.lastMessage).value;
+        if (analyzerStage && boundedAnalyzerOutput(result.lastMessage).truncated) analyzerStage.analyzerOutputTruncated = true;
+        if (result.exitCode !== 0) throw new Error(`Codex Analyzer exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
+        await this.assertStagingUnchanged(analysisStage);
+        try {
+          run.plan = this.parseAnalyzerPlan(result, run.request);
+        } catch (error) {
+          if (analyzerStage) analyzerStage.analyzerOutputError = errorMessage(error);
+          throw error;
+        }
+        run.completedSteps = [];
+        this.event(run, "analyzing", `Codex Analyzer 已提交 ${run.plan.steps.length} 个实现步骤`);
+        this.save(run);
+      } finally {
+        await rm(analysisStage.root, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
 
     let lastCompile: WorkspaceCompilation | undefined;
-    for (let attempt = 0; attempt < this.maxTurns - 1; attempt++) {
+    const translatorBudget = Math.max(1, this.maxTurns - (direct ? 0 : 1));
+    for (let attempt = 0; attempt < translatorBudget; attempt++) {
       signal.throwIfAborted();
       run.status = "translating"; run.modelTurns++;
       this.event(run, "translating", `Codex Translator 第 ${attempt + 1} 轮：读取 plan、目标工程和 history-view，写回范围 ${run.request.writeFiles.length} 个文件`);
       this.save(run);
       const stage = await this.createStaging(run.request, signal, run.plan, false);
       try {
-        const prompt = this.translatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile);
+        const prompt = direct
+          ? this.directTranslatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile)
+          : this.translatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile);
         const result = await this.invokeCodex(stage.root, prompt, signal, active, "workspace-write", "translator");
         this.recordInvocation(run, "translator", "workspace-write", prompt, result, run.request.historyView?.files ?? []);
         if (result.exitCode !== 0) throw new Error(`Codex Translator exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
@@ -334,6 +356,34 @@ export class CodexWorkspaceTranslationRuntime {
       `Read-only history-view path: ${historyRoot}/source`,
       "The host will validate this plan and hand the same plan to Translator Codex. Do not make any file changes.",
     ].join("\n\n");
+  }
+
+  private directTranslatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation): string {
+    const visible = request.workspaceFiles.length ? request.workspaceFiles.join(", ") : "（目标工程可见文件）";
+    const allowed = request.writeFiles.join(", ");
+    return [
+      "You are the Direct Translator Codex for a RECAST module translation task.",
+      "No usable historical implementation was retrieved for this module. Implement the requirement directly from the target workspace and the task specification.",
+      "There is no history evidence to adapt. Do not wait for an Analyzer plan, invent a historical source, or attempt to access files outside this staging workspace.",
+      "Read the target files before writing. Work only under target/ and modify only the exact allowed write files. Do not create build artifacts or change tests, build configuration, or verification criteria.",
+      "Preserve existing public contracts and compiler settings. Implement complete behavior required by the specification; do not add stubs or weaken validation.",
+      `Requirement:\n${request.spec.replaceAll(this.files.root, "<staging-workspace>")}`,
+      `Target files in target/: ${visible}`,
+      `Allowed write files (the only files that may differ): ${allowed}`,
+      `Synthetic implementation scope (there is no history plan):\n${JSON.stringify(plan, null, 2)}`,
+      `The history-view path is intentionally empty: ${historyRoot}`,
+      compilation ? `The host compiler failed after the previous attempt. Repair these diagnostics:\n${this.safeDiagnostics(compilation.output)}` : "Implement the requirement now and finish after the source implementation is complete.",
+    ].join("\n\n");
+  }
+
+  private directTranslationPlan(request: WorkspaceTranslationRequest): WorkspaceTranslationPlan {
+    const files = [...request.writeFiles];
+    return {
+      summary: "No usable historical candidate was available; implement the module directly from its requirement and target contracts.",
+      mappings: files.map((path) => ({ source: "direct requirement", targetPath: path, targetSymbol: basename(path) })),
+      dependencies: [],
+      steps: [{ id: "direct-implementation", description: "Implement the complete requirement directly in the target module files.", files, dependsOn: [] }],
+    };
   }
 
   private translatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation): string {
@@ -544,16 +594,17 @@ export class CodexWorkspaceTranslationRuntime {
 
   private parseAnalyzerPlan(result: CodexInvocation, request: WorkspaceTranslationRequest): WorkspaceTranslationPlan {
     const candidates = [result.lastMessage, ...result.stdout.split("\n").reverse()];
+    let lastError: unknown;
     for (const raw of candidates) {
       const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
       if (!text) continue;
-      try { return parseWorkspaceTranslationPlan(JSON.parse(text), request); } catch { /* Try the next JSON event/final message. */ }
+      try { return parseWorkspaceTranslationPlan(JSON.parse(text), request); } catch (error) { lastError = error; /* Try the next JSON event/final message. */ }
       const start = text.indexOf("{"); const end = text.lastIndexOf("}");
       if (start >= 0 && end > start) {
-        try { return parseWorkspaceTranslationPlan(JSON.parse(text.slice(start, end + 1)), request); } catch { /* Continue searching. */ }
+        try { return parseWorkspaceTranslationPlan(JSON.parse(text.slice(start, end + 1)), request); } catch (error) { lastError = error; /* Continue searching. */ }
       }
     }
-    throw new Error("Codex Analyzer did not return a valid implementation plan JSON object.");
+    throw new Error(`Codex Analyzer did not return a valid implementation plan JSON object${lastError ? `: ${errorMessage(lastError)}` : "."}`);
   }
 
   private async assertStagingUnchanged(stage: { root: string; baseline: Map<string, string>; historyBaseline: Map<string, string>; planHash?: string }): Promise<void> {
@@ -567,10 +618,14 @@ export class CodexWorkspaceTranslationRuntime {
 
   private async assertControlFilesUnchanged(stage: { root: string; baseline: Map<string, string>; historyBaseline: Map<string, string>; planHash?: string }): Promise<void> {
     const entries = await readdir(stage.root, { withFileTypes: true });
-    const allowed = new Set(["target", "history-view", "CODEX_IMPLEMENTATION_PLAN.json", "CODEX_ANALYZER_SCHEMA.json", ".codex-last-message.txt"]);
+    // Codex CLI may create its empty local agent metadata directory in the
+    // staging root. It is outside both visible trees and is never copied back
+    // to the target; keep the scope check strict for every other root entry.
+    const allowed = new Set(["target", "history-view", "CODEX_IMPLEMENTATION_PLAN.json", "CODEX_ANALYZER_SCHEMA.json", ".codex-last-message.txt", ...codexMetadataDirectories]);
     for (const entry of entries) {
       if (!allowed.has(entry.name)) throw new Error(`Codex created an out-of-scope staging entry: ${entry.name}`);
       if (entry.isSymbolicLink()) throw new Error(`Codex created a symbolic link in staging: ${entry.name}`);
+      if (codexMetadataDirectories.has(entry.name) && !entry.isDirectory()) throw new Error(`Codex metadata entry must be a directory: ${entry.name}`);
     }
     const history = join(stage.root, "history-view");
     const currentHistory = new Map<string, string>();
@@ -760,4 +815,9 @@ function parseCodexUsage(output: string): { inputTokens?: number; outputTokens?:
     } catch { /* Codex emits both JSON events and human-readable lines. */ }
   }
   return usage;
+}
+
+function boundedAnalyzerOutput(value: string): { value: string; truncated: boolean } {
+  if (value.length <= maxRecordedAnalyzerOutput) return { value, truncated: false };
+  return { value: `${value.slice(0, maxRecordedAnalyzerOutput)}\n...[Analyzer output truncated]`, truncated: true };
 }

@@ -137,7 +137,7 @@ describe('CandidatesStage', () => {
   it('shows an actionable empty state', () => {
     const markup = renderToStaticMarkup(
       <CandidatesStage
-        state={{ ...state, candidates: [] }}
+        state={{ ...state, target: { ...target, kind: 'module' }, requirement: 'implement', candidates: [] }}
         dispatch={vi.fn()}
         adaptationProvider="DeepSeek"
         onSelectCandidate={vi.fn()}
@@ -146,7 +146,8 @@ describe('CandidatesStage', () => {
     );
 
     expect(markup).toContain('没有找到可复用实现');
-    expect(markup).toContain('返回“定义任务”调整目标或需求后重新检索');
+    expect(markup).toContain('可以按当前需求直接生成目标模块代码');
+    expect(markup).toContain('按需求直接生成模块');
   });
 
   it('shows complete module files and enables the module translation handoff', () => {

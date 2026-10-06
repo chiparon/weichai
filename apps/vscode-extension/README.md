@@ -170,6 +170,17 @@ SEMANTIC_QUERY_PORT_URL=http://127.0.0.1:8790 npm run start --workspace @forexpl
 npm run dev:extension
 ```
 
+如果需要直接打开已经写入 SeekDB 的企业资产升级语料，可以使用预置入口：
+
+```bash
+npm run dev:extension:preloaded
+```
+
+它会读取 `experiments/enterprise-asset-upgrade/AssetUpgradeGateway.code-workspace`，将其中的一个目标工程和七个参考工程绑定到当前数据库
+`forexplore_asset_upgrade_20261004`，只加载已有 revision 和模块产物，不重新扫描或建模。预置入口使用被忽略的独立 VS Code 数据目录，因此不会改动普通
+`npm run dev:extension` 的工作区状态；需要换数据库或工作区时分别使用 `--database <name>` 和 `--workspace <file.code-workspace>`。默认 DeepSeek
+模型可以直接使用启动 VS Code 进程继承的 `DEEPSEEK_API_KEY`；其他服务商在预置窗口的设置中保存一次 Key 即可。
+
 插件默认使用以下 VS Code 配置：
 
 ```json

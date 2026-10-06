@@ -195,6 +195,8 @@ export interface CodeIntelligenceHostOptions {
   runtimeOptions?: CreateCodeIntelligenceRuntimeOptions;
   runtimeFactory?: CodeIntelligenceRuntimeFactory;
   identityStore?: RepositoryIdentityStore;
+  /** Initial project choices for a read-only preloaded workbench. */
+  initialSelectedProjects?: ReadonlyMap<RepositoryId, ProjectId>;
   output?: { appendLine(value: string): void };
   storageKind?: 'seekdb' | 'memory';
   now?: () => string;
@@ -214,6 +216,8 @@ export interface CodeIntelligenceRepositoryInput {
   localPath: string;
   displayName?: string;
   role: RepositoryRole;
+  /** Preloaded windows may remap a persisted path across Windows and WSL. */
+  repositoryId?: RepositoryId;
 }
 
 export interface SynchronizeCodeIntelligenceRequest {
@@ -229,6 +233,12 @@ export interface SynchronizeCodeIntelligenceRequest {
   forceFull?: boolean;
   /** Registration-only requests are useful for a lightweight status refresh. */
   scan?: boolean;
+  /**
+   * A prebuilt corpus can contain a stale registry "indexing" flag while its
+   * active immutable revision is already ready. Repair that presentation-only
+   * lifecycle flag during registration without crawling source files.
+   */
+  repairStaleIndexing?: boolean;
 }
 
 export interface CodeIntelligenceSynchronizationResult {
@@ -436,6 +446,8 @@ export class CodeIntelligenceHost {
   #onModelRefusal?: CodeIntelligenceHostOptions['onModelRefusal'];
   #syncQueue: Promise<unknown> = Promise.resolve();
   #selectedTarget?: RepositoryId;
+  /** Local view override for legacy rows whose active revision is already ready. */
+  #readOnlyReadyRevisions = new Map<RepositoryId, string>();
   #selectionSequence = 0;
   readonly #runtimeFactory: CodeIntelligenceRuntimeFactory;
   readonly #runtimeOptions: CreateCodeIntelligenceRuntimeOptions;
@@ -474,6 +486,9 @@ export class CodeIntelligenceHost {
     this.#runtimeFactory = options.runtimeFactory ?? defaultRuntimeFactory;
     this.#runtimeOptions = options.runtimeOptions ?? {};
     this.#identityStore = options.identityStore;
+    for (const [repositoryId, projectId] of options.initialSelectedProjects ?? []) {
+      this.#selectedProjects.set(repositoryId, projectId);
+    }
     this.#output = options.output;
     this.#storageKind = options.storageKind ?? (options.runtimeOptions?.seekdb ? 'seekdb' : 'memory');
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -876,6 +891,7 @@ export class CodeIntelligenceHost {
     this.#disposed = true;
     this.#selectedRevisions.clear();
     this.#selectedProjects.clear();
+    this.#readOnlyReadyRevisions.clear();
     const semanticQueryServer = this.#semanticQueryServer;
     this.#semanticQueryServer = undefined;
     this.#semanticQueryEndpoint = undefined;
@@ -924,23 +940,48 @@ export class CodeIntelligenceHost {
     for (const input of preferredInputs) {
       request.signal?.throwIfAborted();
       try {
-        const repositoryId = await this.repositoryIdFor(input.localPath, persistedByPath.get(stableIdentityKey(input.localPath)));
-        const repository = await runtime.registry.register({
-          repositoryId,
-          localPath: input.localPath,
-          role: input.role,
-          ...(input.displayName?.trim() ? { displayName: input.displayName.trim() } : {}),
-        }).catch(async (error: unknown) => {
-          // Re-registering a checkout that a persisted row already owns is idempotent:
-          // the identity is unchanged, so the existing record is the registration.
-          // Treating it as a failure emptied the visible set and left every history
-          // repository invisible to retrieval ("Module search requires between 1 and
-          // 32 historical repositories").
-          if (!/already registered/i.test(String((error as Error)?.message ?? error))) throw error;
-          const existing = await runtime.registry.get(repositoryId);
-          if (!existing) throw error;
-          return existing;
-        });
+        const repositoryId = await this.repositoryIdFor(
+          input.localPath,
+          input.repositoryId ?? persistedByPath.get(stableIdentityKey(input.localPath)),
+        );
+        const explicitlyBound = input.repositoryId ? await runtime.registry.get(repositoryId) : null;
+        let repository: RepositoryRecord;
+        if (request.scan === false && explicitlyBound) {
+          // The ignored preloaded manifest binds a local path to a persisted
+          // repository ID across Windows/WSL. Keep the SeekDB row untouched:
+          // writing this platform's localPath back would make the ordinary
+          // entry create duplicate identities when opened from the other OS.
+          if (explicitlyBound.role !== input.role) {
+            throw new Error('The preloaded repository role does not match its persisted repository record.');
+          }
+          repository = explicitlyBound;
+        } else {
+          repository = await runtime.registry.register({
+            repositoryId,
+            localPath: input.localPath,
+            role: input.role,
+            ...(input.displayName?.trim() ? { displayName: input.displayName.trim() } : {}),
+          }).catch(async (error: unknown) => {
+            // Re-registering a checkout that a persisted row already owns is idempotent:
+            // the identity is unchanged, so the existing record is the registration.
+            // Treating it as a failure emptied the visible set and left every history
+            // repository invisible to retrieval ("Module search requires between 1 and
+            // 32 historical repositories").
+            if (!/already registered/i.test(String((error as Error)?.message ?? error))) throw error;
+            const existing = await runtime.registry.get(repositoryId);
+            if (!existing) throw error;
+            return existing;
+          });
+        }
+        if (request.repairStaleIndexing && repository.analysisStatus === 'indexing' && repository.activeRevision) {
+          const revision = await runtime.store.getRevision({
+            repositoryId: repository.repositoryId,
+            analysisRevision: repository.activeRevision,
+          });
+          if (revision?.status === 'ready') {
+            this.#readOnlyReadyRevisions.set(repository.repositoryId, repository.activeRevision);
+          } else this.#readOnlyReadyRevisions.delete(repository.repositoryId);
+        } else this.#readOnlyReadyRevisions.delete(repository.repositoryId);
         registered.set(repository.repositoryId, repository);
       } catch (error) {
         request.signal?.throwIfAborted();
@@ -1239,6 +1280,14 @@ export class CodeIntelligenceHost {
     void Promise.resolve(this.#identityStore?.update(selectedProjectKey(repositoryId), '')).catch(() => undefined);
   }
 
+  private presentationAnalysisStatus(
+    repository: Pick<RepositoryRecord, 'repositoryId' | 'activeRevision' | 'analysisStatus'>,
+  ): RepositoryAnalysisStatus {
+    return this.#readOnlyReadyRevisions.get(repository.repositoryId) === repository.activeRevision
+      ? 'ready'
+      : repository.analysisStatus;
+  }
+
   private async presentationFor(runtime: CodeIntelligenceRuntime): Promise<CodeIntelligencePresentation> {
     const listed = await runtime.queryPort.listRepositories();
     const repositories = await Promise.all(listed.repositories
@@ -1264,7 +1313,7 @@ export class CodeIntelligenceHost {
           repositoryId: repository.repositoryId,
           displayName: safeRepositoryDisplayName(repository.displayName),
           role: repository.role,
-          analysisStatus: repository.analysisStatus,
+          analysisStatus: this.presentationAnalysisStatus(repository),
           activeRevision,
           selectedRevision: null,
           revisions,
@@ -1300,7 +1349,7 @@ export class CodeIntelligenceHost {
         repositoryId: repository.repositoryId,
         displayName: safeRepositoryDisplayName(repository.displayName),
         role: repository.role,
-        analysisStatus: repository.analysisStatus,
+        analysisStatus: this.presentationAnalysisStatus(repository),
         activeRevision,
         selectedRevision: selectedRevision.analysisRevision,
         revisions,

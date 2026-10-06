@@ -12,6 +12,7 @@ coverage/
 .vscode-test-user/
 *.vsix
 .forexplore/
+.recast-preloaded/
 backups/
 
 # Local environment files

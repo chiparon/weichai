@@ -96,6 +96,18 @@ export function createReportUncertainTool(): HostToolFactory {
     },
     parse: parseReportUncertainInput,
     async execute(input) {
+      if (context.runtime.functionGroup !== undefined) {
+        const functionGroupTest = latestFunctionGroupTest(context);
+        if (functionGroupTest === undefined) {
+          throw new Error("Run run_function_group_tests before report_uncertain.");
+        }
+        return {
+          outcome: "uncertain" as const,
+          testExecutionStatus: functionGroupTest.status,
+          issue: { ...input.issue },
+          functionGroupTest,
+        };
+      }
       const targetTest = context.state.lastTargetTest;
       if (targetTest !== undefined) {
         return {
@@ -105,16 +117,7 @@ export function createReportUncertainTool(): HostToolFactory {
           targetTest,
         };
       }
-      const functionGroupTest = latestFunctionGroupTest(context);
-      if (functionGroupTest === undefined) {
-        throw new Error("Run run_target_tests before report_uncertain.");
-      }
-      return {
-        outcome: "uncertain" as const,
-        testExecutionStatus: functionGroupTest.status,
-        issue: { ...input.issue },
-        functionGroupTest,
-      };
+      throw new Error("Run run_target_tests before report_uncertain.");
     },
   });
 }

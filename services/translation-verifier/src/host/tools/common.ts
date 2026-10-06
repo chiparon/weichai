@@ -66,6 +66,11 @@ export type FunctionGroupTestRun = {
   testPaths: string[];
   tests: TestSummary;
   functions: FunctionGroupFunctionResult[];
+  failures: Array<{
+    message: string;
+    testPath?: string;
+    suspectedFunctions: VerificationFunction[];
+  }>;
   stdout: string;
   stderr: string;
   exitCode: number | null;

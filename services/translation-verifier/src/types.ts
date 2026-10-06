@@ -95,7 +95,7 @@ export type VerificationResult = {
 export type FunctionGroupFunctionResult = {
   source: VerificationFunction;
   target: VerificationFunction;
-  status: "passed" | "failed" | "unverified";
+  status: "passed" | "unverified";
   executed: boolean;
   lineCoverage: number | null;
   branchCoverage: number | null;

@@ -22,9 +22,9 @@ function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): Functio
   const byFunction = new Map<string, FunctionGroupTestRun["functions"][number]>();
   for (const run of runs) {
     for (const item of run.functions) {
-      const key = `${item.target.path}\0${item.target.name}`;
+      const key = `${item.target.path}\0${item.target.name}\0${item.target.signature ?? ""}`;
       const previous = byFunction.get(key);
-      if (!previous || item.status === "failed" || (item.status === "passed" && previous.status === "unverified")) {
+      if (!previous || (item.status === "passed" && previous.status === "unverified")) {
         byFunction.set(key, { ...item });
       } else if (item.executed && !previous.executed) {
         byFunction.set(key, { ...previous, ...item, status: "passed" });
@@ -36,6 +36,7 @@ function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): Functio
     status: runs.some((run) => run.status === "failure") ? "failure" : "success",
     testPaths: [...new Set(runs.flatMap((run) => run.testPaths))],
     functions: [...byFunction.values()],
+    failures: runs.flatMap((run) => run.failures),
   };
 }
 

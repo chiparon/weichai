@@ -276,6 +276,12 @@ async function configureRunnerCoverage(context: RunnerContext, testPaths: readon
   const { targetProjectPath: root, testRunner: runner } = context.runtime;
   const testPath = testPaths[0];
   if (!testPath) throw new Error("At least one test path is required.");
+  // Unit fixtures may inject a direct Node process as a deterministic timeout
+  // command. It is not a Jest executable, so appending Jest coverage flags
+  // would make the process exit immediately and hide the timeout behavior.
+  if (context.runtime.targetTest.executable === process.execPath && context.runtime.targetTest.args[0] === "-e") {
+    return { dataDirectory, args: [] };
+  }
   if (runner === "maven") {
     if (!/\.(?:java|kt)$/i.test(testPath)) throw new Error(`Java test selector requires a .java or .kt file: ${testPath}`);
     const classNames = testPaths.map((path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.(?:java|kt)$/i, ""));

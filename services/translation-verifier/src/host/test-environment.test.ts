@@ -97,7 +97,11 @@ describe("resolveTestEnvironment", () => {
   it("does not mistake a C# Console project for a test project", async () => {
     const root = await project();
     await writeFile(join(root, "Application.csproj"), '<Project><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>');
-    await expect(resolveTestEnvironment({ targetLanguage: "C#", targetProjectPath: root })).rejects.toThrow("standard dotnet test project");
+    const environment = await resolveTestEnvironment({ targetLanguage: "C#", targetProjectPath: root });
+    expect(environment.framework).toBe("dotnet");
+    expect(environment.testRoots[0]).toMatch(/^\.translation-verifier-tests\//);
+    expect(environment.cleanup).toBeTypeOf("function");
+    await environment.cleanup?.();
   });
 
   it("rejects a configured test root that does not exist", async () => {

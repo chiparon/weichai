@@ -65,6 +65,7 @@ export function createSingleAgentFunctionGroupTask(
       "Inspect the relevant source and target files before making a judgment.",
       "Create tests for the target function group in authorized target test roots, run run_function_group_tests, and use the Host result as the test status.",
       "The Host records a separate result for every target function; do not infer or invent coverage values.",
+      "For C# use xUnit [Fact] tests under the authorized test root; do not create or modify a project file.",
       "After the final test run, call finish_function_group with statuses matching the Host result.",
       "If the task cannot be verified reliably, call report_uncertain instead of guessing.",
       "A terminal tool call must be the only call in its turn.",

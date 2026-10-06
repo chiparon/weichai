@@ -39,7 +39,8 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, readdir, rm, writeFile, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import mysql from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
@@ -57,6 +58,11 @@ import { prepareModuleTranslationScope } from '../apps/vscode-extension/src/modu
 import { WorkspaceTranslationHost } from '../apps/vscode-extension/src/workspace-translation-host.js';
 import { CodexWorkspaceTranslationRuntime } from '../services/adaptation-service/src/codex-workspace-translation-runtime.js';
 import { createHttpServer } from '../services/adaptation-service/src/http-server.js';
+import { createAgentHost } from '../services/translation-verifier/src/host/runtime.js';
+import { createTranslationVerifierModelClient } from '../services/translation-verifier/src/host/model-client.js';
+import { createFunctionGroupVerifier } from '../services/translation-verifier/src/function-group-verify.js';
+import type { SingleAgentFunctionGroupTerminalResult } from '../services/translation-verifier/src/strategies/single-agent-function-group/strategy.js';
+import type { FunctionGroupVerificationInput, FunctionGroupVerificationResult } from '../services/translation-verifier/src/types.js';
 
 const argument = (name: string, fallback?: string): string | undefined => {
   const index = process.argv.indexOf(`--${name}`);
@@ -84,6 +90,22 @@ const outputPath = resolve(argument('out', 'results/target-module-pipeline.json'
 const adaptationApiUrl = argument('adaptation', process.env.ADAPTATION_API_URL ?? 'http://127.0.0.1:8788')!;
 const semanticPort = Number(argument('semantic-port', process.env.FOREXPLORE_SEMANTIC_QUERY_PORT ?? '8790'));
 const assetRoot = resolve('experiments/enterprise-asset-upgrade/source-repositories');
+
+/** History views are intentionally read-only while an Agent can see them. */
+async function removeReadOnlyTree(root: string): Promise<void> {
+  try {
+    await chmod(root, 0o755);
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      const child = join(root, entry.name);
+      if (entry.isDirectory()) await removeReadOnlyTree(child);
+      else await chmod(child, 0o644);
+    }
+    await rm(root, { recursive: true, force: true });
+  } catch {
+    // Cleanup is best effort; the verifier result remains valid if the host
+    // process cannot remove an already detached temporary tree.
+  }
+}
 
 /**
  * SeekDB may have been populated by the Windows extension host while this
@@ -234,6 +256,7 @@ interface ModuleReport {
   events?: string[];
   wallMs?: number;
   error?: string;
+  translationVerification?: FunctionGroupVerificationResult;
 }
 
 const report = {
@@ -262,6 +285,7 @@ const [registered] = await pool.query<Array<RowDataPacket & { repositoryId: stri
   `SELECT repository_id AS repositoryId, local_path AS localPath, active_revision AS activeRevision,
      display_name AS displayName, role FROM repositories`);
 const identityStore = new MemoryState();
+const nativeIdentityKeys = new Set<string>();
 // A previous WSL run may have left a second POSIX registration with no active
 // revision next to the Windows-hosted row. Prefer the active persisted row when
 // both resolve to the same local checkout, otherwise the null revision would
@@ -273,7 +297,18 @@ for (const row of identityRows) {
   identityStore.values.set(codeIntelligenceHostInternals.stableIdentityKey(row.localPath), row.repositoryId);
   const localPath = resolveRegisteredPath(row.localPath);
   const localKey = codeIntelligenceHostInternals.stableIdentityKey(localPath);
-  if (row.activeRevision || !identityStore.values.has(localKey)) identityStore.values.set(localKey, row.repositoryId);
+  // Prefer a path written by the current platform when the shared database
+  // also contains a translated path from the other worktree. This matters for
+  // a target that was first indexed by Windows: retaining that ID here would
+  // make the WSL scanner reopen the inaccessible E:\\ path.
+  const normalizedStored = row.localPath.replaceAll('\\', '/');
+  const nativePath = process.platform === 'win32'
+    ? normalizedStored.length >= 3 && normalizedStored[1] === ':' && normalizedStored[2] === '/'
+    : normalizedStored.startsWith('/');
+  if (!identityStore.values.has(localKey) || (nativePath && !nativeIdentityKeys.has(localKey))) {
+    identityStore.values.set(localKey, row.repositoryId);
+    if (nativePath) nativeIdentityKeys.add(localKey);
+  }
 }
 
 // Retrieval may only draw on history revisions that are actually queryable; a
@@ -322,10 +357,14 @@ try {
   await codeIntelligence.synchronize({ repositories: [{ localPath: targetRoot, role: 'target' }], scan: true });
   // Read the registered row back from the database: the presentation payload is a
   // panel view, while the registry row carries the identity this run must pin.
-  const [targetRows] = await pool.query<Array<RowDataPacket & { repositoryId: string; activeRevision: string | null; displayName: string; analysisStatus: string }>>(
-    `SELECT repository_id AS repositoryId, active_revision AS activeRevision, display_name AS displayName,
-       analysis_status AS analysisStatus FROM repositories WHERE local_path=?`, [targetRoot]);
-  const targetRepository = targetRows[0];
+  const [targetRows] = await pool.query<Array<RowDataPacket & { repositoryId: string; localPath: string; activeRevision: string | null; displayName: string; analysisStatus: string }>>(
+    `SELECT repository_id AS repositoryId, local_path AS localPath, active_revision AS activeRevision, display_name AS displayName,
+       analysis_status AS analysisStatus FROM repositories WHERE role='target'`);
+  // The shared SeekDB may contain the same checkout registered by Windows and
+  // WSL. Compare the host-resolved paths instead of the persisted spelling.
+  const targetRepositoryId = identityStore.get<string>(codeIntelligenceHostInternals.stableIdentityKey(targetRoot));
+  const targetRepository = targetRows.find((row) => row.repositoryId === targetRepositoryId) ??
+    targetRows.find((row) => resolveRegisteredPath(row.localPath) === targetRoot);
   if (!targetRepository) throw new Error('The target project was not registered.');
   console.log(`  ${targetRepository.displayName} status=${targetRepository.analysisStatus} revision=${targetRepository.activeRevision ?? '(none)'}`);
   if (!targetRepository.activeRevision) throw new Error(`The target project has no active revision after indexing (status ${targetRepository.analysisStatus}).`);
@@ -357,22 +396,28 @@ try {
 
   console.log('\n=== target: module plan ===');
   const projectScope = { ...targetScope, projectId: chosen.projectId };
+  const [previousPlanRows] = await pool.query<Array<RowDataPacket & { updatedAt: string }>>(
+    `SELECT updated_at AS updatedAt FROM module_artifacts
+       WHERE repository_id=? AND analysis_revision=? AND module_artifact_id=? AND status='current'`,
+    [targetScope.repositoryId, targetScope.analysisRevision, `project-job:${chosen.projectId}:code-understanding/v1`]);
+  const previousPlanUpdatedAt = previousPlanRows[0]?.updatedAt ? String(previousPlanRows[0].updatedAt) : undefined;
   await codeIntelligence.retryProject(projectScope, true);
   // retryProject schedules the analysis and returns; waitForProjects() can observe an
   // empty run set before the scheduled run registers itself, so the published record
   // is polled for instead of trusting a single idle() call.
   const planDeadline = Date.now() + Number(argument('plan-timeout-ms', '1200000'));
-  let record: { projectId?: string; state?: string; error?: string; proposal?: ProjectModuleProposal } | undefined;
+  let record: { projectId?: string; state?: string; error?: string; proposal?: ProjectModuleProposal; updatedAt?: string } | undefined;
   for (;;) {
-    const [artifactRows] = await pool.query<Array<RowDataPacket & { payload: unknown }>>(
-      `SELECT payload FROM module_artifacts WHERE repository_id=? AND analysis_revision=? AND kind='module-summary' AND status='current'`,
+    const [artifactRows] = await pool.query<Array<RowDataPacket & { payload: unknown; updatedAt: string }>>(
+      `SELECT payload, updated_at AS updatedAt FROM module_artifacts WHERE repository_id=? AND analysis_revision=?
+         AND kind IN ('module-summary', 'other') AND status='current' ORDER BY updated_at DESC`,
       [targetScope.repositoryId, targetScope.analysisRevision]);
     record = artifactRows
-      .map((row) => (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload) as {
+      .map((row) => ({ ...(typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload) as {
         projectId?: string; state?: string; error?: string; proposal?: ProjectModuleProposal;
-      })
+      }, updatedAt: String(row.updatedAt) }))
       .find((payload) => payload?.projectId === chosen.projectId);
-    if (record && (record.state === 'ready' || record.state === 'failed')) break;
+    if (record && (record.state === 'ready' || record.state === 'failed') && record.updatedAt !== previousPlanUpdatedAt) break;
     if (Date.now() >= planDeadline) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 5_000));
   }
@@ -456,8 +501,18 @@ try {
       }
       entry.candidatesConsidered = candidates.length;
       entry.retrievalMs = Date.now() - retrievalStart;
-      const top = candidates[0];
-      if (!top) { entry.status = 'skipped'; entry.error = 'no history candidate'; console.log('  ✗ 没有召回到历史候选'); continue; }
+      // A parent/subsystem hit can carry no concrete files in an older module
+      // projection. It cannot produce a history-view, so select the first
+      // usable module within the requested retrieval width and report a clean
+      // skip when none is available.
+      const top = candidates.find((candidate) => candidate.kind === 'module' &&
+        Boolean(candidate.sourceModule?.sourceFiles?.length));
+      if (!top) {
+        entry.status = 'skipped';
+        entry.error = 'no history candidate with source files';
+        console.log('  ✗ 历史候选没有可读取的源文件清单');
+        continue;
+      }
       if (top.kind !== 'module' || !top.sourceModule) { entry.status = 'skipped'; entry.error = `candidate kind ${top.kind}`; console.log(`  ✗ 候选不是模块：${top.kind}`); continue; }
       entry.status = 'retrieved';
       entry.candidate = { repository: top.repository, name: top.sourceModule.name, moduleId: top.sourceModule.moduleId,
@@ -466,14 +521,23 @@ try {
       console.log(`  Top-1: ${top.repository} / ${top.sourceModule.name}  score=${top.score.overall.toFixed(3)}` +
         `${top.score.hybrid === undefined ? '' : ` hybrid=${top.score.hybrid.toFixed(3)}`}（候选 ${candidates.length}）`);
 
-      const historyView = dryRun ? undefined : await codeIntelligence.createHistoryModuleView({
-        workspaceRoot: targetRoot,
-        repositoryId: top.sourceModule.repositoryId,
-        analysisRevision: top.sourceModule.analysisRevision,
-        projectId: top.sourceModule.projectId,
-        moduleId: top.sourceModule.moduleId,
-        sourceFiles: top.sourceModule.sourceFiles ?? [top.path],
-      });
+      let verifierSourceRoot: string | undefined;
+      let historyViewRoot: string | undefined;
+      try {
+        const historyView = dryRun ? undefined : await codeIntelligence.createHistoryModuleView({
+          workspaceRoot: targetRoot,
+          repositoryId: top.sourceModule.repositoryId,
+          analysisRevision: top.sourceModule.analysisRevision,
+          projectId: top.sourceModule.projectId,
+          moduleId: top.sourceModule.moduleId,
+          sourceFiles: top.sourceModule.sourceFiles ?? [top.path],
+        });
+        historyViewRoot = historyView?.root;
+        // The translation host removes its history view as soon as the run is
+        // completed. Keep a separate read-only copy for the post-translation
+        // #43 verifier; it contains only the selected module files.
+        verifierSourceRoot = historyView ? await mkdtemp(join(tmpdir(), 'forexplore-verifier-history-')) : undefined;
+        if (historyView && verifierSourceRoot) await cp(join(historyView.root, 'source'), verifierSourceRoot, { recursive: true });
       const scope = await prepareModuleTranslationScope({ workspaceRoot: targetRoot, target, candidate: top,
         requirement, decisionNotes: '',
         evidenceScopes: [{ repositoryId: top.sourceModule.repositoryId, analysisRevision: top.sourceModule.analysisRevision }],
@@ -537,6 +601,54 @@ try {
       entry.turns = run.modelTurns;
       entry.acceptance = run.acceptance;
       entry.changedPaths = [...new Set(run.changes.map((change) => change.path))];
+      if (run.status === 'completed' && verifierSourceRoot && modelApiKey) {
+        const apiName = (value: string | undefined, fallback: string): string => {
+          const raw = value?.trim() || fallback;
+          const base = raw.split('(')[0]!.split(/::|[.#]/).at(-1)!.trim();
+          return base.replace(/<.*>$/, '').split(/\s+/).at(-1) || fallback;
+        };
+        const targetApi = apiName(module.coreApis?.[0], module.name);
+        const sourceApi = apiName(top.sourceModule.coreApis?.[0], targetApi);
+        const verificationHost = createAgentHost<SingleAgentFunctionGroupTerminalResult>({
+          modelClient: createTranslationVerifierModelClient({
+            apiKey: () => modelApiKey!,
+            apiBase: process.env.DEEPSEEK_API_BASE,
+            model: process.env.DEEPSEEK_MODEL,
+          }),
+          limits: {
+            maxDurationMs: Number(process.env.TRANSLATION_VERIFIER_MAX_DURATION_MS ?? 300_000),
+            maxTurns: Number(process.env.TRANSLATION_VERIFIER_MAX_TURNS ?? 20),
+            maxToolCalls: Number(process.env.TRANSLATION_VERIFIER_MAX_TOOL_CALLS ?? 80),
+            maxToolCallsPerTurn: 8,
+          },
+        });
+        const verifyFunctionGroup = createFunctionGroupVerifier(verificationHost);
+        const verificationInput: FunctionGroupVerificationInput = {
+          schemaVersion: '3.0', sourceLanguage: top.language, targetLanguage: language,
+          sourceProjectPath: verifierSourceRoot, targetProjectPath: targetRoot, requirement,
+          functions: [{
+            source: { path: top.sourceModule.sourceFiles?.[0] ?? top.path, name: sourceApi },
+            target: { path: module.sourceFiles[0]!, name: targetApi },
+          }],
+          translationRun: {
+            id: run.id, plan: run.plan, changes: run.changes, compilations: run.compilations,
+            acceptance: run.acceptance,
+          },
+        };
+        try {
+          entry.translationVerification = await verifyFunctionGroup(verificationInput, 'single-agent-function-group', 'verify');
+        } catch (error) {
+          const description = error instanceof Error ? error.message : String(error);
+          entry.translationVerification = {
+            status: 'failure',
+            issue: { kind: 'environment', description: `函数组验证器未能完成：${description.slice(0, 600)}` },
+            functions: verificationInput.functions.map(({ source, target }) => ({
+              source, target, status: 'unverified', executed: false, lineCoverage: null, branchCoverage: null,
+            })),
+          };
+        }
+        console.log(`    #43 函数组验证：${entry.translationVerification.status}（${entry.translationVerification.functions.map((item) => `${item.target.name}:${item.executed ? 'executed' : 'unverified'}`).join(', ')}）`);
+      }
       if (run.error) entry.error = run.error;
       if (run.status !== 'completed' && run.events?.length) {
         entry.events = run.events.map((event) => `${event.phase}: ${event.message}`).slice(-40);
@@ -546,6 +658,10 @@ try {
       entry.wallMs = Date.now() - started;
       console.log(`  ${entry.status === 'completed' ? '✓' : '✗'} ${entry.status} turns=${run.modelTurns} acceptance=${run.acceptance ?? '-'} ` +
         `files=${entry.changedPaths.join(',')} ${(entry.wallMs / 1000).toFixed(0)}s`);
+      } finally {
+        if (verifierSourceRoot) await removeReadOnlyTree(verifierSourceRoot);
+        if (historyViewRoot) await removeReadOnlyTree(historyViewRoot);
+      }
     } catch (error) {
       entry.status = 'failed';
       entry.error = error instanceof Error ? error.message : String(error);

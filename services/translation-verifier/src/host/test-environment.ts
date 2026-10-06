@@ -1,5 +1,6 @@
 import { MAVEN_COVERAGE_GOALS } from "./test-runner.js";
-import { access, readFile, realpath, stat, readdir } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, realpath, rm, stat, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join, relative, resolve, sep } from "node:path";
 import type { VerificationInput } from "../types.js";
 import {
@@ -14,7 +15,23 @@ export type TestEnvironment = {
   framework: TestFramework;
   testRoots: readonly string[];
   targetTest: TargetTest;
+  cleanup?: () => Promise<void>;
 };
+
+async function removeGeneratedTree(root: string): Promise<void> {
+  try {
+    await chmod(root, 0o755);
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      const child = join(root, entry.name);
+      if (entry.isDirectory()) await removeGeneratedTree(child);
+      else await chmod(child, 0o644);
+    }
+    await rm(root, { recursive: true, force: true });
+  } catch {
+    // Test artifacts are disposable; a cleanup failure must not change the
+    // Host-observed test result or mask the verifier's terminal response.
+  }
+}
 
 type ProjectConfig = {
   root: string;
@@ -92,11 +109,54 @@ async function resolveDotnetEnvironment(root: string): Promise<TestEnvironment> 
     const text = await readText(join(root, path));
     if (/<IsTestProject>\s*true\s*<\/IsTestProject>/i.test(text) || /Include=["']Microsoft\.NET\.Test\.Sdk["']/i.test(text)) projects.push(path);
   }
-  if (projects.length !== 1) throw new Error("C# target project must contain exactly one standard dotnet test project.");
-  const project = projects[0];
-  const directory = project.includes("/") ? project.slice(0, project.lastIndexOf("/")) : "";
-  if (!directory) throw new Error("C# test project must be in a dedicated test directory.");
-  return { framework: "dotnet", testRoots: await validateTestRoots(root, [directory], "dotnet"), targetTest: { executable: "dotnet", args: ["test", project] } };
+  if (projects.length > 1) throw new Error("C# target project must contain exactly one standard dotnet test project.");
+  if (projects.length === 1) {
+    const project = projects[0]!;
+    const directory = project.includes("/") ? project.slice(0, project.lastIndexOf("/")) : "";
+    if (!directory) throw new Error("C# test project must be in a dedicated test directory.");
+    return { framework: "dotnet", testRoots: await validateTestRoots(root, [directory], "dotnet"), targetTest: { executable: "dotnet", args: ["test", project] } };
+  }
+
+  // Enterprise skeletons commonly keep all tests outside the target project so
+  // hidden evaluators cannot be inspected by the Agent. Create a disposable
+  // Host-owned xUnit harness in that case instead of making the product project
+  // carry a test dependency or requiring the user to edit the skeleton.
+  const productionProjects = entries
+    .map((name) => name.replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".csproj") && !name.split("/").some((part) => ["obj", "bin", ".git"].includes(part)));
+  if (productionProjects.length !== 1) throw new Error("C# target project must contain one production project when no test project is present.");
+  const productionProject = productionProjects[0]!;
+  const productionAbsolute = join(root, productionProject);
+  const productionText = await readText(productionAbsolute);
+  const targetFramework = productionText.match(/<TargetFramework(?:s)?[^>]*>\s*([^<]+)\s*<\/TargetFramework(?:s)?>/i)?.[1]?.trim() ?? "net8.0";
+  const harnessRelative = `.translation-verifier-tests/${randomUUID()}`;
+  const harnessRoot = join(root, harnessRelative);
+  const testsRelative = `${harnessRelative}/tests`;
+  const projectRelative = `${harnessRelative}/AgentTests.csproj`;
+  const reference = relative(harnessRoot, productionAbsolute).replaceAll(sep, "/");
+  await mkdir(join(harnessRoot, "tests"), { recursive: true });
+  await writeFile(join(harnessRoot, "AgentTests.csproj"), `<Project Sdk="Microsoft.NET.Sdk">\n` +
+    `  <PropertyGroup>\n` +
+    `    <TargetFramework>${targetFramework}</TargetFramework>\n` +
+    `    <IsTestProject>true</IsTestProject>\n` +
+    `    <IsPackable>false</IsPackable>\n` +
+    `    <Nullable>enable</Nullable>\n` +
+    `    <ImplicitUsings>enable</ImplicitUsings>\n` +
+    `  </PropertyGroup>\n` +
+    `  <ItemGroup>\n` +
+    `    <ProjectReference Include="${reference}" />\n` +
+    `    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />\n` +
+    `    <PackageReference Include="xunit" Version="2.9.2" />\n` +
+    `    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets><IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets></PackageReference>\n` +
+    `    <PackageReference Include="coverlet.collector" Version="6.0.2"><PrivateAssets>all</PrivateAssets><IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets></PackageReference>\n` +
+    `  </ItemGroup>\n` +
+    `</Project>\n`, "utf8");
+  return {
+    framework: "dotnet",
+    testRoots: [testsRelative],
+    targetTest: { executable: "dotnet", args: ["test", projectRelative] },
+    cleanup: async () => { await removeGeneratedTree(harnessRoot); },
+  };
 }
 
 async function resolvePythonEnvironment(root: string): Promise<TestEnvironment> {

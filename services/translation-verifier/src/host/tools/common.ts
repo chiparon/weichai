@@ -98,6 +98,8 @@ export type ToolRuntimeContext = AgentTaskContext & {
   testRoots: readonly string[];
   testRunner: TestRunner;
   targetTest: TargetTest;
+  /** Host-owned cleanup for an ephemeral test harness created for this run. */
+  cleanup?: () => Promise<void>;
 };
 
 export type ToolState = {

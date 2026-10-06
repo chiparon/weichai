@@ -67,10 +67,40 @@ The public result is always normalized to:
 type VerificationResult = {
   status: "success" | "failure";
   issue?: VerificationIssue;
+  targetFunction?: {
+    name: string;
+    executed: boolean;
+    lineCoverage: number | null;
+    branchCoverage: number | null;
+  };
 };
 ```
 
-A successful `finish` produces `status: "success"` when the Host observed a passing target test and the Agent reported a successful translation. A failed test or failed translation produces `status: "failure"`. `report_uncertain` also produces `status: "failure"` with an issue describing why verification could not be completed reliably.
+A successful `finish` produces `status: "success"` only when the Host observed a passing target test, at least one test actually executed, no tests failed, and fresh coverage identifies the requested target function as executed. The Agent cannot provide or override coverage values. Percentages do not have a minimum threshold; `null` indicates no measurable lines or branches. A failed test or failed translation produces `status: "failure"`. `report_uncertain` also produces `status: "failure"` with an issue describing why verification could not be completed reliably.
+
+## Target Function Coverage
+
+The task's target function identity (path, name, and optional signature) is bound by the Host. Before binding Agent tools, the Host injects a `BoundTestRunner` with a single `run(testPath)` capability. `run_target_tests` validates the test path and permissions, calls the bound runner, and stores its observed result. `test-runner.ts` owns preparation, fixed framework commands, shared process execution with timeout/output limits, report reading, and cleanup for all six runners. `coverage-reports.ts` owns report parsing, including JaCoCo shared by Maven and Gradle; there is no separate Maven execution module. `run_target_tests` still accepts only a test path. Its result includes test counts and either available method coverage or an explicit unavailable reason. `finish` and `report_uncertain` preserve this evidence, and the strategy exposes available function coverage in the public result.
+
+Maven uses JaCoCo coverage. The Host uses pinned JaCoCo 0.8.13 prepare-agent/report goals around the selected Surefire test. It removes previous JaCoCo XML and Surefire reports, uses a unique execution-data file for each run, and reads standard `target/site/jacoco/jacoco.xml` and `target/surefire-reports/TEST-*.xml` reports. Custom report directories and multi-module aggregation are not yet supported; missing reports prevent successful verification. Maven may need to download JaCoCo from its configured repository on the first run.
+
+Function matching uses the Java package, source filename, method name, and optional JVM descriptor or ordinary Java parameter signature. Ambiguous identities and unsupported signatures return unavailable evidence rather than selecting a different method. The other runners also collect fresh test counts and function coverage:
+
+| Runner | Host-controlled execution and reports | Project requirement |
+| --- | --- | --- |
+| Gradle | `test --tests *.TestClass jacocoTestReport --init-script <host-script> --rerun-tasks --no-build-cache`; isolated JUnit XML and JaCoCo XML/exec | A single root Java project, Gradle wrapper or installed Gradle; the Host applies/configures JaCoCo 0.8.13 through a temporary init script |
+| pytest | `python -m pytest <test-path> --cov=<project> --cov-branch --cov-report=json:<report> --junitxml=<report>`; isolated coverage data | pytest and pytest-cov installed, preferably in project `.venv`; Host uses Python AST to identify the function body |
+| Jest | `npm test -- --runInBand --runTestsByPath <test-path> --roots=<project> --coverage --collectCoverageFrom=<target-path> --coverageReporters=json --coverageDirectory=<directory> --json --outputFile=<report>` | Working Jest test script; Host includes the project root so unimported target files get zero coverage |
+| Vitest | `npm test -- --run <test-path> --coverage --coverage.include=<target-path> --coverage.reporter=json --coverage.reportsDirectory=<directory> --reporter=json --outputFile=<report>` | Working Vitest test script and a compatible coverage provider (for example `@vitest/coverage-v8`) |
+| C# | `dotnet test <test-project> --filter FullyQualifiedName~<test-class>. --collect:"XPlat Code Coverage" --results-directory <directory> --logger trx;LogFileName=tests.trx`; TRX and Coverlet Cobertura XML | Exactly one dedicated standard test project with Microsoft.NET.Test.Sdk, test adapter, coverlet.collector, and matching .NET runtime |
+
+Each new runner uses a unique Host-owned report directory and removes it after collection, including execution errors. C# test files must contain a single test class; Console assertion harnesses and multiple test projects/frameworks are not supported. Cobertura matching accepts exact report signatures or ordinary C# signatures with primitive parameter types. Jest/Vitest use Istanbul function counters and statement-start lines/branches within the selected function, excluding nested functions. Named arrow functions and class methods can be matched through report declaration coordinates. Python excludes definition/decorator lines and nested function bodies; single-line function bodies and ambiguous names return unavailable evidence. Framework configuration that excludes the target from instrumentation may also make coverage unavailable; the Host never substitutes overall project coverage.
+
+The optional real-runner regression suite covers an invoked target, an unrelated passing test, a failed assertion, and all-skipped tests for every new runner. Set `TRANSLATION_VERIFIER_RUNNER_E2E=1` and `TRANSLATION_VERIFIER_RUNNER_DEPS` to a dependency directory containing `node/node_modules` (Jest 30, Vitest 4.1.10, matching `@vitest/coverage-v8`), `python/bin/python` (pytest/pytest-cov), and `gradle-8.14.3/bin/gradle`. It also requires .NET 10 for its disposable C# fixture. The suite never installs dependencies or modifies application fixtures.
+
+```bash
+TRANSLATION_VERIFIER_RUNNER_E2E=1 TRANSLATION_VERIFIER_RUNNER_DEPS=/path/to/deps node node_modules/vitest/vitest.mjs run services/translation-verifier/src services/translation-verifier/e2e/runner-coverage.e2e.test.ts services/translation-verifier/e2e/translation-verifier.e2e.test.ts --maxWorkers=2
+```
 
 ## Model Adapter Boundary
 

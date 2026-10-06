@@ -176,6 +176,18 @@ export function createFinishTool(): HostToolFactory {
           ].join("\n"),
         );
       }
+      if (input.translationStatus === "success") {
+        if (!targetTest.tests || targetTest.tests.executed < 1 || targetTest.tests.failed > 0) {
+          throw new Error("Successful verification requires at least one executed, passing test.");
+        }
+        if (targetTest.coverage?.status !== "available") {
+          const reason = targetTest.coverage?.status === "unavailable" ? targetTest.coverage.reason : "No coverage evidence.";
+          throw new Error(`Successful verification requires target function coverage: ${reason}`);
+        }
+        if (!targetTest.coverage.targetFunction.executed) {
+          throw new Error("The target function was not executed. Add a test that invokes it and rerun.");
+        }
+      }
       return {
         testExecutionStatus: targetTest.status,
         translationStatus: input.translationStatus,

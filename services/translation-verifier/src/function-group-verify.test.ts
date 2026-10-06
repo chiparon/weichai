@@ -1,0 +1,133 @@
+import { describe, expect, it } from "vitest";
+import { createFunctionGroupVerifier } from "./function-group-verify.js";
+import type { FunctionGroupVerificationInput } from "./types.js";
+import { createSingleAgentFunctionGroupTask } from "./strategies/single-agent-function-group/strategy.js";
+
+const input: FunctionGroupVerificationInput = {
+  schemaVersion: "3.0",
+  sourceLanguage: "C#",
+  targetLanguage: "Java",
+  sourceProjectPath: "/tmp/source",
+  targetProjectPath: "/tmp/target",
+  requirement: "Preserve price calculation behavior.",
+  functions: [
+    {
+      source: { path: "src/OrderService.cs", name: "CalculatePrice" },
+      target: { path: "src/OrderService.java", name: "calculatePrice" },
+    },
+    {
+      source: { path: "src/PriceRule.cs", name: "Apply" },
+      target: { path: "src/PriceRule.java", name: "apply" },
+    },
+  ],
+  translationRun: {
+    id: "run-1",
+    changes: [],
+    compilations: [],
+    acceptance: "compilation-only",
+  },
+};
+
+describe("createFunctionGroupVerifier", () => {
+  it("dispatches the function-group single-agent strategy", async () => {
+    let task: AgentTask | undefined;
+    const verify = createFunctionGroupVerifier({
+      run: (value) => {
+        task = value;
+        return {
+          testExecutionStatus: "success" as const,
+          translationStatus: "success" as const,
+          functionGroupTest: {
+            status: "success" as const,
+            testPaths: ["tests/all.test.py"],
+            tests: { executed: 1, passed: 1, failed: 0, skipped: 0 },
+            functions: input.functions.map(({ source, target }) => ({
+            source,
+            target,
+            status: "passed" as const,
+            executed: true,
+            lineCoverage: 100,
+            branchCoverage: null,
+            })),
+            failures: [],
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          },
+        };
+      },
+    });
+
+    await expect(
+      verify(input, "single-agent-function-group", "verify"),
+    ).resolves.toMatchObject({ status: "success" });
+    expect(task?.functionGroup).toEqual(input);
+    expect(task?.userPrompt).toContain("calculatePrice");
+    expect(task?.userPrompt).toContain("apply");
+  });
+
+  it("does not accept the function-level strategy name", async () => {
+    const verify = createFunctionGroupVerifier({ run: async () => ({
+      testExecutionStatus: "failure",
+      translationStatus: "failure",
+      issue: { kind: "unknown", description: "failed" },
+      functionGroupTest: {
+        status: "failure",
+        testPaths: [],
+        tests: { executed: 0, passed: 0, failed: 0, skipped: 0 },
+        functions: [],
+        failures: [],
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      },
+    }) });
+
+    await expect(
+      verify(input, "single-agent" as "single-agent-function-group", "verify"),
+    ).rejects.toThrow("Unknown function-group verification strategy: single-agent");
+  });
+
+  it("rejects an empty or duplicate function group before invoking the Agent", async () => {
+    const verify = createFunctionGroupVerifier({ run: async () => {
+      throw new Error("Agent should not run");
+    } });
+    await expect(verify({ ...input, functions: [] }, "single-agent-function-group", "verify"))
+      .rejects.toThrow("at least one function");
+    await expect(verify({ ...input, functions: [input.functions[0]!, input.functions[0]!] }, "single-agent-function-group", "verify"))
+      .rejects.toThrow("Duplicate target function");
+  });
+
+  it("exposes the function-group tool set without changing function-level names", () => {
+    const task = createSingleAgentFunctionGroupTask(input);
+    expect(task.tools.map((factory) => factory({
+      state: {},
+      runtime: {
+        sourceLanguage: input.sourceLanguage,
+        targetLanguage: input.targetLanguage,
+        sourceProjectPath: input.sourceProjectPath,
+        targetProjectPath: input.targetProjectPath,
+        sourcePath: input.functions[0]!.source.path,
+        targetPath: input.functions[0]!.target.path,
+        targetFunction: input.functions[0]!.target,
+        functionGroup: input,
+        sourceDirectory: "src",
+        targetDirectory: "src",
+        testRoots: ["tests"],
+        testRunner: "pytest" as const,
+        targetTest: { executable: "python3", args: ["-m", "pytest"] },
+      },
+      runner: { run: async () => { throw new Error("unused"); } },
+      functionGroupRunner: { run: async () => { throw new Error("unused"); } },
+    })).map((tool) => tool.name)).toEqual([
+      "list_source_files",
+      "read_source_file",
+      "list_target_files",
+      "read_target_file",
+      "write_target_test",
+      "run_function_group_tests",
+      "finish_function_group",
+      "report_uncertain",
+    ]);
+  });
+});

@@ -1,3 +1,10 @@
+import type { BoundTestRunner } from "../test-runner.js";
+import type {
+  FunctionGroupVerificationInput,
+  FunctionGroupFunctionResult,
+  TargetFunctionCoverage,
+  VerificationFunction,
+} from "../../types.js";
 import type { AgentRunBudget } from "../agent.js";
 import { readFile } from "node:fs/promises";
 import { lstatSync, realpathSync } from "node:fs";
@@ -21,13 +28,26 @@ export type TestRunner =
   | "gradle"
   | "pytest"
   | "jest"
-  | "vitest";
+  | "vitest"
+  | "dotnet";
 
 export type TargetTest = {
   executable: string;
   args: readonly string[];
   timeoutMs?: number;
 };
+
+export type TestSummary = {
+  /** Tests actually executed, excluding skipped tests. */
+  executed: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+};
+
+export type TargetCoverageResult =
+  | { status: "available"; targetFunction: TargetFunctionCoverage }
+  | { status: "unavailable"; reason: string };
 
 export type TargetTestResult = {
   status: "success" | "failure";
@@ -37,6 +57,27 @@ export type TargetTestResult = {
   stdout: string;
   stderr: string;
   durationMs: number;
+  tests?: TestSummary;
+  coverage?: TargetCoverageResult;
+};
+
+export type FunctionGroupTestRun = {
+  status: "success" | "failure";
+  testPaths: string[];
+  tests: TestSummary;
+  functions: FunctionGroupFunctionResult[];
+  failures: Array<{
+    message: string;
+    testPath?: string;
+    suspectedFunctions: VerificationFunction[];
+  }>;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+};
+
+export type FunctionGroupTestRunner = {
+  run(testPaths: readonly string[]): Promise<FunctionGroupTestRun>;
 };
 
 export type AgentTaskContext = {
@@ -46,6 +87,9 @@ export type AgentTaskContext = {
   targetProjectPath: string;
   sourcePath: string;
   targetPath: string;
+  targetFunction: VerificationFunction;
+  /** Present only for the function-group strategy. */
+  functionGroup?: FunctionGroupVerificationInput;
 };
 
 export type ToolRuntimeContext = AgentTaskContext & {
@@ -58,12 +102,16 @@ export type ToolRuntimeContext = AgentTaskContext & {
 
 export type ToolState = {
   lastTargetTest?: TargetTestResult;
+  lastFunctionGroupTest?: FunctionGroupTestRun;
+  functionGroupTests?: FunctionGroupTestRun[];
 };
 
 export type ToolContext = {
   state: ToolState;
   budget?: AgentRunBudget;
   runtime: ToolRuntimeContext;
+  runner: BoundTestRunner;
+  functionGroupRunner?: FunctionGroupTestRunner;
 };
 
 export function relativePath(value: unknown, label = "path"): string {

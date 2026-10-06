@@ -1,3 +1,4 @@
+import { MAVEN_COVERAGE_GOALS } from "./test-runner.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ describe("resolveTestEnvironment", () => {
     ).resolves.toEqual({
       framework: "maven",
       testRoots: ["custom-tests/java", "custom-tests/resources"],
-      targetTest: { executable: "mvn", args: ["test"] },
+      targetTest: { executable: "mvn", args: [...MAVEN_COVERAGE_GOALS] },
     });
   });
 
@@ -74,6 +75,29 @@ describe("resolveTestEnvironment", () => {
       testRoots: ["checks"],
       targetTest: { args: ["test", "--"] },
     });
+  });
+
+  it("binds C# to one dedicated standard test project and ignores build artifacts", async () => {
+    const root = await project();
+    await mkdir(join(root, "tests/obj"), { recursive: true });
+    await writeFile(join(root, "tests/PriceTests.csproj"), '<Project><ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/></ItemGroup></Project>');
+    await writeFile(join(root, "tests/obj/Noise.csproj"), '<Project><IsTestProject>true</IsTestProject></Project>');
+    await expect(resolveTestEnvironment({ targetLanguage: "C#", targetProjectPath: root })).resolves.toEqual({ framework: "dotnet", testRoots: ["tests"], targetTest: { executable: "dotnet", args: ["test", "tests/PriceTests.csproj"] } });
+    await mkdir(join(root, "other-tests"));
+    await writeFile(join(root, "other-tests/Other.csproj"), '<Project><IsTestProject>true</IsTestProject></Project>');
+    await expect(resolveTestEnvironment({ targetLanguage: "CSharp", targetProjectPath: root })).rejects.toThrow("exactly one");
+  });
+
+  it("requires a dedicated directory for a C# test project", async () => {
+    const root = await project();
+    await writeFile(join(root, "Tests.csproj"), '<Project><IsTestProject>true</IsTestProject></Project>');
+    await expect(resolveTestEnvironment({ targetLanguage: "C#", targetProjectPath: root })).rejects.toThrow("dedicated test directory");
+  });
+
+  it("does not mistake a C# Console project for a test project", async () => {
+    const root = await project();
+    await writeFile(join(root, "Application.csproj"), '<Project><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>');
+    await expect(resolveTestEnvironment({ targetLanguage: "C#", targetProjectPath: root })).rejects.toThrow("standard dotnet test project");
   });
 
   it("rejects a configured test root that does not exist", async () => {

@@ -20,6 +20,7 @@ const taskContext = {
   targetProjectPath: "/tmp/target",
   sourcePath: "src/source.py",
   targetPath: "src/target.py",
+  targetFunction: subject.targetFunction,
 };
 
 const resolveToolContext = async (): Promise<ToolRuntimeContext> => ({

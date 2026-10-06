@@ -91,7 +91,7 @@ afterEach(async () => {
   await Promise.all(workspaces.splice(0).map((workspace) => workspace.dispose()));
 });
 
-function createScriptedModel(): ScriptedModel {
+function createScriptedModel(generatedTest = GENERATED_TEST): ScriptedModel {
   let step = 0;
   const state: ScriptedModel = {
     client: undefined as unknown as AgentModelClient,
@@ -151,7 +151,7 @@ function createScriptedModel(): ScriptedModel {
         case 4:
           return nextCall("write-test", "write_target_test", {
             path: GENERATED_TEST_PATH,
-            content: GENERATED_TEST,
+            content: generatedTest,
           });
         case 5:
           return nextCall("run-test", "run_target_tests", {
@@ -164,7 +164,7 @@ function createScriptedModel(): ScriptedModel {
           }
           const result = JSON.parse(last.content) as TargetTestResult;
           state.targetTestResult = result;
-          if (result.status === "success") {
+          if (result.status === "success" && result.coverage?.status === "available" && result.coverage.targetFunction.executed) {
             state.terminalTool = "finish";
             return nextCall("finish", "finish", {
               testExecutionStatus: "success",
@@ -202,6 +202,28 @@ function toolCall(
 }
 
 describe("translation verifier E2E fixture", () => {
+  it("rejects passing tests that never execute the target function", async () => {
+    const workspace = await createFixtureWorkspace();
+    workspaces.push(workspace);
+    const input = await materializeFixtureInput(workspace);
+    const model = createScriptedModel(`package org.apache.commons.fileupload;
+import org.junit.Test;
+import static org.junit.Assert.assertTrue;
+public class TranslationVerifierReadBodyDataTest {
+    @Test public void unrelatedTest() { assertTrue(true); }
+}`);
+    const host = createAgentHost<SingleAgentTerminalResult>({
+      modelClient: model.client,
+      limits: { maxDurationMs: 120_000, maxTurns: 10, maxToolCalls: 10, maxToolCallsPerTurn: 1 },
+    });
+    const result = await createVerifier(host)(input, "single-agent", "verify");
+    expect(model.targetTestResult).toMatchObject({
+      status: "success", tests: { executed: 1, passed: 1 },
+      coverage: { status: "available", targetFunction: { name: "readBodyData", executed: false, lineCoverage: 0 } },
+    });
+    expect(result).toMatchObject({ status: "failure", targetFunction: { executed: false } });
+  }, 120_000);
+
   it(
     "runs the real Host, tools, target worktree and test process",
     async () => {
@@ -250,7 +272,9 @@ describe("translation verifier E2E fixture", () => {
       ]);
       expect(model.targetTestResult).toBeDefined();
       expect(model.terminalTool).toMatch(/^(finish|report_uncertain)$/);
-      expect(["success", "failure"]).toContain(result.status);
+      expect(result.status).toBe("success");
+      expect(result.targetFunction).toMatchObject({ name: "readBodyData", executed: true, lineCoverage: 100, branchCoverage: null });
+      expect(model.targetTestResult?.tests).toMatchObject({ executed: 2, passed: 2, failed: 0 });
       if (result.status === "failure") {
         expect(result.issue).toBeDefined();
       }

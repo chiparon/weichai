@@ -1,10 +1,4 @@
-import type {
-  AnalysisReport,
-  FilePatch,
-  WorkspaceCompilation,
-  WorkspaceTranslationChange,
-  WorkspaceTranslationPlan,
-} from "@forexplore/contracts";
+import type { AnalysisReport, FilePatch } from "@forexplore/contracts";
 
 export type JsonValue =
   string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -47,23 +41,16 @@ export type FunctionGroupVerificationFunction = {
   target: VerificationFunction;
 };
 
-export type FunctionGroupTranslationEvidence = {
-  id: string;
-  plan?: WorkspaceTranslationPlan;
-  changes: WorkspaceTranslationChange[];
-  compilations: WorkspaceCompilation[];
-  acceptance: "compilation-only" | "behavior-verified";
-};
-
 export type FunctionGroupVerificationInput = {
-  schemaVersion: "3.0";
+  schemaVersion: "3.1";
   sourceLanguage: string;
   targetLanguage: string;
   sourceProjectPath: string;
   targetProjectPath: string;
   requirement: string;
   functions: FunctionGroupVerificationFunction[];
-  translationRun: FunctionGroupTranslationEvidence;
+  /** Target functions for which no trustworthy source reference was found. */
+  unmatchedFunctions?: VerificationFunction[];
 };
 
 export type VerificationIssueKind =
@@ -76,6 +63,16 @@ export type VerificationIssue = {
   kind: VerificationIssueKind;
   description: string;
 };
+
+export type VerificationReason =
+  | "verified"
+  | "not-executed"
+  | "coverage-unavailable"
+  | "test-failed"
+  | "test-environment-failure"
+  | "mapping-invalid"
+  | "agent-timeout"
+  | "model-failure";
 
 export type TargetFunctionCoverage = {
   name: string;
@@ -99,12 +96,15 @@ export type FunctionGroupFunctionResult = {
   executed: boolean;
   lineCoverage: number | null;
   branchCoverage: number | null;
+  /** Host-derived explanation for the observed function result. */
+  reason?: VerificationReason;
 };
 
 export type FunctionGroupVerificationResult = {
   status: "success" | "failure";
   issue?: VerificationIssue;
   functions: FunctionGroupFunctionResult[];
+  reason?: VerificationReason;
 };
 
 export type VerificationPhase = "prepare" | "verify";

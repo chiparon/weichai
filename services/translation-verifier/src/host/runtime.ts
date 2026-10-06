@@ -90,14 +90,12 @@ export function createAgentHost<Result = unknown>(
         options.traceLogger,
         traceEvent(runId, "run.started"),
       );
-      let cleanup: (() => Promise<void>) | undefined;
       try {
         const resolvedContext = {
           state: {},
           budget,
           runtime: await resolveToolContext(task.taskContext),
         };
-        cleanup = resolvedContext.runtime.cleanup;
         const context: ToolContext = {
           ...resolvedContext,
           runner: bindTestRunner(resolvedContext),
@@ -155,7 +153,6 @@ export function createAgentHost<Result = unknown>(
         );
         throw error;
       } finally {
-        await cleanup?.();
         budget.dispose();
       }
     },

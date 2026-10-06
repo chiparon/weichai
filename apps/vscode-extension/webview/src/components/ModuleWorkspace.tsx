@@ -489,7 +489,7 @@ function HistoryOverview({
           <div>
             <span className="history-library-code">01A · 参考模块库</span>
             <h1>{workspace.name}</h1>
-            <p>系统已将工程组织为可检索的功能模块，选择模块可查看职责与关键接口</p>
+            <p>{workspace.analysis?.proposal?.summary ?? '系统已将工程组织为可检索的功能模块，选择模块可查看职责与关键接口'}</p>
           </div>
         </div>
         <div className={`history-library-state${workspace.snapshotId ? ' is-ready' : ''}`}>

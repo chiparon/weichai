@@ -23,6 +23,12 @@ function command(value: unknown, label: string): WorkspaceCompileCommand {
     throw new Error(`${label} 无效：${error instanceof Error ? error.message : String(error)}`);
   }
   const parsed = value as WorkspaceCompileCommand;
+  // `path.isAbsolute` follows the host OS. A Windows command can still be
+  // configured while the extension tests or validates it on WSL, so reject
+  // drive-letter and UNC forms explicitly on every platform.
+  if (parsed.cwd !== undefined && (/^[A-Za-z]:[\\/]/.test(parsed.cwd) || /^\\\\/.test(parsed.cwd))) {
+    throw new Error(`${label} 不允许绝对路径工作目录；模块 worktree 的路径因模块而异。`);
+  }
   // The service validator already requires a relative cwd inside the workspace;
   // arguments may not name absolute paths because a module worktree moves.
   if (parsed.args.some((arg) => arg.startsWith('/') || /^[A-Za-z]:[\\/]/.test(arg))) {

@@ -1,6 +1,7 @@
 import {
   type HostTool,
   type HostToolFactory,
+  type FunctionGroupTestRun,
   type TargetTestResult,
   type ToolContext,
 } from "./common.js";
@@ -10,12 +11,25 @@ export type ReportUncertainInput = {
   issue: FinishIssue;
 };
 
-export type ReportUncertainResult = {
+type FunctionReportUncertainResult = {
   outcome: "uncertain";
   testExecutionStatus: TargetTestResult["status"];
   issue: FinishIssue;
   targetTest: TargetTestResult;
 };
+
+type FunctionGroupReportUncertainResult = {
+  outcome: "uncertain";
+  testExecutionStatus: FunctionGroupTestRun["status"];
+  issue: FinishIssue;
+  functionGroupTest: FunctionGroupTestRun;
+};
+
+function latestFunctionGroupTest(context: ToolContext): FunctionGroupTestRun | undefined {
+  return context.state.functionGroupTests?.at(-1) ?? context.state.lastFunctionGroupTest;
+}
+
+export type ReportUncertainResult = FunctionReportUncertainResult | FunctionGroupReportUncertainResult;
 
 function parseReportUncertainInput(value: unknown): ReportUncertainInput {
   if (
@@ -83,14 +97,23 @@ export function createReportUncertainTool(): HostToolFactory {
     parse: parseReportUncertainInput,
     async execute(input) {
       const targetTest = context.state.lastTargetTest;
-      if (targetTest === undefined) {
+      if (targetTest !== undefined) {
+        return {
+          outcome: "uncertain" as const,
+          testExecutionStatus: targetTest.status,
+          issue: { ...input.issue },
+          targetTest,
+        };
+      }
+      const functionGroupTest = latestFunctionGroupTest(context);
+      if (functionGroupTest === undefined) {
         throw new Error("Run run_target_tests before report_uncertain.");
       }
       return {
-        outcome: "uncertain",
-        testExecutionStatus: targetTest.status,
+        outcome: "uncertain" as const,
+        testExecutionStatus: functionGroupTest.status,
         issue: { ...input.issue },
-        targetTest,
+        functionGroupTest,
       };
     },
   });

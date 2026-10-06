@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, writeFile, realpath, rm } from "node:fs/promi
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { parseJacocoReport, parseSurefireReport, parseCobertura, parseIstanbul, parseJUnit, parseNodeTests, parsePythonCoverage, parseTrx, jsonReport, type PythonFunction } from "./coverage-reports.js";
-import { MAX_TEST_OUTPUT_CHARS, readProjectFile, resolveSafePath, type ToolContext, type TargetTestResult, type TargetCoverageResult, type TestSummary } from "./tools/common.js";
+import { MAX_TEST_OUTPUT_CHARS, readProjectFile, resolveSafePath, type FunctionGroupTestRun, type FunctionGroupTestRunner, type ToolContext, type TargetTestResult, type TargetCoverageResult, type TestSummary } from "./tools/common.js";
 
 const JACOCO = "org.jacoco:jacoco-maven-plugin:0.8.13";
 export const MAVEN_COVERAGE_GOALS = [`${JACOCO}:prepare-agent`, "test", `${JACOCO}:report`] as const;
@@ -27,6 +27,57 @@ export function bindTestRunner(context: RunnerContext): BoundTestRunner {
     },
   };
   return { run: (testPath) => runTests(boundContext, testPath) };
+}
+
+/** Bind the same Host-controlled runner to every target function in a group. */
+export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGroupTestRunner {
+  const functions = context.runtime.functionGroup?.functions ?? [];
+  return {
+    run: async (testPaths) => {
+      if (functions.length === 0) throw new Error("Function-group verification requires at least one target function.");
+      if (testPaths.length === 0) throw new Error("Function-group verification requires at least one test path.");
+      const results: Array<{ target: (typeof functions)[number]["target"]; result: TargetTestResult }> = [];
+      for (const mapping of functions) {
+        const targetContext: RunnerContext = {
+          ...context,
+          runtime: {
+            ...context.runtime,
+            targetPath: mapping.target.path,
+            targetFunction: { ...mapping.target },
+          },
+        };
+        for (const testPath of testPaths) {
+          results.push({ target: mapping.target, result: await runTests(targetContext, testPath) });
+        }
+      }
+      const first = results[0]?.result;
+      const functionsResult = functions.map((mapping) => {
+        const matching = results.filter((item) => item.target.path === mapping.target.path && item.target.name === mapping.target.name).map((item) => item.result);
+        const coverage = matching.map((item) => item.coverage).find((item) => item?.status === "available");
+        const failed = matching.some((item) => item.status === "failure");
+        const executed = matching.some((item) => item.coverage?.status === "available" && item.coverage.targetFunction.executed);
+        return {
+          source: { ...mapping.source },
+          target: { ...mapping.target },
+          status: failed ? "failed" as const : executed ? "passed" as const : "unverified" as const,
+          executed,
+          lineCoverage: coverage?.status === "available" ? coverage.targetFunction.lineCoverage : null,
+          branchCoverage: coverage?.status === "available" ? coverage.targetFunction.branchCoverage : null,
+        };
+      });
+      const tests = first?.tests ?? { executed: 0, passed: 0, failed: 0, skipped: 0 };
+      const status = results.some(({ result }) => result.status === "failure") ? "failure" as const : "success" as const;
+      return {
+        status,
+        testPaths: [...testPaths],
+        tests,
+        functions: functionsResult,
+        stdout: results.map(({ result }) => result.stdout).filter(Boolean).join("\n"),
+        stderr: results.map(({ result }) => result.stderr).filter(Boolean).join("\n"),
+        exitCode: results.find(({ result }) => result.exitCode !== 0)?.result.exitCode ?? 0,
+      } satisfies FunctionGroupTestRun;
+    },
+  };
 }
 
 async function runTests(context: RunnerContext, testPath: string): Promise<TargetTestResult> {

@@ -1,0 +1,132 @@
+import type { VerificationIssue } from "../../types.js";
+import {
+  type FunctionGroupTestRun,
+  type HostTool,
+  type HostToolFactory,
+  type ToolContext,
+} from "./common.js";
+
+export type FinishFunctionGroupInput = {
+  testExecutionStatus: FunctionGroupTestRun["status"];
+  translationStatus: "success" | "failure";
+  issue?: VerificationIssue;
+};
+
+export type FinishFunctionGroupResult = FinishFunctionGroupInput & {
+  functionGroupTest: FunctionGroupTestRun;
+};
+
+function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): FunctionGroupTestRun {
+  const latest = runs[runs.length - 1];
+  if (!latest) throw new Error("Run run_function_group_tests before finish_function_group.");
+  const byFunction = new Map<string, FunctionGroupTestRun["functions"][number]>();
+  for (const run of runs) {
+    for (const item of run.functions) {
+      const key = `${item.target.path}\0${item.target.name}`;
+      const previous = byFunction.get(key);
+      if (!previous || item.status === "failed" || (item.status === "passed" && previous.status === "unverified")) {
+        byFunction.set(key, { ...item });
+      } else if (item.executed && !previous.executed) {
+        byFunction.set(key, { ...previous, ...item, status: "passed" });
+      }
+    }
+  }
+  return {
+    ...latest,
+    status: runs.some((run) => run.status === "failure") ? "failure" : "success",
+    testPaths: [...new Set(runs.flatMap((run) => run.testPaths))],
+    functions: [...byFunction.values()],
+  };
+}
+
+function parseFinishFunctionGroupInput(value: unknown): FinishFunctionGroupInput {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("testExecutionStatus" in value) ||
+    !("translationStatus" in value)
+  ) {
+    throw new Error("finish_function_group requires testExecutionStatus and translationStatus.");
+  }
+  const input = value as Record<string, unknown>;
+  if (!(["success", "failure"] as const).includes(input.testExecutionStatus as "success" | "failure")) {
+    throw new Error("finish_function_group.testExecutionStatus is invalid.");
+  }
+  if (!(["success", "failure"] as const).includes(input.translationStatus as "success" | "failure")) {
+    throw new Error("finish_function_group.translationStatus is invalid.");
+  }
+  if (Object.keys(input).some((key) => !["testExecutionStatus", "translationStatus", "issue"].includes(key))) {
+    throw new Error("finish_function_group contains unknown fields.");
+  }
+  const issue = parseIssue(input.issue);
+  const translationStatus = input.translationStatus as "success" | "failure";
+  if (translationStatus === "success" && issue !== undefined) {
+    throw new Error("A successful function-group verification cannot include an issue.");
+  }
+  if (translationStatus === "failure" && issue === undefined) {
+    throw new Error("finish_function_group.issue is required when translationStatus is failure.");
+  }
+  return {
+    testExecutionStatus: input.testExecutionStatus as "success" | "failure",
+    translationStatus,
+    ...(issue ? { issue } : {}),
+  };
+}
+
+function parseIssue(value: unknown): VerificationIssue | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("finish_function_group.issue must contain kind and description.");
+  }
+  const issue = value as Record<string, unknown>;
+  if (Object.keys(issue).some((key) => !["kind", "description"].includes(key)) ||
+      !["translation", "test", "environment", "unknown"].includes(String(issue.kind)) ||
+      typeof issue.description !== "string" || !issue.description.trim()) {
+    throw new Error("finish_function_group.issue is invalid.");
+  }
+  return {
+    kind: issue.kind as VerificationIssue["kind"],
+    description: issue.description,
+  };
+}
+
+export function createFinishFunctionGroupTool(): HostToolFactory {
+  return (context: ToolContext): HostTool<FinishFunctionGroupInput, FinishFunctionGroupResult> => ({
+    name: "finish_function_group",
+    description: `Finish ${context.runtime.sourceLanguage} to ${context.runtime.targetLanguage} verification after reporting the Host-observed result for every target function in the function group.`,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["testExecutionStatus", "translationStatus"],
+      properties: {
+        testExecutionStatus: { enum: ["success", "failure"] },
+        translationStatus: { enum: ["success", "failure"] },
+        issue: { type: "object" },
+      },
+    },
+    parse: parseFinishFunctionGroupInput,
+    async execute(input) {
+      const result = mergeFunctionGroupTests(context.state.functionGroupTests ?? []);
+      if (input.testExecutionStatus !== result.status) {
+        throw new Error(`finish_function_group.testExecutionStatus does not match the Host result: expected ${result.status}.`);
+      }
+      if (input.translationStatus !== result.status) {
+        throw new Error(`finish_function_group.translationStatus does not match the Host result: expected ${result.status}.`);
+      }
+      if (input.translationStatus === "success") {
+        if (result.tests.executed < 1 || result.tests.failed > 0) {
+          throw new Error("Successful function-group verification requires executed, passing tests.");
+        }
+        const unverified = result.functions.filter((item) => item.status !== "passed" || !item.executed);
+        if (unverified.length > 0) {
+          throw new Error(`Successful function-group verification requires every target function to pass: ${unverified.map((item) => item.target.name).join(", ")}`);
+        }
+      }
+      return {
+        ...input,
+        functionGroupTest: result,
+      };
+    },
+  });
+}

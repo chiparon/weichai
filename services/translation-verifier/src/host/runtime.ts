@@ -1,4 +1,4 @@
-import { bindTestRunner } from "./test-runner.js";
+import { bindFunctionGroupTestRunner, bindTestRunner } from "./test-runner.js";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import {
@@ -96,7 +96,13 @@ export function createAgentHost<Result = unknown>(
           budget,
           runtime: await resolveToolContext(task.taskContext),
         };
-        const context: ToolContext = { ...resolvedContext, runner: bindTestRunner(resolvedContext) };
+        const context: ToolContext = {
+          ...resolvedContext,
+          runner: bindTestRunner(resolvedContext),
+          ...(task.functionGroup
+            ? { functionGroupRunner: bindFunctionGroupTestRunner(resolvedContext) }
+            : {}),
+        };
         const tools = bindTools(task, context);
         const result = await runAgentLoop({
           client: options.modelClient,

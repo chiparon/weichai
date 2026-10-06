@@ -21,7 +21,9 @@ function formatEntity(entity: { path: string; name: string; signature?: string }
   return `${entity.name}${signature} in ${entity.path}`;
 }
 
-export type SingleAgentTerminalResult = FinishResult | ReportUncertainResult;
+export type SingleAgentTerminalResult =
+  | FinishResult
+  | Extract<ReportUncertainResult, { targetTest: unknown }>;
 
 function toVerificationResult(
   result: SingleAgentTerminalResult,

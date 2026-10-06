@@ -3,6 +3,7 @@ import type {
   AgentTaskContext,
   HostToolFactory,
 } from "./tools/common.js";
+import type { FunctionGroupVerificationInput } from "../types.js";
 
 export type { VerificationSubject } from "../types.js";
 export type { AgentTaskContext, ToolRuntimeContext } from "./tools/common.js";
@@ -12,6 +13,8 @@ export type AgentToolFactory = HostToolFactory;
 export type AgentTask = {
   subject: VerificationSubject;
   taskContext: AgentTaskContext;
+  /** Present only for the function-group strategy. */
+  functionGroup?: FunctionGroupVerificationInput;
   systemPrompt: string;
   userPrompt: string;
   tools: readonly AgentToolFactory[];

@@ -162,7 +162,8 @@ export function activate(context: vscode.ExtensionContext): void {
       // an explicitly non-production VS Code development/test host.
       allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
     });
-    const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure());
+    const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure(), undefined,
+      () => JSON.stringify({ endpoint: loadSettings().adaptationApiUrl, llm: loadSettings().llm }));
     runtimeOptions.moduleCandidateReranker = reranker;
     codeIntelligence = new CodeIntelligenceHost({
       runtimeOptions,
@@ -1035,8 +1036,16 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
       const selectionVersion = moduleSelectionVersion;
       await host.services.ensureStarted();
       const evidenceScopes = await host.codeIntelligence.historyEvidenceScopes(candidate.sourceModule!);
+      const historyView = await host.codeIntelligence.createHistoryModuleView({
+        workspaceRoot: run.workspaceFolder.uri.fsPath,
+        repositoryId: candidate.sourceModule!.repositoryId,
+        analysisRevision: candidate.sourceModule!.analysisRevision,
+        projectId: candidate.sourceModule!.projectId,
+        moduleId: candidate.sourceModule!.moduleId,
+        sourceFiles: candidate.sourceModule!.sourceFiles ?? [candidate.path],
+      });
       const scope = await prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
-        target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes });
+        target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes, historyView });
       if (activeRun !== run || selectionVersion !== moduleSelectionVersion) {
         // A silent return here leaves the panel waiting for a reply that will
         // never come, which is indistinguishable from a running translation.

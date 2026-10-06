@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import path from 'node:path';
 import type {
@@ -26,8 +27,9 @@ import type {
   CodeIntelligenceSummaryPresentation,
 } from './ui-types';
 import { projectAnalysisPresentation } from './project-analysis-presentation';
-import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope } from '@forexplore/contracts';
+import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView } from '@forexplore/contracts';
 import type { ModuleReranker } from '../../../services/code-intelligence-service/src/module-reranker';
+import { platformLocalPath } from '../../../services/code-intelligence-service/src/platform-path';
 import { createIndexingProgressReporter, indexingProgressMessage, isIndexingCancellation,
   type IndexingProgress, type RepositoryIndexingProgress } from './indexing-progress';
 
@@ -303,6 +305,37 @@ function memoryStorageNotice(): string {
 function repositoryInputKey(input: CodeIntelligenceRepositoryInput): string {
   const normalized = path.resolve(input.localPath).replaceAll('\\', '/');
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function normalizeHistoryPath(value: string): string {
+  const normalized = value.trim().replaceAll('\\', '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized) ||
+      normalized.split('/').some((part) => !part || part === '.' || part === '..') ||
+      ['.env', '.env.local', '.env.production', '.npmrc', 'id_rsa', 'id_ed25519'].includes(normalized.split('/').at(-1)!.toLowerCase())) {
+    throw new Error(`历史候选文件路径无效：${value}`);
+  }
+  return normalized;
+}
+
+async function safeHistoryFile(root: string, relative: string): Promise<string> {
+  const candidate = path.resolve(root, ...relative.split('/'));
+  const resolvedRoot = await realpath(root);
+  const resolvedParent = await realpath(path.dirname(candidate));
+  const prefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
+  if (resolvedParent !== resolvedRoot && !resolvedParent.startsWith(prefix)) {
+    throw new Error(`历史候选文件越界：${relative}`);
+  }
+  return candidate;
+}
+
+async function chmodReadonlyTree(root: string): Promise<void> {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const child = path.join(root, entry.name);
+    if (entry.isSymbolicLink()) throw new Error(`历史视图出现符号链接：${entry.name}`);
+    if (entry.isDirectory()) await chmodReadonlyTree(child);
+    await chmod(child, entry.isDirectory() ? 0o555 : 0o444);
+  }
+  await chmod(root, 0o555);
 }
 
 /** A presentation name is a label, never a second local-path channel. */
@@ -583,6 +616,85 @@ export class CodeIntelligenceHost {
     return scopes;
   }
 
+  /**
+   * Materialize only the selected history module into a temporary, immutable
+   * view.  The returned root is an internal hand-off for the local adaptation
+   * service; callers never publish it to the webview or the model.  Every file
+   * is checked against the registered history repository before it is copied.
+   */
+  async createHistoryModuleView(selected: {
+    /** Target workspace root used for the host-owned .forexpore history view. */
+    workspaceRoot?: string;
+    repositoryId: RepositoryId;
+    analysisRevision: string;
+    projectId?: ProjectId;
+    moduleId: string;
+    sourceFiles: readonly string[];
+  }): Promise<WorkspaceHistoryView> {
+    if (!this.#visibleRepositoryIds.has(selected.repositoryId)) {
+      throw new Error('候选仓库不在当前窗口的参考范围。');
+    }
+    const runtime = await this.runtime();
+    const repository = await runtime.registry.get(selected.repositoryId);
+    if (!repository || repository.role !== 'history' || !repository.activeRevision) {
+      throw new Error('历史候选仓库不可用，请重新检索。');
+    }
+    const revision = await runtime.store.getRevision({ repositoryId: selected.repositoryId, analysisRevision: selected.analysisRevision });
+    if (!revision || !['ready', 'superseded'].includes(revision.status)) {
+      throw new Error('历史候选版本已不可查询，请重新检索。');
+    }
+    // The row may have been written by a process on the other platform (a WSL run
+    // stores /mnt/e/..., a Windows run stores E:\...), so translate before opening it.
+    const sourceRoot = await realpath(platformLocalPath(repository.localPath));
+    const files = [...new Set(selected.sourceFiles.map(normalizeHistoryPath))];
+    if (!files.length || files.length > 256 || files.some((file) => !file)) throw new Error('历史候选模块没有有效的源文件清单（最多 256 个文件）。');
+    const runId = randomUUID();
+    let targetRoot = selected.workspaceRoot?.trim();
+    if (!targetRoot && this.#selectedTarget) {
+      const target = await runtime.registry.get(this.#selectedTarget);
+      if (target?.role === 'target') targetRoot = target.localPath;
+    }
+    const root = targetRoot
+      ? path.join(await realpath(platformLocalPath(targetRoot)), '.forexpore', 'history-views', runId)
+      : await mkdtemp(path.join(tmpdir(), 'forexpore-history-view-'));
+    await mkdir(path.join(root, 'source'), { recursive: true });
+    const generatedAt = new Date().toISOString();
+    const manifestEntries: Array<[string, string]> = [];
+    try {
+      for (const file of files) {
+        const source = await safeHistoryFile(sourceRoot, file);
+        const stat = await lstat(source);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`历史候选文件不是普通文件：${file}`);
+        const bytes = await readFile(source);
+        const destination = path.join(root, 'source', ...file.split('/'));
+        await mkdir(path.dirname(destination), { recursive: true });
+        // The Agent receives a read-only copy; the runtime also validates the
+        // manifest before staging it, so chmod is defence in depth only.
+        await writeFile(destination, bytes);
+        await chmod(destination, 0o444);
+        manifestEntries.push([file, createHash('sha256').update(bytes).digest('hex')]);
+      }
+      manifestEntries.sort(([left], [right]) => left.localeCompare(right));
+      const manifestHash = createHash('sha256').update(JSON.stringify(manifestEntries)).digest('hex');
+      await writeFile(path.join(root, 'manifest.json'), JSON.stringify({
+        repositoryId: selected.repositoryId, analysisRevision: selected.analysisRevision,
+        projectId: selected.projectId, moduleId: selected.moduleId, runId, generatedAt,
+        files: manifestEntries.map(([file, sha256]) => ({ path: file, sha256 })),
+      }, null, 2), { mode: 0o444 });
+      await chmodReadonlyTree(path.join(root, 'source'));
+      await chmodReadonlyTree(root);
+      return {
+        root, files: manifestEntries.map(([file]) => file), repositoryId: selected.repositoryId,
+        analysisRevision: selected.analysisRevision, ...(selected.projectId ? { projectId: selected.projectId } : {}),
+        moduleId: selected.moduleId, manifestHash, runId, generatedAt,
+      };
+    } catch (error) {
+      // Best-effort cleanup; the original error is the useful diagnostic.
+      await import('node:fs/promises').then(({ rm }) => rm(root, { recursive: true, force: true })).catch(() => undefined);
+      throw error;
+    }
+}
+
   /** Returns the active structural index for trusted host-side presentation. */
   async structuralIndexForPath(localPath: string): Promise<StructuralIndex | null> {
     try {
@@ -818,6 +930,16 @@ export class CodeIntelligenceHost {
           localPath: input.localPath,
           role: input.role,
           ...(input.displayName?.trim() ? { displayName: input.displayName.trim() } : {}),
+        }).catch(async (error: unknown) => {
+          // Re-registering a checkout that a persisted row already owns is idempotent:
+          // the identity is unchanged, so the existing record is the registration.
+          // Treating it as a failure emptied the visible set and left every history
+          // repository invisible to retrieval ("Module search requires between 1 and
+          // 32 historical repositories").
+          if (!/already registered/i.test(String((error as Error)?.message ?? error))) throw error;
+          const existing = await runtime.registry.get(repositoryId);
+          if (!existing) throw error;
+          return existing;
         });
         registered.set(repository.repositoryId, repository);
       } catch (error) {

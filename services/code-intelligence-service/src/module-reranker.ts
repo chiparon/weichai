@@ -7,6 +7,8 @@ export interface ModuleRerankerConfig {
 
 export interface ModuleReranker {
   readonly model: string;
+  /** Changes whenever the provider/model settings used for ranking change. */
+  cacheKey?(): string;
   rank(query: string, documents: readonly string[], signal: AbortSignal): Promise<Array<{ index: number; score: number }>>;
 }
 

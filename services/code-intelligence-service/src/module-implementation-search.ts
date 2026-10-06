@@ -328,12 +328,41 @@ function containingSymbol(byPath: Map<string, SymbolRecord[]>, document: SearchD
 export class ModuleImplementationSearchService implements ModuleImplementationSearchPort {
   /** Shared multi-view recall; this projection keeps symbol resolution and its own calibration. */
   readonly #recall: RecallKernel;
+  readonly #moduleCache = new Map<string, { expiresAt: number; revisions: Map<string, string>; value: SearchCandidate[] }>();
+  static readonly #moduleCacheTtlMs = 5 * 60_000;
+  static readonly #moduleCacheMaxEntries = 64;
   constructor(private readonly store: IndexStore, private readonly reranker?: ModuleReranker) {
     this.#recall = new RecallKernel(store);
   }
 
   async search(request: ModuleImplementationSearchRequest, signal?: AbortSignal): Promise<SearchCandidate[]> {
-    if (request.target.kind === 'module') return searchModules(this.store, request, signal, this.reranker, this.#recall);
+    if (request.target.kind === 'module') {
+      const repositoryIds = [...new Set(request.repositoryIds)].sort();
+      const rerankerKey = this.reranker?.cacheKey?.() ?? this.reranker?.model ?? '';
+      const key = JSON.stringify({ target: request.target, requirement: request.requirement, topK: request.topK,
+        repositoryIds, reranker: rerankerKey });
+      const cached = this.#moduleCache.get(key);
+      if (cached && cached.expiresAt > Date.now() && await this.#cacheRevisionsCurrent(repositoryIds, cached.revisions, signal)) {
+        return cloneCandidates(cached.value);
+      }
+      if (cached) this.#moduleCache.delete(key);
+      const result = await searchModules(this.store, { ...request, repositoryIds }, signal, this.reranker, this.#recall);
+      const revisions = new Map((await Promise.all(repositoryIds.map(async (repositoryId) => {
+        const repository = await this.store.getRepository(repositoryId, signal);
+        return repository?.activeRevision ? [repositoryId, repository.activeRevision] as const : null;
+      }))).filter((entry): entry is readonly [string, string] => entry !== null));
+      // Do not cache a hybrid-order fallback after a model failure: a later
+      // request should get a chance to rerank once the provider recovers.
+      const rerankSucceeded = !this.reranker || result.every((candidate) => Boolean(candidate.moduleMatch?.reranker));
+      if (rerankSucceeded) {
+        this.#moduleCache.set(key, { expiresAt: Date.now() + ModuleImplementationSearchService.#moduleCacheTtlMs,
+          revisions, value: cloneCandidates(result) });
+        while (this.#moduleCache.size > ModuleImplementationSearchService.#moduleCacheMaxEntries) {
+          this.#moduleCache.delete(this.#moduleCache.keys().next().value!);
+        }
+      }
+      return cloneCandidates(result);
+    }
     if (!Number.isInteger(request.topK) || request.topK < 1 || request.topK > 10) {
       throw new Error('Module implementation search topK must be between 1 and 10.');
     }
@@ -496,6 +525,33 @@ export class ModuleImplementationSearchService implements ModuleImplementationSe
     }
     return candidates.slice(0, request.topK);
   }
+
+  async #cacheRevisionsCurrent(repositoryIds: readonly string[], expected: ReadonlyMap<string, string>, signal?: AbortSignal): Promise<boolean> {
+    if (expected.size !== repositoryIds.length) return false;
+    const current = await Promise.all(repositoryIds.map(async (repositoryId) => {
+      signal?.throwIfAborted();
+      const repository = await this.store.getRepository(repositoryId, signal);
+      return repository?.role === 'history' && repository.activeRevision === expected.get(repositoryId);
+    }));
+    return current.every(Boolean);
+  }
+}
+
+function cloneCandidates(candidates: readonly SearchCandidate[]): SearchCandidate[] {
+  return candidates.map((candidate) => ({
+    ...candidate,
+    score: { ...candidate.score }, dependencies: [...candidate.dependencies],
+    compatibility: [...candidate.compatibility], risks: [...candidate.risks],
+    ...(candidate.sourceModule ? { sourceModule: { ...candidate.sourceModule,
+      ...(candidate.sourceModule.sourceFiles ? { sourceFiles: [...candidate.sourceModule.sourceFiles] } : {}),
+      ...(candidate.sourceModule.coreApis ? { coreApis: [...candidate.sourceModule.coreApis] } : {}),
+      ...(candidate.sourceModule.dependsOn ? { dependsOn: [...candidate.sourceModule.dependsOn] } : {}),
+      ...(candidate.sourceModule.evidenceIds ? { evidenceIds: [...candidate.sourceModule.evidenceIds] } : {}) } } : {}),
+    ...(candidate.moduleMatch ? { moduleMatch: { ...candidate.moduleMatch,
+      requiredApis: [...candidate.moduleMatch.requiredApis], matchedApis: [...candidate.moduleMatch.matchedApis],
+      missingApis: [...candidate.moduleMatch.missingApis], previewFiles: [...candidate.moduleMatch.previewFiles],
+      ...(candidate.moduleMatch.reranker ? { reranker: { ...candidate.moduleMatch.reranker } } : {}) } } : {}),
+  }));
 }
 
 export const moduleImplementationSearchInternals = {

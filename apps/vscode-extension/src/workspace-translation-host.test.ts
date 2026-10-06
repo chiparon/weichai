@@ -101,6 +101,28 @@ describe('workspace translation host', () => {
     expect(posted!.body!.spec).toContain('# 模块级翻译任务：Multipart 流解析');
   });
 
+  it('keeps the history-view root out of webview run responses', async () => {
+    nextRun = { request: {
+      spec: 'task', sourceLanguage: 'Java', targetLanguage: 'Java', context: [{ id: 'x', kind: 'summary', content: 'x' }],
+      workspaceFiles: ['src/main/java/a/MultipartStream.java'], writeFiles: ['src/main/java/a/MultipartStream.java'],
+      historyView: { root: '/tmp/private-history-view', files: ['Legacy.java'], repositoryId: 'history', analysisRevision: 'rev', moduleId: 'm', manifestHash: 'a'.repeat(64) },
+    } };
+    stubServer();
+    const instance = host();
+    const scopeId = instance.rememberModuleScope({
+      label: 'scope', spec: 'task',
+      profile: { workspaceRoot, sourceLanguage: 'Java', targetLanguage: 'Java', workspaceFiles: ['src/main/java/a/MultipartStream.java'], writeFiles: ['src/main/java/a/MultipartStream.java'] },
+      context: [{ id: 'x', kind: 'summary', content: 'x' }],
+      historyView: { root: '/tmp/private-history-view', files: ['Legacy.java'], repositoryId: 'history', analysisRevision: 'rev', moduleId: 'm', manifestHash: 'a'.repeat(64) },
+    });
+    const described = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'describe-hidden-root', action: 'describe', moduleScopeId: scopeId });
+    if (described.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
+    const response = await instance.handle({ type: 'WORKSPACE_TRANSLATION', requestId: 'start-hidden-root', action: 'start', moduleScopeId: scopeId, profileId: described.profile!.profileId });
+    expect(response.type).toBe('WORKSPACE_TRANSLATION_RESULT');
+    if (response.type !== 'WORKSPACE_TRANSLATION_RESULT') throw new Error('unreachable');
+    expect(response.run?.request.historyView).toBeUndefined();
+  });
+
 });
 
 async function describeStaticProfileId(): Promise<string> {

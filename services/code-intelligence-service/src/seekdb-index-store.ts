@@ -51,6 +51,48 @@ import {
   type SearchEmbeddingProvider,
 } from './search-embedding.js';
 
+const lexicalMetadataLine = /^(?:目标|target)\s*(?:语言|工程|项目|仓库|language|project|repository)\s*[:：=]/iu;
+const lexicalBoilerplate = /(?:目标(?:语言|工程|项目|仓库)\s*[:：=][^\n]*|共同构成|用于|提供|包含|负责|定义|实现|以及|其中)/giu;
+const lexicalStopWords = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'module', 'project', 'target', 'language', 'repository',
+  // Java/C# declarations occur in nearly every indexed file. They are useful
+  // to the vector channel, but make the full-text channel scan broad portions
+  // of a mixed-language corpus without identifying a behavior or symbol.
+  'public', 'private', 'protected', 'internal', 'static', 'final', 'abstract', 'class', 'interface', 'enum',
+  'record', 'package', 'import', 'namespace', 'using', 'extends', 'implements', 'override', 'virtual',
+  'void', 'object', 'string', 'boolean', 'bool', 'int', 'long', 'double', 'float', 'byte', 'char',
+  'return', 'throws', 'throw', 'new', 'null', 'true', 'false', 'async', 'await', 'this', 'base', 'get', 'set',
+  'input', 'output', 'args', 'value', 'result', 'context',
+]);
+
+/**
+ * The vector channel needs the complete requirement. Full-text search does
+ * better with a short set of distinct content terms: build metadata and repeated
+ * prose otherwise match huge portions of a code corpus before the scope filter
+ * is applied. Identifiers and Chinese compound terms are retained; only exact
+ * boilerplate tokens are removed. An empty result falls back to the original
+ * bounded query.
+ */
+export function compactLexicalQuery(query: string, maxChars = 4_096): string {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const rawLine of query.normalize('NFKC').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || lexicalMetadataLine.test(line)) continue;
+    const cleaned = line.replace(lexicalBoilerplate, ' ');
+    for (const rawTerm of cleaned.split(/[^\p{L}\p{N}_.:$/-]+/u)) {
+      const term = rawTerm.trim();
+      if (!term || term.length < 2 || lexicalStopWords.has(term.toLocaleLowerCase())) continue;
+      const key = term.toLocaleLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      terms.push(term);
+    }
+  }
+  const compacted = terms.join(' ').slice(0, maxChars).trim();
+  return compacted || query.normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+}
+
 export interface SeekDbIndexStoreConfig {
   host: string;
   port: number;
@@ -1536,6 +1578,7 @@ export class SeekDbIndexStore implements IndexStore {
     signal?.throwIfAborted();
     const text = query.trim();
     if (!text) return {};
+    const lexicalText = compactLexicalQuery(text);
     const planned = views.flatMap((view) => {
       const limit = limits[view];
       if (!Number.isInteger(limit) || (limit ?? 0) < 1) return [];
@@ -1557,14 +1600,14 @@ export class SeekDbIndexStore implements IndexStore {
       // hit above the union cut simply return fewer rows, exactly as a per-view
       // query with too small a limit would.
       const candidateLimit = Math.min(2_400, planned.reduce((sum, item) => sum + item.candidateLimit, 0) * 2);
-      const candidates = await this.#recallCandidates({ scope, text, embedding,
+      const candidates = await this.#recallCandidates({ scope, text: lexicalText, embedding,
         kinds: planned.map((item) => item.view), candidateLimit, signal });
       for (const item of planned) {
         selected.set(item.view, this.#fuseCandidates(candidates.textRows, candidates.vectorRows, item.view, item.boundedLimit));
       }
     } else {
       for (const item of planned) {
-        const candidates = await this.#recallCandidates({ scope, text, embedding,
+        const candidates = await this.#recallCandidates({ scope, text: lexicalText, embedding,
           kinds: [item.view], candidateLimit: item.candidateLimit, signal });
         selected.set(item.view, this.#fuseCandidates(candidates.textRows, candidates.vectorRows, item.view, item.boundedLimit));
       }
@@ -1804,6 +1847,7 @@ export class SeekDbIndexStore implements IndexStore {
 }
 
 export const seekDbIndexStoreInternals = {
+  compactLexicalQuery,
   withTransaction,
   insertBatches,
   assertEmbedding,

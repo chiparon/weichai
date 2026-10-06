@@ -8,6 +8,10 @@
     "services/*"
   ],
   "scripts": {
+    "workspace:check": "node scripts/check-platform-workspace.mjs",
+    "workspace:sync": "node scripts/sync-platform-worktrees.mjs",
+    "prebuild:extension": "node scripts/check-platform-workspace.mjs",
+    "pretest": "node scripts/check-platform-workspace.mjs",
     "dev:extension:enterprise": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-enterprise-extension.ps1",
     "dataset:enterprise": "python experiments/enterprise-history/build.py --git-history",
     "test:enterprise": "python -m unittest discover -s experiments/enterprise-history -v",

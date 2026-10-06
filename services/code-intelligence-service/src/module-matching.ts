@@ -14,6 +14,23 @@ export interface ModuleMatchRequest {
   repositoryIds: readonly string[];
 }
 
+export interface ModuleSearchTiming {
+  queueMs: number;
+  recallAndAggregateMs: number;
+  candidatePrepareMs: number;
+  rerankMs: number;
+  revisionCheckMs: number;
+  executionMs: number;
+  totalMs: number;
+  rerankCandidateCount: number;
+  rerankFallback?: boolean;
+  rerankError?: string;
+  outcome: 'success' | 'error';
+  failedStage?: ModuleSearchStage;
+}
+
+type ModuleSearchStage = 'queueMs' | 'recallAndAggregateMs' | 'candidatePrepareMs' | 'rerankMs' | 'revisionCheckMs';
+
 /** The retrieval signals the shared kernel preserves for a recalled document. */
 interface ScoredDocument {
   searchDocumentId: string;
@@ -45,18 +62,126 @@ async function mapBounded<T, R>(items: readonly T[], concurrency: number, work: 
   return results;
 }
 
+/**
+ * A process-wide admission gate for module searches.  A single search fans out
+ * to four repositories and each repository issues a text and vector query; a
+ * second caller must wait instead of making the eight-connection pool queue
+ * dozens of statements behind a slow full-text scan.
+ */
+export class ModuleSearchConcurrencyGate {
+  #active = 0;
+  readonly #waiters: Array<{ resolve: () => void; reject: (error: unknown) => void; signal?: AbortSignal; onAbort?: () => void }> = [];
+
+  constructor(readonly limit = 1) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Module search concurrency must be an integer in 1..32.');
+  }
+
+  get active(): number { return this.#active; }
+  get queued(): number { return this.#waiters.length; }
+
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
+    if (this.#active < this.limit) {
+      this.#active += 1;
+      return this.release;
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter = {
+        resolve: () => { this.#active += 1; resolve(this.release); },
+        reject,
+        signal,
+        onAbort: undefined as (() => void) | undefined,
+      };
+      if (signal) {
+        waiter.onAbort = () => {
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          reject(signal.reason);
+        };
+        signal.addEventListener('abort', waiter.onAbort, { once: true });
+      }
+      this.#waiters.push(waiter);
+    });
+  }
+
+  private readonly release = (): void => {
+    if (this.#active < 1) throw new Error('Module search concurrency gate released too many times.');
+    this.#active -= 1;
+    const next = this.#waiters.shift();
+    if (!next) return;
+    if (next.signal?.aborted) {
+      next.onAbort?.();
+      this.release();
+      return;
+    }
+    if (next.signal && next.onAbort) next.signal.removeEventListener('abort', next.onAbort);
+    next.resolve();
+  };
+}
+
+function configuredModuleSearchConcurrency(): number {
+  // One admitted request fans out to four repositories and each repository runs
+  // text and vector SQL together (up to eight pool sessions).  A second request
+  // would exceed the default eight-connection pool, so the safe default is one;
+  // deployments with a larger database budget can opt into 2..32 explicitly.
+  const value = Number(process.env.CODE_INTELLIGENCE_MODULE_SEARCH_CONCURRENCY ?? 1);
+  return Number.isInteger(value) && value >= 1 && value <= 32 ? value : 1;
+}
+
+const moduleSearchGate = new ModuleSearchConcurrencyGate(configuredModuleSearchConcurrency());
+
 /** Module metadata is fetched only for recalled IDs; no full structural index is hydrated. */
-export async function searchModules(store: IndexStore, request: ModuleMatchRequest, parentSignal?: AbortSignal, reranker?: ModuleReranker, recall = new RecallKernel(store)): Promise<SearchCandidate[]> {
+export async function searchModules(store: IndexStore, request: ModuleMatchRequest, parentSignal?: AbortSignal, reranker?: ModuleReranker,
+  recall = new RecallKernel(store), observeTiming?: (timing: Readonly<ModuleSearchTiming>) => void): Promise<SearchCandidate[]> {
+  const started = performance.now();
+  const timing: ModuleSearchTiming = { queueMs: 0, recallAndAggregateMs: 0, candidatePrepareMs: 0, rerankMs: 0,
+    revisionCheckMs: 0, executionMs: 0, totalMs: 0, rerankCandidateCount: 0, outcome: 'error' };
+  let stage: ModuleSearchStage = 'queueMs';
+  let stageStarted = started;
+  const beginStage = (next: ModuleSearchStage): void => {
+    const now = performance.now();
+    timing[stage] += now - stageStarted;
+    stage = next;
+    stageStarted = now;
+  };
+  // The queue wait is outside the per-search 60s database budget. Once admitted,
+  // one request still receives the same bounded search time as before.
+  let release: (() => void) | undefined;
   const controller = new AbortController();
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(moduleSearchBudgetMs), ...(parentSignal ? [parentSignal] : [])]);
+  let databaseSlotReleased = false;
+  const releaseDatabaseSlot = (): void => {
+    if (databaseSlotReleased) return;
+    databaseSlotReleased = true;
+    release?.();
+    release = undefined;
+  };
   try {
-    return await searchModuleSnapshot(store, request, signal, reranker, recall);
+    release = await moduleSearchGate.acquire(parentSignal);
+    beginStage('recallAndAggregateMs');
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(moduleSearchBudgetMs), ...(parentSignal ? [parentSignal] : [])]);
+    const result = await searchModuleSnapshot(store, request, signal, reranker, recall, beginStage, timing, releaseDatabaseSlot);
+    timing.outcome = 'success';
+    return result;
+  } catch (error) {
+    timing.failedStage = stage;
+    throw error;
   } finally {
+    const finished = performance.now();
+    timing[stage] += finished - stageStarted;
+    timing.totalMs = finished - started;
+    timing.executionMs = timing.totalMs - timing.queueMs;
     controller.abort(new Error('Module search finished'));
+    releaseDatabaseSlot();
+    if (process.env.RECAST_SEARCH_PROFILE === '1') console.log(
+      `      [profile] module=${request.target.id} timing=${JSON.stringify(timing)}`);
+    // Diagnostics must never change the result or mask a search failure.
+    try { observeTiming?.(Object.freeze(timing)); } catch { /* observer failure */ }
   }
 }
 
-async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchRequest, signal: AbortSignal, reranker: ModuleReranker | undefined, recall: RecallKernel): Promise<SearchCandidate[]> {
+async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchRequest, signal: AbortSignal, reranker: ModuleReranker | undefined,
+  recall: RecallKernel, beginStage: (stage: ModuleSearchStage) => void, timing: ModuleSearchTiming,
+  releaseDatabaseSlot: () => void): Promise<SearchCandidate[]> {
   if (!Number.isInteger(request.topK) || request.topK < 1 || request.topK > 10) throw new Error('Module search topK must be between 1 and 10.');
   const repositoryIds = [...new Set(request.repositoryIds)];
   if (repositoryIds.length === 0 || repositoryIds.length > 32) throw new Error('Module search requires between 1 and 32 historical repositories.');
@@ -64,6 +189,8 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
   const query = [request.target.name, request.target.signature, request.target.documentation, request.requirement, ...(request.target.module?.coreApis ?? [])].filter(Boolean).join('\n');
   if (!query.trim() || query.length > 32_000) throw new Error('Module query must contain between 1 and 32000 characters.');
   const requiredApis = [...new Set(request.target.module?.coreApis ?? [])];
+  const profile = process.env.RECAST_SEARCH_PROFILE === '1';
+  const profileStart = profile ? Date.now() : 0;
   const hits = (await mapBounded(repositoryIds, 4, async (repositoryId) => {
     signal.throwIfAborted();
     const repository = await store.getRepository(repositoryId, signal);
@@ -74,6 +201,7 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
     // Shared kernel: the code identity is one plan, recall runs over every view.
     // A module can now be reached through a matching implementation fragment, not
     // only through a matching summary.
+    const recallStart = profile ? Date.now() : 0;
     const outcome = await recall.recall({
       scope,
       plans: [{ label: 'code-identity', query, weight: 1 }],
@@ -81,6 +209,8 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
       signal,
     });
     const documents = outcome.documents;
+    const recallMs = profile ? Date.now() - recallStart : 0;
+    if (profile) console.log(`      [profile]   ${repository.displayName}: recall=${recallMs}ms docs=${documents.length} 视图=${[...new Set(documents.map((d) => d.kind))].join('|') || '无'}`);
     // Summary documents carry their own module artifact. Implementation and
     // declaration hits do not, so their ownership is resolved against the module
     // artifacts recalled for this query - never by hydrating the whole revision.
@@ -166,7 +296,9 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
     });
     return [...byModule.values()];
   })).flat().sort((a, b) => b.score - a.score || JSON.stringify([a.repositoryId, a.projectId, a.module.id]).localeCompare(JSON.stringify([b.repositoryId, b.projectId, b.module.id]))).slice(0, reranker ? Math.min(20, Math.max(8, request.topK * 2)) : request.topK);
+  if (profile) console.log(`      [profile] 召回+聚合(含4并发/仓库)=${Date.now() - profileStart}ms 仓库数=${repositoryIds.length}`);
 
+  beginStage('candidatePrepareMs');
   const result = await mapBounded(hits, 4, async (hit): Promise<SearchCandidate> => {
     signal.throwIfAborted();
     const files = [...new Set(hit.module.sourceFiles)];
@@ -194,13 +326,32 @@ async function searchModuleSnapshot(store: IndexStore, request: ModuleMatchReque
         verification: 'interface-only', previewFiles, previewTruncated: files.length > previewFiles.length || parts.some((part) => part.truncated) },
     };
   });
+  // Source previews and candidate metadata are complete at this point. Release
+  // the database admission slot while the remote model ranks the bounded list;
+  // the next request can start its own recall without competing with this HTTP
+  // call. The revision check below is deliberately also outside the slot: it is
+  // a small consistency read, whereas recall is the pool-heavy part.
+  releaseDatabaseSlot();
   let ranked = result;
   if (reranker && result.length > 0) {
-    const ordering = await reranker.rank(query, result.map((candidate) => [candidate.title, candidate.summary,
-      candidate.signature, candidate.dependencies.join('\n'), candidate.preview].join('\n')), signal);
-    ranked = ordering.map(({ index, score }) => ({ ...result[index]!, score: { ...result[index]!.score, overall: score },
-      moduleMatch: { ...result[index]!.moduleMatch!, reranker: { model: reranker.model, score } } }));
+    beginStage('rerankMs');
+    timing.rerankCandidateCount = result.length;
+    try {
+      const ordering = await reranker.rank(query, result.map((candidate) => [candidate.title, candidate.summary,
+        candidate.signature, candidate.dependencies.join('\n'), candidate.preview].join('\n')), signal);
+      ranked = ordering.map(({ index, score }) => ({ ...result[index]!, score: { ...result[index]!.score, overall: score },
+        moduleMatch: { ...result[index]!.moduleMatch!, reranker: { model: reranker.model, score } } }));
+    } catch (error) {
+      // A malformed/partial model list must not erase a valid database recall.
+      // Cancellation remains fatal; all other reranker failures fall back to the
+      // deterministic hybrid order and are exposed in timing diagnostics.
+      signal.throwIfAborted();
+      timing.rerankFallback = true;
+      timing.rerankError = error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240);
+      ranked = result;
+    }
   }
+  beginStage('revisionCheckMs');
   for (const hit of hits) {
     signal.throwIfAborted();
     if ((await store.getRepository(hit.repositoryId, signal))?.activeRevision !== hit.analysisRevision) throw new Error('Repository revision changed during module search; retry against the current snapshot.');
@@ -217,4 +368,4 @@ function moduleLanguage(language: string | undefined, files: string[]): ModuleTa
   return found;
 }
 
-export const moduleMatchingInternals = { normalizedApi, mapBounded };
+export const moduleMatchingInternals = { normalizedApi, mapBounded, configuredModuleSearchConcurrency, moduleSearchGate };

@@ -42,7 +42,8 @@ $env:ADAPTATION_PROJECT_ROOT = $resolvedProjectRoot
 $env:ADAPTATION_SEMANTIC_INDEX_ENABLED = 'true'
 $env:SEMANTIC_QUERY_PORT_URL = $SemanticQueryUrl
 $env:ADAPTATION_WORKSPACE_TRANSLATION_ENABLED = 'true'
-$env:ADAPTATION_WORKSPACE_MAX_TURNS = '40'
+$env:ADAPTATION_WORKSPACE_AGENT = 'codex'
+$env:ADAPTATION_WORKSPACE_MAX_TURNS = '4'
 $env:ADAPTATION_WORKSPACE_COMPILE_COMMAND = '{"executable":"node","args":["tools/compile.mjs"],"timeoutMs":900000}'
 $env:ADAPTATION_WORKSPACE_VERIFICATION = '{"command":{"executable":"node","args":["tools/verify.mjs"],"timeoutMs":900000},"protectedFiles":["tools/verify.mjs","tools/compile.mjs","tools/jdk.mjs"]}'
 

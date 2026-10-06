@@ -133,12 +133,15 @@ performs any local write.
 
 ## In-place workspace translation
 
-The independent workspace workflow takes a development Spec and module evidence Context
-(source, interfaces, call chains, configuration, dependencies, summaries). Analyzer
-produces file/symbol mappings and ordered dependency steps. Translator reads current
-workspace files, writes multiple files, compiles the configured project and repairs
-compiler diagnostics. It can return to Analyzer to revise mappings or dependencies.
-This milestone accepts compilation only; it does not generate or run behavior tests.
+The workspace workflow takes a development Spec and module evidence Context. The
+production Agent is Codex CLI: it runs in a disposable staging workspace containing
+the target project and a host-created, read-only `history-view` with only the selected
+history module files. Each run has two Codex invocations: an Analyzer in a read-only
+sandbox that returns the validated JSON implementation plan, followed by a Translator
+in a workspace-write sandbox that receives the same plan and may change only `target/`.
+The host applies only the exact `writeFiles` diff, then runs the configured compiler and
+immutable behavior suite. Hidden criteria never enter the Codex staging workspace. Set `ADAPTATION_WORKSPACE_AGENT=legacy` only to use the old
+DeepSeek tool loop for compatibility.
 
 Enable `ADAPTATION_WORKSPACE_TRANSLATION_ENABLED=true`, set
 `ADAPTATION_PROJECT_ROOT`, and configure `ADAPTATION_WORKSPACE_TRANSLATION_TOKEN`
@@ -146,7 +149,10 @@ Enable `ADAPTATION_WORKSPACE_TRANSLATION_ENABLED=true`, set
 JSON object with `executable`, `args`, optional workspace-relative `cwd`, and optional
 `timeoutMs`. Use a compilation command such as `dotnet build --no-restore`, `tsc --noEmit`,
 `cargo check`, or a project-specific `javac` argument list. Dependencies must already
-be available. The compiler is launched with an argument array, without a shell.
+be available. The compiler is launched with an argument array, without a shell. Codex
+is selected with `ADAPTATION_WORKSPACE_AGENT=codex` (the default), optionally
+`ADAPTATION_CODEX_COMMAND` and `ADAPTATION_CODEX_MODEL`. The default Codex budget is
+four invocations; each failed compile may request another repair staging run.
 Neither HTTP requests nor model tools select the workspace root or compiler command.
 
 All routes below require `Authorization: Bearer <configured token>`:
@@ -184,29 +190,34 @@ The start request has this shape:
 Supply the actual retrieved implementation and Spec for a real translation. Context
 remains immutable evidence; `workspaceFiles` and `writeFiles` are exact relative
 paths for live reads, with writes restricted to `writeFiles` and the accepted plan.
-There is no glob expansion. A file must be read before it can be written, and its
-content hash must still match. Symbolic links, hard-linked files and paths outside
-the workspace are rejected. The service writes directly into the selected workspace.
+There is no glob expansion. A file must be in the host allow-list and its content is
+applied only after the staging diff is checked. Symbolic links, hard-linked files and
+paths outside the workspace are rejected. The service writes directly into the
+selected workspace only after the Codex process exits.
 
-Records are persisted under `.forexplore/workspace-translations/<id>.json`, including
-original file contents. Resume checks those contents against disk and requires a
-fresh compilation before completion. Rollback checks all changes before restoring
-them and stops on subsequent user edits. The default execution budget is 80 model
-turns and 30 minutes per start/resume; exhaustion preserves the task for continuation.
+Records are persisted under `.forexpore/workspace-translations/<id>.json`, including
+original file contents and per-stage Agent provenance (sandbox, command, model, elapsed
+time, token usage and permitted file list). Resume checks those contents against disk and requires a fresh
+compilation before completion. Rollback checks all changes before restoring them and
+stops on subsequent user edits. A Codex run defaults to four model invocations and
+30 minutes per start/resume; exhaustion preserves the task for continuation.
 Use one adaptation service instance per workspace. Query the returned ID until a
 terminal status is reached; dropping the start HTTP connection does not cancel it.
 `completed` requires all steps plus a successful compiler exit after the latest
 changes, and the record explicitly reports `acceptance: "compilation-only"`.
 
-The same runtime can be embedded through the exported `WorkspaceTranslationRuntime`
-and `createWorkspaceTranslationModelClient` APIs. The VS Code host supplies the
-selected target module, reference module and immutable evidence directly; there is
-the old standalone retrieval persistence and HTTP service are no longer part of the workflow.
+The Codex runtime is exported as `CodexWorkspaceTranslationRuntime`; the legacy
+`WorkspaceTranslationRuntime` and `createWorkspaceTranslationModelClient` remain
+available for compatibility. The VS Code host supplies the selected target module,
+the revision-pinned history view and immutable evidence metadata; the webview only
+receives an opaque module-scope ID and never sees the history root path.
 
 ## Architecture
 
 | File | Role |
 |------|------|
+| `src/codex-workspace-translation-runtime.ts` | Codex staging runner, history-view validation, allow-listed diff, compile and hidden verification gates |
+| `src/codex-workspace-translation-runtime.test.ts` | Restricted-view and hidden-criteria smoke coverage |
 | `src/translator.ts` | Independent TranslatorAgent, AnalysisReport handoff, contract guards, structured output and repair |
 | `src/translator.test.ts` | Translator parsing, rejection, contract, planning and repair tests |
 | `testdata/translator-*.json` | direct/adapt/reject member-C fixtures |

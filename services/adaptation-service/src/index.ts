@@ -176,6 +176,8 @@ export type { FileStaticAnalysisSnapshotStoreOptions } from "./analysis-snapshot
 
 export { WorkspaceTranslationRuntime, WorkspaceTranslationError } from "./workspace-translation-runtime";
 export type { WorkspaceTranslationRuntimeOptions } from "./workspace-translation-runtime";
+export { CodexWorkspaceTranslationRuntime, CodexWorkspaceTranslationError } from "./codex-workspace-translation-runtime";
+export type { CodexWorkspaceTranslationRuntimeOptions } from "./codex-workspace-translation-runtime";
 export { createWorkspaceTranslationModelClient } from "./workspace-translation-agent";
 export type { WorkspaceTranslationModelClient } from "./workspace-translation-agent";
 export { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";

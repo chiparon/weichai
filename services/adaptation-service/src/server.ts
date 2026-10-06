@@ -11,6 +11,7 @@ import { FileStaticAnalysisSnapshotStore } from './analysis-snapshot-store.js';
 import { HttpSemanticQueryPort } from './http-semantic-query-port.js';
 import { HttpWorkspaceEvidencePort } from './http-workspace-evidence-port.js';
 import { WorkspaceTranslationRuntime } from './workspace-translation-runtime.js';
+import { CodexWorkspaceTranslationRuntime } from './codex-workspace-translation-runtime.js';
 import { createWorkspaceTranslationModelClient } from './workspace-translation-agent.js';
 import {
   createDeepSeekToolCallingArchitectClient,
@@ -18,25 +19,36 @@ import {
 } from './tool-calling-architect-runtime.js';
 
 let server: ReturnType<typeof createHttpServer> | undefined;
-let workspaceTranslationRuntime: WorkspaceTranslationRuntime | undefined;
+let workspaceTranslationRuntime: WorkspaceTranslationRuntime | CodexWorkspaceTranslationRuntime | undefined;
 
 async function main(): Promise<void> {
   const config = loadConfig();
   if (config.workspaceTranslation) {
-    workspaceTranslationRuntime = new WorkspaceTranslationRuntime({
-      workspaceRoot: config.projectRoot,
-      compileCommand: config.workspaceTranslation.compileCommand,
-      verification: config.workspaceTranslation.verification,
-      maxModelTurns: config.workspaceTranslation.maxModelTurns,
-      timeoutMs: config.workspaceTranslation.timeoutMs,
-      // The Analyzer and Translator may query the host's read-only index
-      // themselves; the host still decides which revisions exist and are visible.
-      ...(config.semanticQueryPort ? { evidence: { port: new HttpWorkspaceEvidencePort({
-        endpoint: config.semanticQueryPort.endpoint,
-        ...(config.semanticQueryPort.bearerToken ? { bearerToken: config.semanticQueryPort.bearerToken } : {}),
-      }) } } : {}),
-      client: createWorkspaceTranslationModelClient({ apiKey: () => config.apiKey, temperature: 0 }),
-    });
+    if (config.workspaceTranslation.agent === 'codex') {
+      workspaceTranslationRuntime = new CodexWorkspaceTranslationRuntime({
+        workspaceRoot: config.projectRoot,
+        compileCommand: config.workspaceTranslation.compileCommand,
+        verification: config.workspaceTranslation.verification,
+        maxModelTurns: config.workspaceTranslation.maxModelTurns,
+        timeoutMs: config.workspaceTranslation.timeoutMs,
+        codexCommand: config.workspaceTranslation.codexCommand,
+        codexModel: config.workspaceTranslation.codexModel,
+      });
+    } else {
+      workspaceTranslationRuntime = new WorkspaceTranslationRuntime({
+        workspaceRoot: config.projectRoot,
+        compileCommand: config.workspaceTranslation.compileCommand,
+        verification: config.workspaceTranslation.verification,
+        maxModelTurns: config.workspaceTranslation.maxModelTurns,
+        timeoutMs: config.workspaceTranslation.timeoutMs,
+        // Legacy mode retains bounded on-demand index evidence.
+        ...(config.semanticQueryPort ? { evidence: { port: new HttpWorkspaceEvidencePort({
+          endpoint: config.semanticQueryPort.endpoint,
+          ...(config.semanticQueryPort.bearerToken ? { bearerToken: config.semanticQueryPort.bearerToken } : {}),
+        }) } } : {}),
+        client: createWorkspaceTranslationModelClient({ apiKey: () => config.apiKey, temperature: 0 }),
+      });
+    }
   }
   // Legacy /v1/module-plan remains snapshot-compatible. The semantic route is
   // explicitly opt-in and talks only to the VS Code host's read-only HTTP
@@ -100,6 +112,7 @@ async function main(): Promise<void> {
       process.send?.({ type: 'listening', port });
       console.log(`Target project: ${config.projectRoot}`);
       console.log(`Static analysis snapshots: ${config.analysisRoot}`);
+      if (config.workspaceTranslation) console.log(`Workspace translation agent: ${config.workspaceTranslation.agent}${config.workspaceTranslation.codexModel ? ` (${config.workspaceTranslation.codexModel})` : ''}`);
       if (semanticArchitecturePort) console.log('Revision-scoped semantic module planning is enabled.');
       resolve();
     });

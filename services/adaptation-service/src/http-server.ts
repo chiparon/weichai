@@ -11,6 +11,7 @@ import {
 import { timingSafeEqual } from "node:crypto";
 import { ModuleHierarchyDecisionError, parseModuleHierarchyDecision, parseModuleHierarchyDecisionRequest } from '@forexplore/code-intelligence-service/module-hierarchy-planner';
 import { WorkspaceTranslationError, type WorkspaceTranslationRuntime } from "./workspace-translation-runtime";
+import type { CodexWorkspaceTranslationRuntime } from "./codex-workspace-translation-runtime";
 import type { DeepSeekToolCompletion, DeepSeekToolDefinition, DeepSeekToolMessage } from "./deepseek-client";
 import {
   moduleMigrationSchemaVersion,
@@ -48,7 +49,7 @@ export interface HttpServerOptions {
   /** Optional evidence-only node decisions; the injected planner owns model configuration. */
   moduleHierarchyPlanner?: ModuleHierarchyPlanner;
   /** Explicitly configured in-place translation, authenticated separately from read-only routes. */
-  workspaceTranslation?: { runtime: WorkspaceTranslationRuntime; bearerToken: string };
+  workspaceTranslation?: { runtime: WorkspaceTranslationRuntime | CodexWorkspaceTranslationRuntime; bearerToken: string };
   /**
    * Trusted-host model turns for module generation. The VS Code host owns the
    * repository, the isolated worktrees and the compiler; this route carries no
@@ -373,7 +374,11 @@ export function createHttpServer(options: HttpServerOptions): Server {
           semanticPlanning: Boolean(options.semanticArchitecturePort), moduleHierarchy: Boolean(options.moduleHierarchyPlanner),
           workspaceTranslation: Boolean(options.workspaceTranslation),
           ...(options.semanticQueryUrl ? { semanticQueryUrl: options.semanticQueryUrl } : {}),
-          ...(options.workspaceTranslation ? { workspaceRoot: options.workspaceTranslation.runtime.configuration().workspaceRoot } : {}) }, options.corsOrigin);
+          ...(options.workspaceTranslation ? (() => {
+            const configuration = options.workspaceTranslation!.runtime.configuration();
+            return { workspaceRoot: configuration.workspaceRoot,
+              workspaceAgent: 'agent' in configuration ? configuration.agent : 'legacy' };
+          })() : {}) }, options.corsOrigin);
         return;
       }
       if (request.url?.startsWith("/v1/workspace-translations")) {

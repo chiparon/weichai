@@ -113,7 +113,7 @@ export function object(value: unknown): Record<string, unknown> {
 
 export function validateWorkspaceTranslationRequest(value: unknown): asserts value is WorkspaceTranslationRequest {
   const input = object(value);
-  const allowed = ["spec", "sourceLanguage", "targetLanguage", "context", "workspaceFiles", "writeFiles", "evidenceScopes"];
+  const allowed = ["spec", "sourceLanguage", "targetLanguage", "context", "workspaceFiles", "writeFiles", "evidenceScopes", "historyView"];
   if (Object.keys(input).some((key) => !allowed.includes(key)) || !nonempty(input.spec) || input.spec.length > 64_000 ||
     !nonempty(input.sourceLanguage) || !nonempty(input.targetLanguage) ||
     input.sourceLanguage.length > 80 || input.targetLanguage.length > 80 ||
@@ -136,6 +136,20 @@ export function validateWorkspaceTranslationRequest(value: unknown): asserts val
       if (scopes.has(key)) throw new Error("Duplicate evidence scope.");
       scopes.add(key);
     }
+  }
+  if (input.historyView !== undefined) {
+    const view = object(input.historyView);
+    if (Object.keys(view).some((key) => !["root", "files", "repositoryId", "analysisRevision", "projectId", "moduleId", "manifestHash", "runId", "generatedAt"].includes(key)) ||
+      !nonempty(view.root) || !/^([A-Za-z]:[\\/]|[\\/]{2}|\/)/.test(view.root) ||
+      !stringArray(view.files) || !view.files.length || view.files.length > 256 ||
+      !nonempty(view.repositoryId) || !nonempty(view.analysisRevision) || !nonempty(view.moduleId) ||
+      !/^[a-f0-9]{64}$/i.test(String(view.manifestHash)) ||
+      (view.projectId !== undefined && !nonempty(view.projectId)) ||
+      (view.runId !== undefined && !/^[a-f0-9-]{36}$/i.test(String(view.runId))) ||
+      (view.generatedAt !== undefined && (!nonempty(view.generatedAt) || Number.isNaN(Date.parse(String(view.generatedAt)))))) {
+      throw new Error("Invalid history view.");
+    }
+    for (const file of view.files) validateWorkspacePath(file);
   }
   for (const paths of [input.workspaceFiles, input.writeFiles]) {
     if (new Set(paths.map((path) => process.platform === "win32" ? path.toLowerCase() : path)).size !== paths.length) {

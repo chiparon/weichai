@@ -42,20 +42,32 @@ const assetRoot = resolve('experiments/enterprise-asset-upgrade/source-repositor
 const available = existsSync(assetRoot)
   ? readdirSync(assetRoot).filter((name) => { try { return statSync(join(assetRoot, name)).isDirectory(); } catch { return false; } })
   : [];
-const requested = argument('repos')?.split(',').map((value) => value.trim()).filter(Boolean) ?? available;
+const requested = argument('repos')?.split(',').map((value) => value.trim()).filter(Boolean)
+  // A caller that names explicit paths does not want the whole dataset as well.
+  ?? (argument('paths') ? [] : available);
 const unknown = requested.filter((name) => !available.includes(name));
 if (unknown.length) throw new Error(`Unknown asset repositories: ${unknown.join(', ')}. Available: ${available.join(', ')}`);
 
 const pool = mysql.createPool({ host: '127.0.0.1', port: 2881, user: 'root', password: '', database, connectionLimit: 2 });
+// Every registered repository, so a path outside the dataset (a large external
+// checkout registered in the same store) can be modelled too.
 const [rows] = await pool.query<Array<{ repositoryId: string; localPath: string; activeRevision: string | null; displayName: string }>>(
   `SELECT repository_id AS repositoryId, local_path AS localPath, active_revision AS activeRevision, display_name AS displayName
-   FROM repositories WHERE local_path LIKE ? ORDER BY display_name`, ['%enterprise-asset-upgrade%']);
-const inputs = requested.map((name) => {
-  const localPath = join(assetRoot, name);
-  const row = rows.find((entry) => entry.localPath === localPath);
-  return { name, localPath, row };
-}).filter((input) => input.row?.activeRevision);
-const missing = requested.filter((name) => !inputs.some((input) => input.name === name));
+   FROM repositories ORDER BY display_name`);
+const extraPaths = argument('paths')?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+const inputs = [
+  ...requested.map((name) => {
+    const localPath = join(assetRoot, name);
+    const row = rows.find((entry) => entry.localPath === localPath);
+    return { name, localPath, row };
+  }),
+  ...extraPaths.map((path) => {
+    const localPath = resolve(path);
+    const row = rows.find((entry) => entry.localPath === localPath);
+    return { name: row?.displayName ?? localPath, localPath, row };
+  }),
+].filter((input) => input.row?.activeRevision);
+const missing = [...requested, ...extraPaths].filter((name) => !inputs.some((input) => input.name === name || input.localPath === resolve(name)));
 for (const name of missing) console.log(`skipping ${name}: no active revision yet (index it first)`);
 if (!inputs.length) { await pool.end(); throw new Error('Nothing to model: no selected repository has an active revision.'); }
 

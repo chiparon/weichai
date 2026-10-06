@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ModuleTarget, ProjectModuleProposal } from '@forexplore/contracts';
 import { createCodeIntelligenceRuntime, InMemoryIndexStore, ProjectAnalysisCoordinator, projectPlanHash, projectAnalysisObjective } from './index.js';
+import { searchModules, type ModuleSearchTiming } from './module-matching.js';
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -36,6 +37,45 @@ async function setup() {
 }
 
 describe('module-to-module matching', () => {
+  it('retains partial timings when model reranking fails', async () => {
+    const { store } = await setup();
+    let timing: Readonly<ModuleSearchTiming> | undefined;
+    const reranker = { model: 'failed-model', rank: async () => { throw new Error('model timeout'); } };
+    const result = await searchModules(store, { target, requirement: 'payment', topK: 1, repositoryIds: ['history'] },
+      undefined, reranker, undefined, (value) => { timing = value; });
+    expect(result).toHaveLength(1);
+    expect(timing).toMatchObject({ outcome: 'success', rerankFallback: true, rerankCandidateCount: 1, revisionCheckMs: expect.any(Number) });
+    expect(timing!.rerankError).toContain('model timeout');
+    expect(timing!.recallAndAggregateMs).toBeGreaterThan(0);
+    expect(timing!.candidatePrepareMs).toBeGreaterThan(0);
+    expect(timing!.rerankMs).toBeGreaterThan(0);
+    expect(timing!.totalMs).toBeCloseTo(timing!.queueMs + timing!.recallAndAggregateMs +
+      timing!.candidatePrepareMs + timing!.rerankMs + timing!.revisionCheckMs, 5);
+  });
+
+  it('records pre-search cancellation without reporting model work or masking the error', async () => {
+    const { store } = await setup();
+    const observe = vi.fn(() => { throw new Error('diagnostics failed'); });
+    await expect(searchModules(store, { target, requirement: 'payment', topK: 1, repositoryIds: ['history'] },
+      AbortSignal.abort(new Error('cancelled')), undefined, undefined, observe)).rejects.toThrow('cancelled');
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'error', failedStage: 'queueMs',
+      recallAndAggregateMs: 0, candidatePrepareMs: 0, rerankMs: 0, executionMs: 0 }));
+  });
+
+  it('reuses a module result only while every historical revision is unchanged', async () => {
+    const { runtime, store } = await setup();
+    const recall = vi.spyOn(store, 'searchSearchDocuments');
+    const request = { target, requirement: 'payment', topK: 1, repositoryIds: ['history'] };
+    const first = await runtime.moduleImplementationSearch.search(request);
+    const callsAfterFirst = recall.mock.calls.length;
+    const second = await runtime.moduleImplementationSearch.search(request);
+    expect(second).toEqual(first);
+    expect(recall.mock.calls.length).toBe(callsAfterFirst);
+    await store.putRepository({ ...(await store.getRepository('history'))!, activeRevision: 'new-revision' });
+    const invalidated = await runtime.moduleImplementationSearch.search(request);
+    expect(invalidated).not.toEqual(first);
+  });
+
   it('returns the complete module once across multiple views without hydrating the full index', async () => {
     const { runtime, store, index } = await setup();
     for (const method of ['getStructuralIndex', 'listSearchDocuments', 'listModuleArtifacts', 'listSymbols', 'listFiles'] as const) {

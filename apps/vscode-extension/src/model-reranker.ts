@@ -4,8 +4,13 @@ import { localFetch } from './local-fetch';
 /** The transport obtains fresh SecretStorage credentials on every call. */
 export class ConfiguredModelReranker implements ModuleReranker {
   readonly model = 'configured-model';
+  private readonly identity: () => string;
   constructor(private readonly endpoint: () => string, private readonly ensureStarted: () => Promise<unknown>,
-    private readonly transport: typeof localFetch = localFetch) {}
+    private readonly transport: typeof localFetch = localFetch, identity: () => string = () => endpoint()) {
+    this.identity = identity;
+  }
+
+  cacheKey(): string { return this.identity(); }
 
   /** Compatibility adapter for callers that still provide structured module candidates. */
   async rerank(requirement: string, candidates: readonly RerankCandidate[], signal?: AbortSignal): Promise<RerankCandidate[]> {

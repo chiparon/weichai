@@ -12,6 +12,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkPlatformWorkspace } from './check-platform-workspace.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extensionRoot = path.join(repoRoot, 'apps', 'vscode-extension');
@@ -108,6 +109,18 @@ function ensureCommand(command, args = ['--version']) {
   return result;
 }
 
+function existingContainerState(name) {
+  const inspected = spawnSync('docker', ['inspect', '--format', '{{.State.Status}}', name], {
+    cwd: repoRoot,
+    env: process.env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (inspected.error || inspected.status !== 0) return undefined;
+  const state = inspected.stdout.trim();
+  return state || undefined;
+}
+
 function ensureVsCodeExtension(extensionId) {
   ensureCommand(vscodeCommand, ['--version']);
   const listed = spawnSync(vscodeCommand, shellArgs(['--list-extensions']), {
@@ -177,6 +190,25 @@ async function startSeekDb(options) {
     console.warn(`${error.message} SeekDB stays down; code intelligence will report fetch failures.`);
     return false;
   }
+
+  // The container name is deliberately stable so other RECAST processes can
+  // share the same SeekDB instance. Compose exits with a name-conflict error
+  // when that instance already exists, even when it is healthy. Reuse it first;
+  // only ask Compose to create a container when Docker has no such container.
+  const existing = existingContainerState('forexplore-seekdb');
+  if (existing === 'running') {
+    console.log('SeekDB container forexplore-seekdb already exists; reusing it.');
+    return true;
+  }
+  if (existing) {
+    const started = runSync('docker', ['start', 'forexplore-seekdb']);
+    if (started === 0) {
+      console.log(`SeekDB container forexplore-seekdb was ${existing}; started it.`);
+      return true;
+    }
+    console.warn(`SeekDB container forexplore-seekdb exists but could not be started (state: ${existing}).`);
+    return false;
+  }
   const status = runSync('docker', ['compose', '-f', composeFile, 'up', '-d']);
   if (status !== 0) {
     console.warn(`SeekDB startup failed with exit code ${status}. Code intelligence will report fetch failures.`);
@@ -209,6 +241,7 @@ function launchHost(options) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   process.chdir(repoRoot);
+  checkPlatformWorkspace(repoRoot);
   configureEnvironment();
 
 

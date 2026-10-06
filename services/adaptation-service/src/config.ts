@@ -18,11 +18,14 @@ export interface AdaptationServiceConfig {
   /** Server-owned analysis snapshot location used by the read-only planner. */
   analysisRoot: string;
   workspaceTranslation?: {
+    agent: 'codex' | 'legacy';
     bearerToken: string;
     compileCommand: WorkspaceCompileCommand;
     verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
     maxModelTurns: number;
     timeoutMs: number;
+    codexCommand?: string;
+    codexModel?: string;
   };
   /**
    * Optional host-owned read-only semantic-query endpoint for revision-scoped
@@ -110,11 +113,21 @@ function loadWorkspaceTranslationConfig(env: NodeJS.ProcessEnv): NonNullable<Ada
     if (!Array.isArray(value.protectedFiles) || !value.protectedFiles.length || value.protectedFiles.some((path: unknown) => typeof path !== "string")) throw new Error("Verification protectedFiles must be a nonempty path array.");
     verification = value;
   }
+  const agent = parseWorkspaceAgent(env.ADAPTATION_WORKSPACE_AGENT);
   return {
+    agent,
     bearerToken, compileCommand, ...(verification ? { verification } : {}),
-    maxModelTurns: positiveInteger(env.ADAPTATION_WORKSPACE_MAX_TURNS, 80, "ADAPTATION_WORKSPACE_MAX_TURNS"),
+    maxModelTurns: positiveInteger(env.ADAPTATION_WORKSPACE_MAX_TURNS, agent === 'codex' ? 4 : 80, "ADAPTATION_WORKSPACE_MAX_TURNS"),
     timeoutMs: positiveInteger(env.ADAPTATION_WORKSPACE_TIMEOUT_MS, 1_800_000, "ADAPTATION_WORKSPACE_TIMEOUT_MS"),
+    ...(env.ADAPTATION_CODEX_COMMAND?.trim() ? { codexCommand: env.ADAPTATION_CODEX_COMMAND.trim() } : {}),
+    ...(env.ADAPTATION_CODEX_MODEL?.trim() ? { codexModel: env.ADAPTATION_CODEX_MODEL.trim() } : {}),
   };
+}
+
+function parseWorkspaceAgent(value: string | undefined): 'codex' | 'legacy' {
+  const agent = value?.trim().toLowerCase() || 'codex';
+  if (agent !== 'codex' && agent !== 'legacy') throw new Error('ADAPTATION_WORKSPACE_AGENT must be codex or legacy.');
+  return agent;
 }
 
 function loadSemanticQueryPortConfig(

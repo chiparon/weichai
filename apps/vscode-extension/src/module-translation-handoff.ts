@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import type { ModuleTarget, SearchCandidate, WorkspaceEvidenceScope } from '@forexplore/contracts';
+import type { ModuleTarget, SearchCandidate, WorkspaceEvidenceScope, WorkspaceHistoryView } from '@forexplore/contracts';
 import { buildModuleTranslationScope } from './module-translation-scope';
 import type { WorkspaceTranslationModuleScope } from './workspace-translation-host';
 
@@ -11,6 +11,7 @@ export async function prepareModuleTranslationScope(input: {
   requirement: string; decisionNotes: string;
   includeCandidateContext?: boolean;
   evidenceScopes?: WorkspaceEvidenceScope[];
+  historyView?: WorkspaceHistoryView;
 }): Promise<WorkspaceTranslationModuleScope> {
   const { target, candidate } = input;
   if (target.kind !== 'module' || !target.module || candidate.kind !== 'module' || !candidate.sourceModule) {
@@ -28,6 +29,7 @@ export async function prepareModuleTranslationScope(input: {
       name: source.name, purpose: source.purpose, language: candidate.language,
       sourceFiles: source.sourceFiles ?? [candidate.path], coreApis: source.coreApis ?? [], dependsOn: source.dependsOn ?? candidate.dependencies,
       preview: candidate.preview }],
+    ...(input.historyView ? { historyView: input.historyView } : {}),
   });
   scope.profile.sourceLanguage = candidate.language;
   const fileHashes: Record<string, string> = {};

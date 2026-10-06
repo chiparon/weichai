@@ -14,7 +14,7 @@ export interface BackendLaunchConfiguration {
 }
 export interface BackendCapabilities {
   service: string; version: number; retrievalRerank: boolean; semanticPlanning: boolean;
-  workspaceTranslation: boolean; workspaceRoot?: string; semanticQueryUrl?: string;
+  workspaceTranslation: boolean; workspaceRoot?: string; semanticQueryUrl?: string; workspaceAgent?: 'codex' | 'legacy';
 }
 class BackendProbeUnavailable extends Error {}
 

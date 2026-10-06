@@ -1,4 +1,4 @@
-import type { ModuleTarget, WorkspaceEvidenceScope, WorkspaceTranslationContext } from '@forexplore/contracts';
+import type { ModuleTarget, WorkspaceEvidenceScope, WorkspaceHistoryView, WorkspaceTranslationContext } from '@forexplore/contracts';
 import type { TranslationProfile } from './workspace-translation-host';
 import { MAX_RETRIEVAL_SCOPES } from '@forexplore/contracts';
 
@@ -39,6 +39,8 @@ export interface ModuleTranslationScopeInput {
   includeCandidateContext?: boolean;
   /** Visible, revision-pinned history repositories supplied by the trusted host. */
   evidenceScopes?: WorkspaceEvidenceScope[];
+  /** Host-created, immutable snapshot of the selected history module. */
+  historyView?: WorkspaceHistoryView;
 }
 
 export interface ModuleTranslationScope {
@@ -53,6 +55,7 @@ export interface ModuleTranslationScope {
    * implementation it needs instead of receiving an inventory only.
    */
   evidenceScopes: WorkspaceEvidenceScope[];
+  historyView?: WorkspaceHistoryView;
   contextCharacters: number;
   warnings: string[];
 }
@@ -79,6 +82,14 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
     throw new Error('选中的目标模块没有文件清单，无法确定可修改范围。');
   }
   const language = input.targetModule.language?.trim() || 'Text';
+  if (input.historyView) {
+    const selected = input.candidates[0];
+    if (!selected || input.historyView.repositoryId !== selected.repositoryId ||
+        input.historyView.analysisRevision !== selected.analysisRevision ||
+        input.historyView.moduleId !== selected.moduleId) {
+      throw new Error('历史视图与选中的候选模块不一致。');
+    }
+  }
   const warnings: string[] = [];
   const maxContextChars = input.maxContextChars ?? defaultMaxContextChars;
   const context: WorkspaceTranslationContext[] = [];
@@ -187,6 +198,7 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
     profile: { workspaceRoot, sourceLanguage: language, targetLanguage: language, workspaceFiles: writeFiles, writeFiles },
     context,
     evidenceScopes,
+    ...(input.historyView ? { historyView: structuredClone(input.historyView) } : {}),
     contextCharacters: characters,
     warnings,
   };

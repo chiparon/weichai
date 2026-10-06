@@ -90,3 +90,7 @@ experiments/**/bin/
 # Generated Coding Agent baseline runs (keep the checked-in README).
 experiments/enterprise-asset-upgrade/results/*
 !experiments/enterprise-asset-upgrade/results/README.md
+
+# Per-machine Windows/WSL workspace mapping and source sync baseline
+.recast-platforms.json
+.recast-platform-sync.json

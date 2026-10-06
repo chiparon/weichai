@@ -223,12 +223,6 @@ const step = async (label, port, action) => {
   return false;
 };
 
-// Docker Desktop is started here, not demanded from the user: the whole point of
-// this command is that one invocation brings up SeekDB, and the previous version
-// defined the helper without ever calling it, so a stopped Docker produced only
-// "start Docker Desktop and retry".
-await ensureDocker();
-
 const seekdb = await step('SeekDB', seekdbPort, () => {
   if (skipSeekDb || !['127.0.0.1', 'localhost', '::1'].includes(seekdbHost)) return undefined;
   if (!dockerReady()) { console.error('SeekDB: Docker daemon unavailable — start Docker Desktop and retry.'); return false; }

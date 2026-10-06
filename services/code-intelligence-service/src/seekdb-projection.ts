@@ -17,6 +17,16 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Source fragments are the only documents carrying real code bodies; symbol cards hold
+ * name/signature/kind/language/path and module summaries hold the reviewed descriptions.
+ * Setting CODE_INTELLIGENCE_PROJECTION_FRAGMENTS=off builds an index without them, which is
+ * how the fragment view's contribution and cost are measured. Default stays on. */
+const FRAGMENT_DOCUMENTS_ENABLED = (process.env.CODE_INTELLIGENCE_PROJECTION_FRAGMENTS ?? 'on').toLowerCase() !== 'off';
+
+/** With boilerplate off, fragment spans cover declarations only, so licence headers and
+ * import blocks stop consuming embedding work. Default stays on. */
+const BOILERPLATE_DOCUMENTS_ENABLED = (process.env.CODE_INTELLIGENCE_PROJECTION_BOILERPLATE ?? 'on').toLowerCase() !== 'off';
+
 function documentId(scope: StructuralIndex, kind: string, identity: string): string {
   return `search-${sha256(`${scope.repositoryId}\u0000${scope.analysisRevision}\u0000${kind}\u0000${identity}`)}`;
 }
@@ -81,12 +91,17 @@ function* sourceDocuments(index: StructuralIndex, relativePath: string, source: 
   const preferred = declarations.filter((item) => callable.has(item.symbol.kind) || !containers.has(item.symbol.symbolKey));
   const spans: Array<{ start: number; end: number; symbol?: SymbolRecord }> = [];
   let covered = 0;
+  // Gaps between declarations carry licence headers, import blocks and other boilerplate.
+  // CODE_INTELLIGENCE_PROJECTION_BOILERPLATE=off indexes only the declarations themselves.
+  // Files with no preferred declaration (data, config, SQL, docs) keep full coverage, so
+  // skipping gaps never drops a file whose whole content is the gap.
+  const keepGaps = BOILERPLATE_DOCUMENTS_ENABLED || preferred.length === 0;
   for (const item of preferred) {
     if (item.start < covered) continue;
-    if (item.start > covered) spans.push({ start: covered, end: item.start });
+    if (keepGaps && item.start > covered) spans.push({ start: covered, end: item.start });
     spans.push(item); covered = item.end;
   }
-  if (covered < source.length) spans.push({ start: covered, end: source.length });
+  if (keepGaps && covered < source.length) spans.push({ start: covered, end: source.length });
   for (const span of spans) {
     for (let start = span.start; start < span.end;) {
       let end = Math.min(start + MAX_FRAGMENT_CHARS, span.end);
@@ -235,7 +250,9 @@ export class SeekDbProjection implements SearchProjection {
       const symbols = symbolsByPath.get(file.relativePath) ?? [];
       for (const symbol of symbols) await append(symbolDocument(index, symbol));
       const text = await source.read(file.relativePath);
-      if (text !== null) for (const document of sourceDocuments(index, file.relativePath, text, symbols)) await append(document);
+      if (text !== null && FRAGMENT_DOCUMENTS_ENABLED) {
+        for (const document of sourceDocuments(index, file.relativePath, text, symbols)) await append(document);
+      }
     }
     await flush();
   }
@@ -247,9 +264,11 @@ export class SeekDbProjection implements SearchProjection {
   ): Promise<void> {
     signal?.throwIfAborted();
     const documents = index.symbols.map((symbol) => symbolDocument(index, symbol));
-    for (const [relativePath, source] of sourceTexts) {
-      signal?.throwIfAborted();
-      documents.push(...sourceDocuments(index, relativePath, source, index.symbols.filter((symbol) => symbol.relativePath === relativePath)));
+    if (FRAGMENT_DOCUMENTS_ENABLED) {
+      for (const [relativePath, source] of sourceTexts) {
+        signal?.throwIfAborted();
+        documents.push(...sourceDocuments(index, relativePath, source, index.symbols.filter((symbol) => symbol.relativePath === relativePath)));
+      }
     }
     const repository = await this.store.getRepository(index.repositoryId);
     const scope = { repositoryId: index.repositoryId, analysisRevision: index.analysisRevision };

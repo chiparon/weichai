@@ -18,6 +18,26 @@ export interface WorkspaceEvidenceScope {
   projectId?: string;
 }
 
+/**
+ * Host-created, read-only snapshot of the selected history module.  The
+ * absolute root is an internal hand-off between the trusted extension host
+ * and the local adaptation service; it is never accepted from the webview.
+ * Only the listed repository-relative files may be copied into an Agent
+ * staging workspace.
+ */
+export interface WorkspaceHistoryView {
+  root: string;
+  files: string[];
+  repositoryId: string;
+  analysisRevision: string;
+  projectId?: string;
+  moduleId: string;
+  manifestHash: string;
+  /** Host-created manifest identity for the direct-read history hand-off. */
+  runId?: string;
+  generatedAt?: string;
+}
+
 /** Shared ceiling for revision-scoped history evidence queries. */
 export const MAX_RETRIEVAL_SCOPES = 64;
 
@@ -31,11 +51,13 @@ export interface WorkspaceTranslationRequest {
   /** Exact workspace-relative files that this task may create or update. */
   writeFiles: string[];
   /**
-   * Bounded history revisions the agent may query itself through the read-only
-   * semantic index. Absent or empty means the on-demand evidence tool is not
-   * offered at all.
+   * Bounded history revisions the legacy tool-loop agent may query through the
+   * read-only semantic index. The Codex workspace runtime uses historyView
+   * direct reads and never exposes query_evidence.
    */
   evidenceScopes?: WorkspaceEvidenceScope[];
+  /** Optional host-created source snapshot for direct Agent inspection. */
+  historyView?: WorkspaceHistoryView;
 }
 
 /** One on-demand evidence query, recorded so the run stays auditable. */
@@ -110,6 +132,35 @@ export interface WorkspaceTranslationRun {
     command: WorkspaceCompileCommand;
     criteria: Array<{ path: string; hash: string }>;
     runs: Array<WorkspaceCompilation & { sourceSnapshot: string; planHash: string; filesUnchanged: boolean }>;
+  };
+  /** Runtime provenance for audit/debugging; never contains prompts or source. */
+  agent?: {
+    kind: "codex" | "legacy-tool-loop";
+    command: string;
+    model?: string;
+    startedAt: string;
+    durationMs?: number;
+    exitCode?: number | null;
+    inputChars?: number;
+    outputChars?: number;
+    usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
+    historyView?: { repositoryId: string; analysisRevision: string; moduleId: string; files: number; manifestHash: string; runId?: string; generatedAt?: string };
+    /** Per-stage provenance. Prompts and source contents are intentionally omitted. */
+    stages?: Array<{
+      stage: "analyzer" | "translator";
+      sandbox: "read-only" | "workspace-write";
+      command: string;
+      model?: string;
+      startedAt: string;
+      durationMs: number;
+      exitCode?: number | null;
+      inputChars?: number;
+      outputChars?: number;
+      usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
+      readFiles?: string[];
+    }>;
+    /** Number of changed source lines across the accepted diff. */
+    incrementalLines?: number;
   };
 }
 export interface WorkspaceTranslationEvent { at: string; phase: WorkspaceTranslationStatus; message: string; }

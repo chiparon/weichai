@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { moduleFileHash } from './module-translation-handoff';
-import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceTranslationContext, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
+import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView, type WorkspaceTranslationContext, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
 import type { HostToWebviewMessage, WebviewToHostMessage } from './protocol/messages';
 
 export interface TranslationProfile {
@@ -27,6 +27,8 @@ export interface WorkspaceTranslationModuleScope {
   context: WorkspaceTranslationContext[];
   /** Read-only history revisions the agents may query on demand. */
   evidenceScopes?: WorkspaceEvidenceScope[];
+  /** Host-created source snapshot; only its manifest and opaque metadata reach the run record. */
+  historyView?: WorkspaceHistoryView;
   /** Bounded, non-blocking observations about the derived scope. */
   warnings?: string[];
   /** Snapshot captured by the host when the user prepares a module translation. */
@@ -37,6 +39,7 @@ export interface WorkspaceTranslationModuleScope {
 export class WorkspaceTranslationHost {
   private readonly starts = new Map<string, Promise<WorkspaceTranslationRun>>();
   private readonly runKeys = new Map<string, string>();
+  private readonly historyRoots = new Map<string, string>();
   private moduleScope?: { id: string; scope: WorkspaceTranslationModuleScope };
   constructor(private readonly configuration: () => { url: string; token?: string; profile?: string },
     private readonly transport: typeof fetch = (...args) => fetch(...args)) {}
@@ -111,7 +114,8 @@ export class WorkspaceTranslationHost {
         const input = { spec: scope ? moduleSpec(scope, undefined) : '',
           sourceLanguage: profile!.sourceLanguage, targetLanguage: profile!.targetLanguage,
           workspaceFiles: profile!.workspaceFiles, writeFiles: profile!.writeFiles, context,
-          ...(evidenceScopes.length ? { evidenceScopes } : {}) };
+          ...(evidenceScopes.length ? { evidenceScopes } : {}),
+          ...(scope?.historyView ? { historyView: structuredClone(scope.historyView) } : {}) };
         // Do not repeat a write request if the UI delivers the same operation twice.
         const startKey = JSON.stringify([url, profile, intent.moduleScopeId ?? '']);
         let pending = this.starts.get(startKey);
@@ -133,6 +137,7 @@ export class WorkspaceTranslationHost {
         }
         run = await pending;
         this.runKeys.set(run.id, startKey);
+        if (scope?.historyView) this.historyRoots.set(run.id, scope.historyView.root);
       } else {
         if (!intent.runId || !/^[a-f0-9-]{36}$/.test(intent.runId)) throw new Error('无效的运行编号。');
         // Check the durable run before any action, including after host restart.
@@ -145,7 +150,21 @@ export class WorkspaceTranslationHost {
           this.runKeys.delete(run.id);
         }
       }
-      return { type: 'WORKSPACE_TRANSLATION_RESULT', requestId: intent.requestId, run };
+      // The adaptation service needs the internal history-view root to resume
+      // a run, but that absolute path is host-only and must never cross into
+      // the webview response.
+      const visibleRun = structuredClone(run);
+      if (visibleRun.request?.historyView) {
+        delete visibleRun.request.historyView;
+      }
+      if (run.status === 'completed' || run.status === 'rolled-back') {
+        const historyRoot = this.historyRoots.get(run.id) ?? scope?.historyView?.root;
+        if (historyRoot) {
+          this.historyRoots.delete(run.id);
+          void rm(historyRoot, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+      return { type: 'WORKSPACE_TRANSLATION_RESULT', requestId: intent.requestId, run: visibleRun };
     } catch (error) {
       return { type: 'WORKSPACE_TRANSLATION_ERROR', requestId: intent.requestId,
         message: error instanceof Error ? error.message : '翻译操作失败。' };
@@ -165,7 +184,7 @@ function parseProfile(raw: string): TranslationProfile {
 
 /** Identity covers the reviewed file scope and the module package inventory. */
 function canonicalScope(scope: WorkspaceTranslationModuleScope): string {
-  return JSON.stringify([scope.label, scope.profile, scope.spec, scope.context, scope.evidenceScopes, scope.fileHashes]);
+  return JSON.stringify([scope.label, scope.profile, scope.spec, scope.context, scope.evidenceScopes, scope.historyView, scope.fileHashes]);
 }
 
 /** A module run's specification is host-owned; a task requirement only adds detail. */

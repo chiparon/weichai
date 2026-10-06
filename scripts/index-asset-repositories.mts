@@ -67,15 +67,23 @@ const available = existsSync(assetRoot)
     try { return statSync(join(assetRoot, name)).isDirectory(); } catch { return false; }
   })
   : [];
-const requested = argument('repos')?.split(',').map((value) => value.trim()).filter(Boolean) ?? available;
+const target = argument('target');
+// Any other history material, e.g. a large external checkout kept outside the dataset.
+const historyPaths = argument('history')?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+const requested = argument('repos')?.split(',').map((value) => value.trim()).filter(Boolean)
+  // A caller that names a target or extra paths does not want the whole dataset as well:
+  // defaulting to every asset there silently re-indexes hours of work.
+  ?? ((target || historyPaths.length) ? [] : available);
 const unknown = requested.filter((name) => !available.includes(name));
 if (unknown.length) throw new Error(`Unknown asset repositories: ${unknown.join(', ')}. Available: ${available.join(', ')}`);
 
 const inputs: Array<{ localPath: string; role: 'history' | 'target' }> = requested.map((name) => ({
   localPath: join(assetRoot, name), role: 'history' as const,
 }));
-const target = argument('target');
 if (target) inputs.push({ localPath: resolve(target), role: 'target' });
+for (const path of historyPaths) {
+  inputs.push({ localPath: resolve(path), role: 'history' });
+}
 
 /** Stands in for `context.globalState`: repository identity is resolved from the registry by path. */
 class MemoryState implements RepositoryIdentityStore {

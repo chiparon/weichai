@@ -88,6 +88,16 @@ describe("adaptation service config", () => {
     expect(config.corsOrigin).toBe("https://example.com");
   });
 
+  it("defaults workspace translation to the constrained Codex runtime", () => {
+    const config = loadConfig({
+      ADAPTATION_WORKSPACE_TRANSLATION_ENABLED: "true",
+      ADAPTATION_WORKSPACE_TRANSLATION_TOKEN: "x".repeat(32),
+      ADAPTATION_WORKSPACE_COMPILE_COMMAND: JSON.stringify({ executable: "dotnet", args: ["build"] }),
+    });
+    expect(config.workspaceTranslation?.agent).toBe("codex");
+    expect(config.workspaceTranslation?.maxModelTurns).toBe(4);
+  });
+
   it("allows startup without a key so the IDE can supply a request credential", () => {
     expect(loadConfig({}).apiKey).toBe("");
   });

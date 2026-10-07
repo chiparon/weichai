@@ -17,7 +17,7 @@ export type FunctionGroupVerificationRunner = (
 ) => Promise<FunctionGroupVerificationResult>;
 
 function validateFunctionGroupInput(input: FunctionGroupVerificationInput): void {
-  if (input.schemaVersion !== "3.0") throw new Error("Unsupported function-group verification schema version.");
+  if (input.schemaVersion !== "3.1") throw new Error("Unsupported function-group verification schema version.");
   if (!input.functions.length) throw new Error("Function-group verification requires at least one function.");
   const targets = new Set<string>();
   for (const mapping of input.functions) {
@@ -28,7 +28,12 @@ function validateFunctionGroupInput(input: FunctionGroupVerificationInput): void
     if (targets.has(key)) throw new Error(`Duplicate target function in function group: ${mapping.target.path}#${mapping.target.name}`);
     targets.add(key);
   }
-  if (!input.translationRun.id) throw new Error("Function-group verification requires a translation run id.");
+  const unmatched = input.unmatchedFunctions ?? [];
+  const matchedTargets = new Set(input.functions.map(({ target }) => `${target.path}\0${target.name}\0${target.signature ?? ""}`));
+  for (const target of unmatched) {
+    const key = `${target.path}\0${target.name}\0${target.signature ?? ""}`;
+    if (matchedTargets.has(key)) throw new Error(`Function appears in both matched and unmatched mappings: ${target.path}#${target.name}`);
+  }
 }
 
 export function createFunctionGroupVerifier(

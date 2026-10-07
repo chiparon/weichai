@@ -1,4 +1,4 @@
-import type { VerificationIssue } from "../../types.js";
+import type { VerificationIssue, VerificationReason } from "../../types.js";
 import {
   type FunctionGroupTestRun,
   type HostTool,
@@ -47,7 +47,18 @@ function mergeFunctionGroupTests(runs: readonly FunctionGroupTestRun[]): Functio
     testPaths: [...new Set(runs.flatMap((run) => run.testPaths))],
     functions: [...byFunction.values()],
     failures: runs.flatMap((run) => run.failures),
+    reason: mergeReason(runs, [...byFunction.values()]),
   };
+}
+
+function mergeReason(
+  runs: readonly FunctionGroupTestRun[],
+  functions: readonly FunctionGroupTestRun["functions"][number][],
+): VerificationReason {
+  if (runs.some((run) => run.reason === "test-failed" || run.status === "failure")) return "test-failed";
+  if (functions.some((item) => item.reason === "coverage-unavailable")) return "coverage-unavailable";
+  if (functions.some((item) => item.reason === "not-executed" || !item.executed)) return "not-executed";
+  return "verified";
 }
 
 function parseFinishFunctionGroupInput(value: unknown): FinishFunctionGroupInput {

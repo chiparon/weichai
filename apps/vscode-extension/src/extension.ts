@@ -1114,6 +1114,12 @@ async function startAdaptation(host: ExtensionHost, decisionNotes: string): Prom
           projectId: candidate.sourceModule!.projectId,
           moduleId: candidate.sourceModule!.moduleId,
           sourceFiles: candidate.sourceModule!.sourceFiles ?? [candidate.path],
+          relevanceTerms: [
+            run.target.name, run.target.path, run.target.signature,
+            ...(run.target.module?.sourceFiles ?? []), ...(run.target.module?.coreApis ?? []),
+            candidate.sourceModule!.name, candidate.sourceModule!.purpose ?? '',
+            ...(candidate.sourceModule!.coreApis ?? []),
+          ],
         });
         return prepareModuleTranslationScope({ workspaceRoot: run.workspaceFolder.uri.fsPath,
           target: run.target, candidate, requirement: run.requirement, decisionNotes, evidenceScopes, historyView });

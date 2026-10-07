@@ -2,6 +2,10 @@ namespace AssetUpgradeGateway;
 
 public sealed class OrderPluginBridge
 {
+    private const string RejectedAction = "order.rejected";
+    private const string RolledBackAction = "order.rolledback";
+    private const string AcceptedAction = "order.accepted";
+
     private readonly IOrderValidator validator;
     private readonly IInventoryGateway inventory;
     private readonly IIdempotencyStore idempotency;
@@ -22,10 +26,46 @@ public sealed class OrderPluginBridge
         this.audit = audit;
     }
 
-    public Task<OrderResult> SubmitAsync(
+    public async Task<OrderResult> SubmitAsync(
         OrderRequest order,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("Implementation belongs to the evaluated Agent.");
+        ArgumentNullException.ThrowIfNull(order);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!validator.IsValid(order, out var reason))
+        {
+            audit.Record(new AuditRecord(order.TenantId, order.OrderId, RejectedAction, OrderStatus.Rejected.ToString().ToLowerInvariant(), DateTimeOffset.UtcNow));
+            return new OrderResult(false, OrderStatus.Rejected, null, reason ?? "Order failed validation.");
+        }
+
+        if (idempotency.HasCompleted(order.TenantId, order.OrderId))
+        {
+            return new OrderResult(true, OrderStatus.Accepted, null, "Duplicate request ignored.");
+        }
+
+        try
+        {
+            var reservation = await inventory.ReserveAsync(order, cancellationToken).ConfigureAwait(false);
+            if (!reservation.Reserved)
+            {
+                audit.Record(new AuditRecord(order.TenantId, order.OrderId, RolledBackAction, OrderStatus.RolledBack.ToString().ToLowerInvariant(), DateTimeOffset.UtcNow));
+                return new OrderResult(false, OrderStatus.RolledBack, null, reservation.Detail ?? "Inventory reservation failed.");
+            }
+
+            await committer.CommitAsync(order, reservation, cancellationToken).ConfigureAwait(false);
+            idempotency.MarkCompleted(order.TenantId, order.OrderId);
+            audit.Record(new AuditRecord(order.TenantId, order.OrderId, AcceptedAction, OrderStatus.Accepted.ToString().ToLowerInvariant(), DateTimeOffset.UtcNow));
+            return new OrderResult(true, OrderStatus.Accepted, reservation.ReservationId, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            audit.Record(new AuditRecord(order.TenantId, order.OrderId, RolledBackAction, OrderStatus.RolledBack.ToString().ToLowerInvariant(), DateTimeOffset.UtcNow));
+            return new OrderResult(false, OrderStatus.RolledBack, null, ex.Message);
+        }
     }
 }

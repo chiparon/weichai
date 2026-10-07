@@ -225,13 +225,16 @@ function configureEnvironment(options) {
 function configureWslEnvironmentPassthrough() {
   if (process.platform === 'win32') return;
   const prefixes = ['FOREXPLORE_', 'CODE_INTELLIGENCE_', 'ADAPTATION_', 'RECAST_', 'SEEKDB_'];
-  const explicit = ['DEEPSEEK_API_KEY', 'SEMANTIC_QUERY_PORT_TOKEN', 'CODEX_BIN', 'CODEX_MODEL'];
+  const explicit = ['DEEPSEEK_API_KEY', 'SEMANTIC_QUERY_PORT_TOKEN'];
   const pathNames = new Set([
     'FOREXPLORE_PRELOADED_MANIFEST', 'FOREXPLORE_PRELOADED_WORKSPACE',
     'FOREXPLORE_MODEL_CACHE', 'FOREXPLORE_EMBEDDING_TOOLS', 'RECAST_SERVICES_LOG_DIR',
+    'ADAPTATION_CODEX_HOME',
   ]);
   const names = Object.keys(process.env).filter(name => prefixes.some(prefix => name.startsWith(prefix)) || explicit.includes(name));
-  const entries = (process.env.WSLENV ?? '').split(':').filter(Boolean);
+  const blocked = new Set(['CODEX_BIN', 'CODEX_MODEL']);
+  const entries = (process.env.WSLENV ?? '').split(':').filter(Boolean)
+    .filter(entry => !blocked.has(entry.split('/')[0]));
   for (const name of names) {
     if (entries.some(entry => entry.split('/')[0] === name)) continue;
     entries.push(`${name}/${pathNames.has(name) || /(?:PATH|ROOT|DIR|FILE|CACHE|TOOLS)$/i.test(name) ? 'p' : 'w'}`);

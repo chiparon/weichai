@@ -1,7 +1,7 @@
 import { MAVEN_COVERAGE_GOALS } from "./test-runner.js";
-import { access, chmod, mkdir, readFile, realpath, rm, stat, readdir, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, realpath, rm, rmdir, stat, readdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import type { VerificationInput } from "../types.js";
 import {
   relativePath,
@@ -26,11 +26,46 @@ async function removeGeneratedTree(root: string): Promise<void> {
       if (entry.isDirectory()) await removeGeneratedTree(child);
       else await chmod(child, 0o644);
     }
-    await rm(root, { recursive: true, force: true });
   } catch {
+    // Best effort permission repair; the removal below still runs if a child
+    // has already disappeared or cannot be chmod'ed.
+  }
+  try { await rm(root, { recursive: true, force: true }); } catch {
     // Test artifacts are disposable; a cleanup failure must not change the
     // Host-observed test result or mask the verifier's terminal response.
   }
+}
+
+type EphemeralDirectory = {
+  relativePath: string;
+  cleanup: () => Promise<void>;
+};
+
+/** Create a Host-owned test root without changing the product project permanently. */
+async function createEphemeralDirectory(projectRoot: string, relativeDirectory: string): Promise<EphemeralDirectory> {
+  const absolute = resolve(projectRoot, relativeDirectory);
+  const outside = relative(projectRoot, absolute);
+  if (outside === ".." || outside.startsWith(`..${sep}`) || absolute === projectRoot) {
+    throw new Error(`Ephemeral test root escapes the target project: ${relativeDirectory}`);
+  }
+  const missing: string[] = [];
+  let cursor = absolute;
+  while (!(await directoryExists(cursor))) {
+    missing.push(cursor);
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error(`Could not create ephemeral test root: ${relativeDirectory}`);
+    cursor = parent;
+  }
+  await mkdir(absolute, { recursive: true });
+  return {
+    relativePath: relative(projectRoot, absolute).replaceAll(sep, "/"),
+    cleanup: async () => {
+      await removeGeneratedTree(absolute);
+      for (const directory of missing.slice(1)) {
+        try { await rmdir(directory); } catch { break; }
+      }
+    },
+  };
 }
 
 type ProjectConfig = {
@@ -86,9 +121,18 @@ async function resolveJavaEnvironment(root: string): Promise<TestEnvironment> {
 
   const candidate = candidates[0];
   const config = await readText(candidate.config);
-  const roots = candidate.framework === "maven"
+  let roots = candidate.framework === "maven"
     ? mavenTestRoots(config)
     : gradleTestRoots(config);
+  const hasConfiguredSourceRoot = candidate.framework === "maven"
+    ? mavenTestSourceRoots(config).length > 0
+    : gradleTestSourceRoots(config).length > 0;
+  let cleanup: (() => Promise<void>) | undefined;
+  if (!hasConfiguredSourceRoot && !(await directoryExists(join(root, "src/test/java")))) {
+    const generated = await createEphemeralDirectory(root, "src/test/java");
+    roots = unique([generated.relativePath, ...roots]);
+    cleanup = generated.cleanup;
+  }
   const testRoots = await validateTestRoots(root, roots, candidate.framework);
   return {
     framework: candidate.framework,
@@ -97,6 +141,7 @@ async function resolveJavaEnvironment(root: string): Promise<TestEnvironment> {
       executable: await wrapperOrCommand(root, candidate.framework === "maven" ? "mvnw" : "gradlew"),
       args: candidate.framework === "maven" ? [...MAVEN_COVERAGE_GOALS] : ["test"],
     },
+    ...(cleanup ? { cleanup } : {}),
   };
 }
 
@@ -131,6 +176,7 @@ async function resolveDotnetEnvironment(root: string): Promise<TestEnvironment> 
   const targetFramework = productionText.match(/<TargetFramework(?:s)?[^>]*>\s*([^<]+)\s*<\/TargetFramework(?:s)?>/i)?.[1]?.trim() ?? "net8.0";
   const harnessRelative = `.translation-verifier-tests/${randomUUID()}`;
   const harnessRoot = join(root, harnessRelative);
+  const harnessParent = join(root, ".translation-verifier-tests");
   const testsRelative = `${harnessRelative}/tests`;
   const projectRelative = `${harnessRelative}/AgentTests.csproj`;
   const reference = relative(harnessRoot, productionAbsolute).replaceAll(sep, "/");
@@ -155,7 +201,12 @@ async function resolveDotnetEnvironment(root: string): Promise<TestEnvironment> 
     framework: "dotnet",
     testRoots: [testsRelative],
     targetTest: { executable: "dotnet", args: ["test", projectRelative] },
-    cleanup: async () => { await removeGeneratedTree(harnessRoot); },
+    cleanup: async () => {
+      await removeGeneratedTree(harnessRoot);
+      try { await rmdir(harnessParent); } catch {
+        // Another verifier run may still own a sibling harness.
+      }
+    },
   };
 }
 
@@ -173,20 +224,25 @@ async function resolvePythonEnvironment(root: string): Promise<TestEnvironment> 
         ? /^\s*\[tool:pytest\]/m.test(entries[0] ?? "")
         : /\[tool\.pytest\.ini_options\]/.test(entries[0] ?? ""),
   );
-  if (!config) {
-    throw new Error("Could not find pytest configuration for the Python target project.");
+  const configuredRoots = config ? parsePythonTestPaths(config.entries[0] ?? "") : [];
+  let roots = configuredRoots.length > 0 ? configuredRoots : ["tests"];
+  let cleanup: (() => Promise<void>) | undefined;
+  if (configuredRoots.length === 0 && !(await directoryExists(join(root, roots[0]!)))) {
+    const generated = await createEphemeralDirectory(root, roots[0]!);
+    roots = [generated.relativePath, ...roots.slice(1)];
+    cleanup = generated.cleanup;
   }
-  const roots = parsePythonTestPaths(config.entries[0] ?? "");
-  const testRoots = await validateTestRoots(root, roots.length > 0 ? roots : ["tests"], "pytest");
+  const testRoots = await validateTestRoots(root, roots, "pytest");
   return {
     framework: "pytest",
     testRoots,
     targetTest: {
       executable: await fileExists(join(root, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python"))
         ? join(root, process.platform === "win32" ? ".venv/Scripts/python.exe" : ".venv/bin/python")
-        : process.platform === "win32" ? "python.exe" : "python3",
+      : process.platform === "win32" ? "python.exe" : "python3",
       args: ["-m", "pytest"],
     },
+    ...(cleanup ? { cleanup } : {}),
   };
 }
 
@@ -209,7 +265,13 @@ async function resolveNodeEnvironment(root: string): Promise<TestEnvironment> {
   }
 
   const framework: TestFramework = hasJest ? "jest" : "vitest";
-  const roots = await nodeTestRoots(root, framework, packageJson);
+  let roots = await nodeTestRoots(root, framework, packageJson);
+  let cleanup: (() => Promise<void>) | undefined;
+  if (roots.length === 0) {
+    const generated = await createEphemeralDirectory(root, `.translation-verifier-tests/${randomUUID()}/tests`);
+    roots = [generated.relativePath];
+    cleanup = generated.cleanup;
+  }
   return {
     framework,
     testRoots: await validateTestRoots(root, roots, framework),
@@ -217,6 +279,7 @@ async function resolveNodeEnvironment(root: string): Promise<TestEnvironment> {
       executable: process.platform === "win32" ? "npm.cmd" : "npm",
       args: framework === "jest" ? ["test", "--", "--runInBand"] : ["test", "--"],
     },
+    ...(cleanup ? { cleanup } : {}),
   };
 }
 
@@ -229,12 +292,20 @@ function mavenTestRoots(xml: string): string[] {
   return unique(roots.length > 0 ? roots : ["src/test/java"]);
 }
 
+function mavenTestSourceRoots(xml: string): string[] {
+  return allTagValues(xml, "testSourceDirectory");
+}
+
 function gradleTestRoots(script: string): string[] {
   const roots = [
     ...allCallValues(script, "java.srcDirs"),
     ...allCallValues(script, "resources.srcDirs"),
   ];
   return unique(roots.length > 0 ? roots : ["src/test/java"]);
+}
+
+function gradleTestSourceRoots(script: string): string[] {
+  return allCallValues(script, "java.srcDirs");
 }
 
 function parsePythonTestPaths(config: string): string[] {
@@ -274,7 +345,7 @@ async function nodeTestRoots(
       if (derived.length > 0) return unique(derived);
     }
   }
-  throw new Error(`The ${framework} configuration must declare test roots.`);
+  return [];
 }
 
 async function validateTestRoots(
@@ -371,6 +442,10 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function directoryExists(path: string): Promise<boolean> {
+  try { return (await stat(path)).isDirectory(); } catch { return false; }
 }
 
 async function anyFileExists(root: string, names: readonly string[]): Promise<boolean> {

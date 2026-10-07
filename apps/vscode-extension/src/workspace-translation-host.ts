@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { moduleFileHash } from './module-translation-handoff';
-import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView, type WorkspaceTranslationContext, type WorkspaceTranslationMode, type WorkspaceTranslationRequest, type WorkspaceTranslationRun } from '@forexplore/contracts';
+import { MAX_RETRIEVAL_SCOPES, type WorkspaceEvidenceScope, type WorkspaceHistoryView, type WorkspaceTranslationContext, type WorkspaceTranslationMode, type WorkspaceTranslationRequest, type WorkspaceTranslationRun, type WorkspaceVerificationFeedback } from '@forexplore/contracts';
 import type { HostToWebviewMessage, WebviewToHostMessage } from './protocol/messages';
 
 export interface TranslationProfile {
@@ -64,6 +64,21 @@ export class WorkspaceTranslationHost {
 
   get activeModuleScopeId(): string | undefined {
     return this.moduleScope?.id;
+  }
+
+  /** Host-only verifier feedback path; this is deliberately outside Webview actions. */
+  async repairAfterVerification(runId: string, feedback: WorkspaceVerificationFeedback): Promise<WorkspaceTranslationRun> {
+    if (!/^[a-f0-9-]{36}$/.test(runId)) throw new Error('无效的运行编号。');
+    const { url, token } = this.configuration();
+    if (!token) throw new Error('翻译服务认证未配置。');
+    const endpoint = new URL(url);
+    const base = endpoint.pathname.replace(/\/+$/, '');
+    endpoint.search = ''; endpoint.hash = '';
+    endpoint.pathname = `${base}/v1/workspace-translations/${runId}/verification-repair`;
+    const response = await this.transport(endpoint, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(feedback), signal: AbortSignal.timeout(30000) });
+    const value = await response.json() as WorkspaceTranslationRun & { error?: string };
+    if (!response.ok) throw new Error(value.error ?? `翻译服务返回 ${response.status}`);
+    return value;
   }
 
   async handle(intent: TranslationIntent): Promise<HostToWebviewMessage> {
@@ -161,7 +176,10 @@ export class WorkspaceTranslationHost {
       if (visibleRun.request?.historyView) {
         delete visibleRun.request.historyView;
       }
-      if (run.status === 'completed' || run.status === 'rolled-back') {
+      // Keep a completed module's immutable history-view alive: the host may
+      // submit verifier feedback and re-enter the same Translator run. It is
+      // removed on rollback or when the host session is disposed.
+      if (run.status === 'rolled-back') {
         const historyRoot = this.historyRoots.get(run.id) ?? scope?.historyView?.root;
         if (historyRoot) {
           this.historyRoots.delete(run.id);

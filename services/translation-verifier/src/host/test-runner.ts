@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { parseJacocoReport, parseSurefireReport, parseCobertura, parseIstanbul, parseJUnit, parseNodeTests, parsePythonCoverage, parseTrx, jsonReport, type PythonFunction } from "./coverage-reports.js";
 import { MAX_TEST_OUTPUT_CHARS, readProjectFile, resolveSafePath, type FunctionGroupTestRun, type FunctionGroupTestRunner, type ToolContext, type TargetTestResult, type TargetCoverageResult, type TestSummary } from "./tools/common.js";
+import type { VerificationFunction, VerificationReason } from "../types.js";
 
 const JACOCO = "org.jacoco:jacoco-maven-plugin:0.8.13";
 export const MAVEN_COVERAGE_GOALS = [`${JACOCO}:prepare-agent`, "test", `${JACOCO}:report`] as const;
@@ -56,6 +57,11 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
       const functionsResult = functions.map((mapping, index) => {
         const coverage = result.coverage[index];
         const executed = coverage?.status === "available" && coverage.targetFunction.executed;
+        const reason: VerificationReason = result.status === "failure"
+          ? "test-failed"
+          : coverage?.status !== "available"
+            ? "coverage-unavailable"
+            : executed ? "verified" : "not-executed";
         return {
           source: { ...mapping.source },
           target: { ...mapping.target },
@@ -63,6 +69,7 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
           executed,
           lineCoverage: coverage?.status === "available" ? coverage.targetFunction.lineCoverage : null,
           branchCoverage: coverage?.status === "available" ? coverage.targetFunction.branchCoverage : null,
+          reason,
         };
       });
       return {
@@ -74,6 +81,7 @@ export function bindFunctionGroupTestRunner(context: RunnerContext): FunctionGro
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
+        reason: result.status === "failure" ? "test-failed" : functionsResult.some((item) => item.reason === "coverage-unavailable") ? "coverage-unavailable" : functionsResult.some((item) => item.reason === "not-executed") ? "not-executed" : "verified",
       } satisfies FunctionGroupTestRun;
     },
   };
@@ -172,7 +180,7 @@ async function runTests(context: RunnerContext, testPath: string): Promise<Targe
 async function runTestsForSubjects(
   context: RunnerContext,
   testPaths: readonly string[],
-  subjects: readonly import("../../types.js").VerificationFunction[],
+  subjects: readonly VerificationFunction[],
 ): Promise<{
   status: "success" | "failure";
   timedOut: boolean;
@@ -183,7 +191,7 @@ async function runTestsForSubjects(
   durationMs: number;
   tests?: TestSummary;
   coverage: TargetCoverageResult[];
-  failures: Array<{ message: string; testPath?: string; suspectedFunctions: import("../../types.js").VerificationFunction[] }>;
+  failures: Array<{ message: string; testPath?: string; suspectedFunctions: VerificationFunction[] }>;
 }> {
   context.budget?.assertActive();
   const coverageRun = await prepareCoverage(context, testPaths, subjects);
@@ -259,7 +267,7 @@ visit(tree)
 print(json.dumps(result))
 `;
 
-async function prepareCoverage(context: RunnerContext, testPaths: readonly string[], subjects: readonly import("../../types.js").VerificationFunction[]): Promise<CoverageRun> {
+async function prepareCoverage(context: RunnerContext, testPaths: readonly string[], subjects: readonly VerificationFunction[]): Promise<CoverageRun> {
   const { targetProjectPath: root, testRunner: runner } = context.runtime;
   const directory = runner === "maven" ? "target/translation-verifier-coverage" : ".translation-verifier-coverage";
   const dataDirectory = resolveSafePath(root, `${directory}/${randomUUID()}`);
@@ -272,12 +280,12 @@ async function prepareCoverage(context: RunnerContext, testPaths: readonly strin
   }
 }
 
-async function configureRunnerCoverage(context: RunnerContext, testPaths: readonly string[], subjects: readonly import("../../types.js").VerificationFunction[], dataDirectory: string): Promise<CoverageRun> {
+async function configureRunnerCoverage(context: RunnerContext, testPaths: readonly string[], subjects: readonly VerificationFunction[], dataDirectory: string): Promise<CoverageRun> {
   const { targetProjectPath: root, testRunner: runner } = context.runtime;
   const testPath = testPaths[0];
   if (!testPath) throw new Error("At least one test path is required.");
   // Unit fixtures may inject a direct Node process as a deterministic timeout
-  // command. It is not a Jest executable, so appending Jest coverage flags
+  // command. It is not a Jest/Vitest executable, so appending coverage flags
   // would make the process exit immediately and hide the timeout behavior.
   if (context.runtime.targetTest.executable === process.execPath && context.runtime.targetTest.args[0] === "-e") {
     return { dataDirectory, args: [] };
@@ -353,7 +361,7 @@ async function report(path: string): Promise<string> {
   if (bytes.length > 16_000_000) throw new Error("Report exceeds the size limit.");
   return bytes.toString("utf8");
 }
-async function collectCoverage(context: RunnerContext, run: CoverageRun, subjects: readonly import("../../types.js").VerificationFunction[]): Promise<{ tests?: TestSummary; coverage: TargetCoverageResult[] }> {
+async function collectCoverage(context: RunnerContext, run: CoverageRun, subjects: readonly VerificationFunction[]): Promise<{ tests?: TestSummary; coverage: TargetCoverageResult[] }> {
   let tests: TestSummary | undefined;
   const { testRunner: runner, targetProjectPath: root } = context.runtime;
   const canonicalRoot = await realpath(root);

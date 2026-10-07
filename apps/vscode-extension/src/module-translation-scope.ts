@@ -41,6 +41,11 @@ export interface ModuleTranslationScopeInput {
   evidenceScopes?: WorkspaceEvidenceScope[];
   /** Host-created, immutable snapshot of the selected history module. */
   historyView?: WorkspaceHistoryView;
+  /**
+   * Target-project files that the Analyzer/Translator may inspect without
+   * modifying.  The write set remains the target module's own files.
+   */
+  readOnlyFiles?: readonly string[];
 }
 
 export interface ModuleTranslationScope {
@@ -80,6 +85,8 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
     throw new Error('模块翻译需要宿主提供绝对的目标工程根目录。');
   }
   const writeFiles = unique(input.targetModule.sourceFiles.map(normalizeRelativePath).filter(Boolean));
+  const readOnlyFiles = unique((input.readOnlyFiles ?? []).map(normalizeRelativePath).filter(Boolean))
+    .filter((file) => !writeFiles.includes(file));
   if (writeFiles.length === 0) {
     throw new Error('选中的目标模块没有文件清单，无法确定可修改范围。');
   }
@@ -194,10 +201,16 @@ export function buildModuleTranslationScope(input: ModuleTranslationScopeInput):
       '## 约束',
       '- 只在 writeFiles 内实现；历史候选模块是证据，不是可修改目标。',
       '- 复用目标工程既有结构与契约，不要为通过编译而删除实现或放宽构建配置。',
-      '- 上下文里只有模块清册与接口时，用 query_evidence 按需取回历史实现，不要凭空猜测行为。',
+      '- 目标工程的 workspaceFiles 可用 read_file 读取且只读；query_evidence 只查询固定历史版本，不要用它查目标工程依赖。',
       `- 待实现的历史候选模块：${input.candidates.length ? input.candidates.map((item) => item.name).join('、') : '（尚未选择候选模块，仅依据已勾选的任务证据）'}`,
     ].filter(Boolean).join('\n'),
-    profile: { workspaceRoot, sourceLanguage: language, targetLanguage: language, workspaceFiles: writeFiles, writeFiles },
+    profile: {
+      workspaceRoot,
+      sourceLanguage: language,
+      targetLanguage: language,
+      workspaceFiles: [...writeFiles, ...readOnlyFiles],
+      writeFiles,
+    },
     context,
     evidenceScopes,
     ...(input.historyView ? { historyView: structuredClone(input.historyView) } : {}),

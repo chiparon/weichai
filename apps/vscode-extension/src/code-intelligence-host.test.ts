@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RepositoryStaticAnalysis } from '@forexplore/contracts';
 import {
   CodeIntelligenceHost,
+  boundHistoryViewFiles,
+  HISTORY_VIEW_MAX_BYTES,
+  HISTORY_VIEW_MAX_FILES,
   codeIntelligenceRuntimeOptionsFromEnvironment,
   type CodeIntelligenceRuntime,
   type RepositoryIdentityStore,
@@ -200,6 +203,29 @@ function createRuntime(options: { languageId?: 'typescript' | 'java' | 'csharp' 
     async close() {},
   };
 }
+
+it('bounds history evidence views while retaining the first source file', () => {
+  const files = ['main.cs', 'large.cs', ...Array.from({ length: 20 }, (_, index) => `small-${index}.cs`)];
+  const sizes = new Map([
+    ['main.cs', 10], ['large.cs', HISTORY_VIEW_MAX_BYTES],
+    ...Array.from({ length: 20 }, (_, index) => [`small-${index}.cs`, 10] as const),
+  ]);
+  const selected = boundHistoryViewFiles(files, sizes);
+  expect(selected[0]).toBe('main.cs');
+  expect(selected).not.toContain('large.cs');
+  expect(selected.length).toBeLessThanOrEqual(HISTORY_VIEW_MAX_FILES);
+  expect(selected.reduce((sum, file) => sum + sizes.get(file)!, 0)).toBeLessThanOrEqual(HISTORY_VIEW_MAX_BYTES);
+});
+
+it('prioritizes target-related history files before applying the byte budget', () => {
+  const files = ['Entry.cs', 'UnrelatedLarge.cs', 'WorkflowDispatcher.cs', 'RetryPolicy.cs', 'UnrelatedSmall.cs'];
+  const sizes = new Map([
+    ['Entry.cs', 10], ['UnrelatedLarge.cs', 90], ['WorkflowDispatcher.cs', 20],
+    ['RetryPolicy.cs', 20], ['UnrelatedSmall.cs', 10],
+  ]);
+  const selected = boundHistoryViewFiles(files, sizes, 3, 50, ['WorkflowDispatcher', 'RetryPolicy']);
+  expect(selected).toEqual(['Entry.cs', 'WorkflowDispatcher.cs', 'RetryPolicy.cs']);
+});
 
 async function temporaryRepository(name: string): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), `forexplore-code-intelligence-${name}-`));

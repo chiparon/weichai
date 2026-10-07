@@ -4,7 +4,7 @@ import type { FunctionGroupVerificationInput } from "./types.js";
 import { createSingleAgentFunctionGroupTask } from "./strategies/single-agent-function-group/strategy.js";
 
 const input: FunctionGroupVerificationInput = {
-  schemaVersion: "3.0",
+  schemaVersion: "3.1",
   sourceLanguage: "C#",
   targetLanguage: "Java",
   sourceProjectPath: "/tmp/source",
@@ -20,12 +20,6 @@ const input: FunctionGroupVerificationInput = {
       target: { path: "src/PriceRule.java", name: "apply" },
     },
   ],
-  translationRun: {
-    id: "run-1",
-    changes: [],
-    compilations: [],
-    acceptance: "compilation-only",
-  },
 };
 
 describe("createFunctionGroupVerifier", () => {

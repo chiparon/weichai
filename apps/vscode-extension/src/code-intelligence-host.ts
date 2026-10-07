@@ -33,6 +33,70 @@ import { platformLocalPath } from '../../../services/code-intelligence-service/s
 import { createIndexingProgressReporter, indexingProgressMessage, isIndexingCancellation,
   type IndexingProgress, type RepositoryIndexingProgress } from './indexing-progress';
 
+/**
+ * A history-view is evidence for one module, not a checkout of the whole
+ * historical subsystem. Keep the view small enough that an Analyzer cannot
+ * accidentally spend its entire context on a bulk `cat` command. The first
+ * source file is always retained because the verifier uses it as the source
+ * function path.
+ */
+export const HISTORY_VIEW_MAX_FILES = 8;
+export const HISTORY_VIEW_MAX_BYTES = 128_000;
+
+const historyPathStopWords = new Set(['src', 'main', 'test', 'tests', 'java', 'csharp', 'cs', 'com', 'org', 'net', 'example']);
+
+function historyTokens(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length >= 3 && !historyPathStopWords.has(token));
+}
+
+function historyFileRelevance(file: string, terms: readonly string[]): number {
+  const normalized = file.toLowerCase();
+  // Score the basename rather than the whole path. A module-level directory
+  // term (for example `Nop.Core.Infrastructure`) is shared by every file and
+  // must not make all candidates tie before the size fallback is applied.
+  const basename = normalized.split('/').at(-1) ?? normalized;
+  const compactPath = basename.replace(/[^a-z0-9]+/g, '');
+  const fileTokens = new Set(historyTokens(basename));
+  let score = 0;
+  for (const term of terms) {
+    const compactTerm = term.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (compactTerm.length >= 4 && compactPath.includes(compactTerm)) score += 10;
+    const tokens = historyTokens(term);
+    if (!tokens.length) continue;
+    const matches = tokens.filter((token) => fileTokens.has(token)).length;
+    score += matches / tokens.length;
+  }
+  return score;
+}
+
+export function boundHistoryViewFiles(
+  files: readonly string[],
+  sizes: ReadonlyMap<string, number>,
+  maxFiles = HISTORY_VIEW_MAX_FILES,
+  maxBytes = HISTORY_VIEW_MAX_BYTES,
+  relevanceTerms: readonly string[] = [],
+): string[] {
+  const unique = [...new Set(files)];
+  if (!unique.length) return [];
+  const selected: string[] = [unique[0]!];
+  let bytes = Math.max(0, sizes.get(unique[0]!) ?? 0);
+  const ranked = unique.slice(1).map((file, index) => ({ file, index, score: historyFileRelevance(file, relevanceTerms), size: Math.max(0, sizes.get(file) ?? 0) }));
+  if (ranked.some((item) => item.score > 0)) {
+    ranked.sort((left, right) => right.score - left.score || left.index - right.index);
+  }
+  for (const { file, size } of ranked) {
+    if (selected.length >= maxFiles) break;
+    if (bytes + size > maxBytes) continue;
+    selected.push(file);
+    bytes += size;
+  }
+  return selected;
+}
+
 /** Local-only SeekDB configuration; credentials never cross a UI boundary. */
 export interface SeekDbRuntimeConfig {
   host: string;
@@ -612,13 +676,17 @@ export class CodeIntelligenceHost {
     return runtime.moduleImplementationSearch.search({ ...request, repositoryIds }, signal);
   }
 
-  async historyEvidenceScopes(selected: RepositoryRevisionScope): Promise<WorkspaceEvidenceScope[]> {
+  async historyEvidenceScopes(selected: RepositoryRevisionScope & { projectId?: ProjectId }): Promise<WorkspaceEvidenceScope[]> {
     const runtime = await this.runtime();
     if (!selected || !this.#visibleRepositoryIds.has(selected.repositoryId)) throw new Error('候选仓库不在当前窗口的参考范围。');
     const repository = await runtime.registry.get(selected.repositoryId);
     const revision = await runtime.store.getRevision(selected);
     if (repository?.role !== 'history' || !revision || !['ready', 'superseded'].includes(revision.status)) throw new Error('历史候选版本已不可查询，请重新检索。');
-    const scopes: WorkspaceEvidenceScope[] = [{ repositoryId: selected.repositoryId, analysisRevision: selected.analysisRevision }];
+    const scopes: WorkspaceEvidenceScope[] = [{
+      repositoryId: selected.repositoryId,
+      analysisRevision: selected.analysisRevision,
+      ...(selected.projectId ? { projectId: selected.projectId } : {}),
+    }];
     for (const reference of await runtime.registry.list?.() ?? []) {
       if (!this.#visibleRepositoryIds.has(reference.repositoryId) || reference.role !== 'history' ||
           reference.repositoryId === selected.repositoryId) continue;
@@ -632,8 +700,8 @@ export class CodeIntelligenceHost {
   }
 
   /**
-   * Materialize only the selected history module into a temporary, immutable
-   * view.  The returned root is an internal hand-off for the local adaptation
+   * Materialize a bounded, immutable evidence view for the selected history
+   * module.  The returned root is an internal hand-off for the local adaptation
    * service; callers never publish it to the webview or the model.  Every file
    * is checked against the registered history repository before it is copied.
    */
@@ -645,6 +713,8 @@ export class CodeIntelligenceHost {
     projectId?: ProjectId;
     moduleId: string;
     sourceFiles: readonly string[];
+    /** Target symbols and paths used only to prioritize files in a bounded view. */
+    relevanceTerms?: readonly string[];
   }): Promise<WorkspaceHistoryView> {
     if (!this.#visibleRepositoryIds.has(selected.repositoryId)) {
       throw new Error('候选仓库不在当前窗口的参考范围。');
@@ -663,6 +733,18 @@ export class CodeIntelligenceHost {
     const sourceRoot = await realpath(platformLocalPath(repository.localPath));
     const files = [...new Set(selected.sourceFiles.map(normalizeHistoryPath))];
     if (!files.length || files.length > 256 || files.some((file) => !file)) throw new Error('历史候选模块没有有效的源文件清单（最多 256 个文件）。');
+    // Validate and measure every candidate file at the trusted host boundary,
+    // then materialize only a bounded evidence view. The first file remains in
+    // the view for verifier compatibility; the remaining files are retained in
+    // their indexed order until the file/byte budget is reached.
+    const fileSizes = new Map<string, number>();
+    for (const file of files) {
+      const source = await safeHistoryFile(sourceRoot, file);
+      const stat = await lstat(source);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`历史候选文件不是普通文件：${file}`);
+      fileSizes.set(file, stat.size);
+    }
+    const viewFiles = boundHistoryViewFiles(files, fileSizes, HISTORY_VIEW_MAX_FILES, HISTORY_VIEW_MAX_BYTES, selected.relevanceTerms ?? []);
     const runId = randomUUID();
     let targetRoot = selected.workspaceRoot?.trim();
     if (!targetRoot && this.#selectedTarget) {
@@ -676,10 +758,8 @@ export class CodeIntelligenceHost {
     const generatedAt = new Date().toISOString();
     const manifestEntries: Array<[string, string]> = [];
     try {
-      for (const file of files) {
+      for (const file of viewFiles) {
         const source = await safeHistoryFile(sourceRoot, file);
-        const stat = await lstat(source);
-        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`历史候选文件不是普通文件：${file}`);
         const bytes = await readFile(source);
         const destination = path.join(root, 'source', ...file.split('/'));
         await mkdir(path.dirname(destination), { recursive: true });
@@ -695,6 +775,7 @@ export class CodeIntelligenceHost {
         repositoryId: selected.repositoryId, analysisRevision: selected.analysisRevision,
         projectId: selected.projectId, moduleId: selected.moduleId, runId, generatedAt,
         files: manifestEntries.map(([file, sha256]) => ({ path: file, sha256 })),
+        omittedFiles: files.filter((file) => !viewFiles.includes(file)),
       }, null, 2), { mode: 0o444 });
       await chmodReadonlyTree(path.join(root, 'source'));
       await chmodReadonlyTree(root);

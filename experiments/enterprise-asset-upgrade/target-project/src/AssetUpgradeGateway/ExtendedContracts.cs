@@ -11,15 +11,15 @@ public enum ValidationSeverity { Info, Warning, Error }
 
 public sealed record ValidationIssue(string Code, string Message, ValidationSeverity Severity)
 {
-    public bool BlocksOperation => throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent.");
+    public bool BlocksOperation => Severity == ValidationSeverity.Error;
 }
 
 public sealed record PolicyResult(
     bool Allowed,
     IReadOnlyList<ValidationIssue> Issues)
 {
-    public static PolicyResult Allow() { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
-    public static PolicyResult Deny(params ValidationIssue[] issues) { throw new global::System.NotImplementedException("Implementation belongs to the evaluated Agent."); }
+    public static PolicyResult Allow() => new(true, System.Array.Empty<ValidationIssue>());
+    public static PolicyResult Deny(params ValidationIssue[] issues) => new(false, issues ?? System.Array.Empty<ValidationIssue>());
 }
 
 public sealed record OperationContext(
@@ -130,3 +130,40 @@ public interface IRetryPolicy
     bool CanRetry(int attempts);
     DateTimeOffset NextAttempt(DateTimeOffset now, int attempts);
 }
+
+// Flow-production vocabulary. Entries describe the flattened, roots-first plan
+// handed to a store; results mirror the produced tree; the report summarizes a
+// completed production. Outcomes reuse DeliveryStatus/DeliveryResult.
+public sealed record WorkflowFlowEntry(
+    string TenantId,
+    string EventId,
+    string? ParentEventId,
+    bool IsParent,
+    string? CorrelationId = null);
+
+public sealed record WorkflowFlowResult(
+    string TenantId,
+    string EventId,
+    DeliveryStatus Status,
+    DeliveryResult? Delivery = null,
+    IReadOnlyList<WorkflowFlowResult>? Children = null);
+
+public sealed record FlowProductionReport(
+    string TenantId,
+    string RootEventId,
+    int Produced,
+    int Waiting,
+    IReadOnlyList<string> EventIds);
+
+/// <summary>
+/// Publish outcome carrying the historical IStopProcessingEvent semantics: the
+/// consumer's stop signal is reported as a receipt rather than mutating a shared
+/// event. Outcomes reuse <see cref="DeliveryStatus"/> and tenant/time conventions.
+/// </summary>
+public sealed record EventPublishReceipt(
+    string TenantId,
+    string EventId,
+    DeliveryStatus Status,
+    bool Stopped,
+    DateTimeOffset PublishedAt,
+    string? Detail = null);

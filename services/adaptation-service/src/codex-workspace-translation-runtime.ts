@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import type {
   WorkspaceCompilation, WorkspaceCompileCommand, WorkspaceHistoryView,
   WorkspaceTranslationPlan, WorkspaceTranslationRequest,
-  WorkspaceTranslationRun,
+  WorkspaceTranslationRun, WorkspaceVerificationFeedback,
 } from "@forexplore/contracts";
 import { compileWorkspace, validateWorkspaceCompileCommand } from "./workspace-compiler";
 import { TranslationWorkspaceFiles } from "./workspace-translation-files";
@@ -18,10 +18,13 @@ export interface CodexWorkspaceTranslationRuntimeOptions {
   verification?: { command: WorkspaceCompileCommand; protectedFiles: string[] };
   /** Executable name or absolute path; defaults to `codex`. */
   codexCommand?: string;
-  /** Passed as `codex exec --model`; omitted to use the user's Codex default. */
+  /** Passed as `codex exec --model`; production supplies the isolated DeepSeek model. */
   codexModel?: string;
+  /** Optional isolated Codex configuration directory, passed as CODEX_HOME. */
+  codexHome?: string;
   maxModelTurns?: number;
   timeoutMs?: number;
+  maxVerificationRepairs?: number;
   /** Extra environment is useful for a host-owned Codex provider adapter. */
   environment?: NodeJS.ProcessEnv;
 }
@@ -123,7 +126,8 @@ export class CodexWorkspaceTranslationRuntime {
   private readonly timeoutMs: number;
   private readonly codexCommand: string;
   private readonly codexModel?: string;
-  private readonly environment?: NodeJS.ProcessEnv;
+  private readonly maxVerificationRepairs: number;
+  private readonly environment: NodeJS.ProcessEnv;
   private closing = false;
   private active?: { run: WorkspaceTranslationRun; controller: AbortController; done: Promise<void>; child?: ChildProcess };
 
@@ -131,11 +135,15 @@ export class CodexWorkspaceTranslationRuntime {
     validateWorkspaceCompileCommand(options.compileCommand);
     this.command = structuredClone(options.compileCommand);
     this.files = new TranslationWorkspaceFiles(options.workspaceRoot);
-    this.codexCommand = options.codexCommand?.trim() || process.env.CODEX_BIN?.trim() || "codex";
-    this.codexModel = options.codexModel?.trim() || process.env.CODEX_MODEL?.trim() || undefined;
-    this.environment = options.environment;
+    this.codexCommand = options.codexCommand?.trim() || "codex";
+    this.codexModel = options.codexModel?.trim() || undefined;
+    this.environment = {
+      ...(options.environment ?? {}),
+      ...(options.codexHome?.trim() ? { CODEX_HOME: options.codexHome.trim() } : {}),
+    };
     this.maxTurns = options.maxModelTurns ?? 4;
     this.timeoutMs = options.timeoutMs ?? 1_800_000;
+    this.maxVerificationRepairs = options.maxVerificationRepairs ?? 2;
     if (!Number.isInteger(this.maxTurns) || this.maxTurns < 2 || this.maxTurns > 1000 ||
         !Number.isInteger(this.timeoutMs) || this.timeoutMs < 1_000 || this.timeoutMs > 7_200_000) {
       throw new Error("Invalid Codex workspace translation execution budget.");
@@ -208,6 +216,30 @@ export class CodexWorkspaceTranslationRuntime {
     return this.launch(run);
   }
 
+  /** Re-enter the existing run's Translator with host-observed verifier facts. */
+  repairAfterVerification(id: string, feedback: WorkspaceVerificationFeedback): WorkspaceTranslationRun {
+    this.requireIdle();
+    const run = this.get(id);
+    if (run.status !== "completed") throw new CodexWorkspaceTranslationError(409, "Only a completed translation can receive verifier repair feedback.");
+    if (!feedback || feedback.status !== "failure" || !Number.isInteger(feedback.attempt) || feedback.attempt < 1) {
+      throw new CodexWorkspaceTranslationError(400, "Invalid verifier repair feedback.");
+    }
+    const repairs = run.verificationRepairs ?? [];
+    if (repairs.length >= this.maxVerificationRepairs) {
+      throw new CodexWorkspaceTranslationError(409, `Maximum verifier repair attempts (${this.maxVerificationRepairs}) reached.`);
+    }
+    if (!run.plan) throw new CodexWorkspaceTranslationError(409, "The completed run has no Translator plan to repair.");
+    run.latestVerificationFeedback = structuredClone(feedback);
+    run.verificationRepairs = [...repairs, { at: new Date().toISOString(), attempt: feedback.attempt, feedback: structuredClone(feedback), status: "requested" }];
+    run.status = "translating";
+    run.acceptance = "compilation-only";
+    delete run.error;
+    run.events ??= [];
+    run.events.push({ at: new Date().toISOString(), phase: "translating", message: `宿主 verifier 反馈第 ${feedback.attempt} 轮失败，交由同一 Translator 修复` });
+    this.save(run);
+    return this.launch(run);
+  }
+
   rollback(id: string): WorkspaceTranslationRun {
     this.requireIdle();
     const run = this.get(id);
@@ -247,6 +279,7 @@ export class CodexWorkspaceTranslationRuntime {
       catch (error) {
         run.status = controller.signal.aborted ? "cancelled" : "failed";
         run.error = errorMessage(controller.signal.aborted ? controller.signal.reason : error);
+        if (run.verificationRepairs?.length) run.verificationRepairs[run.verificationRepairs.length - 1].status = "failed";
         this.event(run, run.status, `Codex 任务结束：${run.error.slice(0, 400)}`);
         this.save(run);
       } finally { clearTimeout(timeout); this.active = undefined; }
@@ -257,14 +290,15 @@ export class CodexWorkspaceTranslationRuntime {
 
   private async execute(run: WorkspaceTranslationRun, signal: AbortSignal, active: { child?: ChildProcess }): Promise<void> {
     this.assertVerification(run);
-    const direct = run.request.translationMode === "direct-translator";
+    let direct = run.request.translationMode === "direct-translator";
+    const repair = Boolean(run.latestVerificationFeedback);
     if (direct) {
       run.plan = this.directTranslationPlan(run.request);
       run.completedSteps = [];
       run.status = "translating";
       this.event(run, "translating", "没有可用历史候选，使用需求直实现 Translator 兜底");
       this.save(run);
-    } else {
+    } else if (!repair && !run.plan) {
       // Reserve one invocation for planning; the remaining configured budget is
       // shared by Translator implementation and compiler-repair attempts.
       run.status = "analyzing";
@@ -281,17 +315,41 @@ export class CodexWorkspaceTranslationRuntime {
         const analyzerStage = run.agent?.stages?.at(-1);
         if (analyzerStage) analyzerStage.analyzerOutput = boundedAnalyzerOutput(result.lastMessage).value;
         if (analyzerStage && boundedAnalyzerOutput(result.lastMessage).truncated) analyzerStage.analyzerOutputTruncated = true;
-        if (result.exitCode !== 0) throw new Error(`Codex Analyzer exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
         await this.assertStagingUnchanged(analysisStage);
-        try {
-          run.plan = this.parseAnalyzerPlan(result, run.request);
-        } catch (error) {
-          if (analyzerStage) analyzerStage.analyzerOutputError = errorMessage(error);
-          throw error;
+        let accepted = false;
+        const fallback = (reason: string): void => {
+          if (analyzerStage) {
+            analyzerStage.analyzerOutputError = reason;
+            analyzerStage.analyzerStatus = "fallback";
+            analyzerStage.analyzerFallbackReason = reason;
+          }
+          // A malformed, context-exhausted, or non-zero Analyzer run must not
+          // leave a module untranslated. The Analyzer is advisory; the host can
+          // still give the Translator the complete target scope and requirement.
+          direct = true;
+          run.request.translationMode = "direct-translator";
+          run.plan = this.directTranslationPlan(run.request);
+          run.completedSteps = [];
+          run.status = "translating";
+          this.event(run, "translating", `Analyzer 未提交可用计划，切换需求直实现 Translator 兜底：${reason.slice(0, 240)}`);
+          this.save(run);
+        };
+        if (result.exitCode !== 0) {
+          fallback(`Codex Analyzer exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
+        } else {
+          try {
+            run.plan = this.parseAnalyzerPlan(result, run.request);
+            accepted = true;
+            if (analyzerStage) analyzerStage.analyzerStatus = "accepted";
+          } catch (error) {
+            fallback(errorMessage(error));
+          }
         }
-        run.completedSteps = [];
-        this.event(run, "analyzing", `Codex Analyzer 已提交 ${run.plan.steps.length} 个实现步骤`);
-        this.save(run);
+        if (accepted) {
+          run.completedSteps = [];
+          this.event(run, "analyzing", `Codex Analyzer 已提交 ${run.plan!.steps.length} 个实现步骤`);
+          this.save(run);
+        }
       } finally {
         await rm(analysisStage.root, { recursive: true, force: true }).catch(() => undefined);
       }
@@ -308,7 +366,7 @@ export class CodexWorkspaceTranslationRuntime {
       try {
         const prompt = direct
           ? this.directTranslatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile)
-          : this.translatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile);
+          : this.translatorPrompt(run.request, stage.historyRoot, run.plan!, lastCompile, run.latestVerificationFeedback);
         const result = await this.invokeCodex(stage.root, prompt, signal, active, "workspace-write", "translator");
         this.recordInvocation(run, "translator", "workspace-write", prompt, result, run.request.historyView?.files ?? []);
         if (result.exitCode !== 0) throw new Error(`Codex Translator exited with code ${result.exitCode}: ${result.stderr.slice(0, 600)}`);
@@ -337,7 +395,8 @@ export class CodexWorkspaceTranslationRuntime {
         if (!tested.success || !unchanged) throw new Error("Host behavioral verification failed after Codex translation.");
         run.acceptance = "behavior-verified";
       } else run.acceptance = "compilation-only";
-      run.status = "completed"; this.event(run, "completed", "Codex Analyzer→Translator 翻译完成，宿主编译与验收通过"); this.save(run); return;
+      if (run.verificationRepairs?.length) run.verificationRepairs[run.verificationRepairs.length - 1].status = "completed";
+      run.status = "completed"; this.event(run, "completed", "Codex Translator 修复完成，宿主编译与验收通过"); this.save(run); return;
     }
     throw new Error("Codex translation exhausted its model-turn budget.");
   }
@@ -347,7 +406,8 @@ export class CodexWorkspaceTranslationRuntime {
     return [
       "You are the Analyzer Codex for a RECAST module translation task.",
       "You have read-only access to target/ and history-view/. Do not write, create, delete, rename, or chmod any file.",
-      "Inspect target files and the selected Top-1 history implementation directly from history-view/source when useful.",
+      "Inspect the target write files first. From history-view, select only the two or three files most relevant to the target symbols; do not run bulk find/ls/cat commands or print the entire history module. Use short targeted reads (for example head/sed) and return the plan immediately after that.",
+      "The history-view can contain many large files. Read manifest.json first: omittedFiles lists files deliberately outside this bounded view, and omission is not evidence that the historical module lacks that behavior. Reading every available file is a failure mode: stay within a small evidence sample and rely on file names, interfaces, and the requirement for the remaining mapping.",
       "Return only one JSON object with summary, mappings, dependencies, and ordered steps. Do not return Markdown or source code.",
       "Every step must use only the exact allowed writeFiles. The plan must be concrete enough for a separate Translator Codex to implement without query_evidence.",
       `Requirement:\n${request.spec.replaceAll(this.files.root, "<target>")}`,
@@ -358,21 +418,22 @@ export class CodexWorkspaceTranslationRuntime {
     ].join("\n\n");
   }
 
-  private directTranslatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation): string {
+  private directTranslatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation, feedback?: WorkspaceVerificationFeedback): string {
     const visible = request.workspaceFiles.length ? request.workspaceFiles.join(", ") : "（目标工程可见文件）";
     const allowed = request.writeFiles.join(", ");
     return [
       "You are the Direct Translator Codex for a RECAST module translation task.",
-      "No usable historical implementation was retrieved for this module. Implement the requirement directly from the target workspace and the task specification.",
-      "There is no history evidence to adapt. Do not wait for an Analyzer plan, invent a historical source, or attempt to access files outside this staging workspace.",
+      "The Analyzer plan is unavailable or was deliberately bypassed. Implement the requirement directly from the target workspace and task specification.",
+      "A read-only history-view may be present as optional evidence; use it when useful, but do not wait for an Analyzer plan, invent a historical source, or attempt to access files outside this staging workspace.",
       "Read the target files before writing. Work only under target/ and modify only the exact allowed write files. Do not create build artifacts or change tests, build configuration, or verification criteria.",
       "Preserve existing public contracts and compiler settings. Implement complete behavior required by the specification; do not add stubs or weaken validation.",
       `Requirement:\n${request.spec.replaceAll(this.files.root, "<staging-workspace>")}`,
       `Target files in target/: ${visible}`,
       `Allowed write files (the only files that may differ): ${allowed}`,
       `Synthetic implementation scope (there is no history plan):\n${JSON.stringify(plan, null, 2)}`,
-      `The history-view path is intentionally empty: ${historyRoot}`,
+      `Optional read-only history-view path: ${historyRoot}`,
       compilation ? `The host compiler failed after the previous attempt. Repair these diagnostics:\n${this.safeDiagnostics(compilation.output)}` : "Implement the requirement now and finish after the source implementation is complete.",
+      feedback ? `The host verifier rejected the previous implementation. Repair the same module using these observed facts:\n${JSON.stringify(feedback, null, 2)}` : "",
     ].join("\n\n");
   }
 
@@ -386,7 +447,7 @@ export class CodexWorkspaceTranslationRuntime {
     };
   }
 
-  private translatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation): string {
+  private translatorPrompt(request: WorkspaceTranslationRequest, historyRoot: string, plan: WorkspaceTranslationPlan, compilation?: WorkspaceCompilation, feedback?: WorkspaceVerificationFeedback): string {
     const visible = request.workspaceFiles.length ? request.workspaceFiles.join(", ") : "（目标工程可见文件）";
     const allowed = request.writeFiles.join(", ");
     return [
@@ -400,6 +461,7 @@ export class CodexWorkspaceTranslationRuntime {
       `Implementation plan:\n${JSON.stringify(plan, null, 2)}`,
       `Read-only history-view path: ${historyRoot}/source`,
       compilation ? `The host compiler failed after the previous attempt. Repair these diagnostics:\n${this.safeDiagnostics(compilation.output)}` : "Start by inspecting the target files and implement the plan.",
+      feedback ? `The host verifier rejected the previous implementation. This is feedback from the real Host test run, not a request to change tests or criteria. Repair the same module and compile again:\n${JSON.stringify(feedback, null, 2)}` : "",
       "Do not inspect or attempt to access files outside this staging workspace. Finish after the source implementation is complete.",
     ].join("\n\n");
   }
@@ -418,7 +480,12 @@ export class CodexWorkspaceTranslationRuntime {
     args.push(prompt);
     const startedAt = new Date().toISOString();
     const started = Date.now();
-    const child = spawn(this.codexCommand, args, { cwd: root, env: { ...process.env, ...this.environment }, stdio: ["ignore", "pipe", "pipe"] });
+    const childEnvironment = { ...process.env, ...this.environment };
+    // CODEX_MODEL is a project-local compatibility variable, not part of the
+    // Codex runtime contract. Never let a user's shell setting override the
+    // explicit ADAPTATION_CODEX_MODEL (or the Codex config selected by HOME).
+    if (!Object.prototype.hasOwnProperty.call(this.environment, "CODEX_MODEL")) delete childEnvironment.CODEX_MODEL;
+    const child = spawn(this.codexCommand, args, { cwd: root, env: childEnvironment, stdio: ["ignore", "pipe", "pipe"] });
     active.child = child;
     let stdout = ""; let stderr = "";
     const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
@@ -450,7 +517,11 @@ export class CodexWorkspaceTranslationRuntime {
       /* Codex may have failed before writing a final message. */
     }
     const usage = parseCodexUsage(stdout);
-    return { startedAt, exitCode, stderr, stdout, lastMessage: finalMessage || stdout, outputChars: stdout.length + finalMessage.length, durationMs: Date.now() - started, ...(usage ? { usage } : {}) };
+    // stdout is a JSONL transport stream when --json is enabled. It is kept
+    // separately so the Analyzer parser can inspect event envelopes, but it
+    // must never be presented as the final assistant message. An absent
+    // output-last-message is a real "no final response" condition.
+    return { startedAt, exitCode, stderr, stdout, lastMessage: finalMessage, outputChars: stdout.length + finalMessage.length, durationMs: Date.now() - started, ...(usage ? { usage } : {}) };
   }
 
   private async createStaging(request: WorkspaceTranslationRequest, signal: AbortSignal, plan: WorkspaceTranslationPlan | undefined, analyzer: boolean): Promise<{ root: string; historyRoot: string; baseline: Map<string, string>; historyBaseline: Map<string, string>; planHash?: string }> {
@@ -496,11 +567,18 @@ export class CodexWorkspaceTranslationRuntime {
       if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) throw new Error("manifest is not a regular file");
       manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     } catch { throw new Error("History view manifest is missing or invalid."); }
-    const manifestObject = manifest as { repositoryId?: unknown; analysisRevision?: unknown; projectId?: unknown; moduleId?: unknown; runId?: unknown; generatedAt?: unknown; files?: unknown };
+    const manifestObject = manifest as {
+      repositoryId?: unknown; analysisRevision?: unknown; projectId?: unknown; moduleId?: unknown;
+      runId?: unknown; generatedAt?: unknown; files?: unknown; omittedFiles?: unknown;
+    };
     if (manifestObject.repositoryId !== view.repositoryId || manifestObject.analysisRevision !== view.analysisRevision ||
         manifestObject.moduleId !== view.moduleId || (view.projectId ?? undefined) !== (manifestObject.projectId ?? undefined) ||
         (view.runId ?? undefined) !== (manifestObject.runId ?? undefined) || (view.generatedAt ?? undefined) !== (manifestObject.generatedAt ?? undefined) ||
         !Array.isArray(manifestObject.files)) throw new Error("History view manifest metadata mismatch.");
+    if (manifestObject.omittedFiles !== undefined &&
+        (!Array.isArray(manifestObject.omittedFiles) || manifestObject.omittedFiles.some((file) => typeof file !== "string"))) {
+      throw new Error("Invalid omitted history-view file list.");
+    }
     await writeFile(join(destination, "manifest.json"), JSON.stringify(manifestObject, null, 2) + "\n", { mode: 0o444 });
     const manifestFiles = new Map<string, string>();
     for (const item of manifestObject.files) {
@@ -514,7 +592,10 @@ export class CodexWorkspaceTranslationRuntime {
       signal.throwIfAborted();
       const source = await safeExternalFile(view.root, join("source", ...file.split("/")));
       const bytes = await readFile(source);
-      const target = join(destination, ...file.split("/"));
+      // Keep the same source/ layout as the host-owned view. The Analyzer and
+      // Translator prompts intentionally point at history-view/source, while
+      // manifest.json stays at the history-view root.
+      const target = join(destination, "source", ...file.split("/"));
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, bytes);
       await chmod(target, 0o444);
@@ -583,17 +664,39 @@ export class CodexWorkspaceTranslationRuntime {
     agent.durationMs = stages.reduce((total, item) => total + item.durationMs, 0);
     agent.outputChars = stages.reduce((total, item) => total + (item.outputChars ?? 0), 0);
     agent.inputChars = stages.reduce((total, item) => total + (item.inputChars ?? 0), 0);
-    const usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } = agent.usage ?? {};
-    agent.usage = stages.reduce((usage, item) => ({
-      ...(usage.inputTokens !== undefined || item.usage?.inputTokens !== undefined ? { inputTokens: (usage.inputTokens ?? 0) + (item.usage?.inputTokens ?? 0) } : {}),
-      ...(usage.outputTokens !== undefined || item.usage?.outputTokens !== undefined ? { outputTokens: (usage.outputTokens ?? 0) + (item.usage?.outputTokens ?? 0) } : {}),
-      ...(usage.cacheReadTokens !== undefined || item.usage?.cacheReadTokens !== undefined ? { cacheReadTokens: (usage.cacheReadTokens ?? 0) + (item.usage?.cacheReadTokens ?? 0) } : {}),
-    }), usage);
+    // Recompute totals from the stage records. Starting the reduction with the
+    // previously stored aggregate would add all earlier stages a second time
+    // whenever a later invocation is recorded (e.g. analyzer + translator).
+    const usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } = {};
+    for (const item of stages) {
+      if (usage.inputTokens !== undefined || item.usage?.inputTokens !== undefined) {
+        usage.inputTokens = (usage.inputTokens ?? 0) + (item.usage?.inputTokens ?? 0);
+      }
+      if (usage.outputTokens !== undefined || item.usage?.outputTokens !== undefined) {
+        usage.outputTokens = (usage.outputTokens ?? 0) + (item.usage?.outputTokens ?? 0);
+      }
+      if (usage.cacheReadTokens !== undefined || item.usage?.cacheReadTokens !== undefined) {
+        usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + (item.usage?.cacheReadTokens ?? 0);
+      }
+    }
+    agent.usage = usage;
     agent.exitCode = result.exitCode;
   }
 
   private parseAnalyzerPlan(result: CodexInvocation, request: WorkspaceTranslationRequest): WorkspaceTranslationPlan {
-    const candidates = [result.lastMessage, ...result.stdout.split("\n").reverse()];
+    // `codex exec --json` is a JSONL event stream. Depending on the provider,
+    // --output-last-message may contain that stream instead of the final text,
+    // and the actual assistant response can be nested under item.text/content.
+    // Collect both the direct payloads and those transport-wrapped strings.
+    const candidates: string[] = [];
+    const collect = (value: unknown): void => collectAnalyzerPayloads(value, candidates);
+    collect(result.lastMessage);
+    for (const line of result.stdout.split(/\r?\n/).reverse()) {
+      const text = line.trim();
+      if (!text) continue;
+      candidates.push(text);
+      try { collect(JSON.parse(text)); } catch { /* human-readable or partial JSONL */ }
+    }
     let lastError: unknown;
     for (const raw of candidates) {
       const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -694,6 +797,38 @@ export class CodexWorkspaceTranslationRuntime {
   }
 }
 
+/**
+ * Pull likely final-message payloads out of Codex JSONL transport events.
+ * Command output is intentionally excluded: it can contain hundreds of
+ * kilobytes of source text and is never an implementation plan.
+ */
+function collectAnalyzerPayloads(value: unknown, output: string[], depth = 0): void {
+  if (depth > 6 || value === null || value === undefined) return;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return;
+    output.push(text);
+    if ((text.startsWith("{") || text.startsWith("[")) && text.length <= maxCodexOutput) {
+      try { collectAnalyzerPayloads(JSON.parse(text), output, depth + 1); } catch { /* ordinary message text */ }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectAnalyzerPayloads(item, output, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+  const objectValue = value as Record<string, unknown>;
+  if (["summary", "mappings", "dependencies", "steps"].every((key) => key in objectValue)) {
+    output.push(JSON.stringify(objectValue));
+  }
+  // These are the fields used by Codex's JSONL event variants for an
+  // assistant message. Do not recurse into aggregated_output/command fields.
+  for (const key of ["text", "content", "output_text", "message", "lastMessage", "finalMessage", "response", "result", "item", "data", "parts"]) {
+    if (key in objectValue) collectAnalyzerPayloads(objectValue[key], output, depth + 1);
+  }
+}
+
 function historyViewAudit(view: WorkspaceHistoryView): NonNullable<WorkspaceTranslationRun["agent"]>["historyView"] {
   return { repositoryId: view.repositoryId, analysisRevision: view.analysisRevision, moduleId: view.moduleId, files: view.files.length, manifestHash: view.manifestHash,
     ...(view.runId ? { runId: view.runId } : {}), ...(view.generatedAt ? { generatedAt: view.generatedAt } : {}) };
@@ -733,7 +868,13 @@ async function collectAllFiles(root: string, prefix: string, result: Map<string,
   for (const entry of await readdir(join(root, ...(prefix ? prefix.split("/") : [])), { withFileTypes: true })) {
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
     const absolute = join(root, ...relativePath.split("/"));
-    if (entry.isDirectory()) await collectAllFiles(root, relativePath, result);
+    if (entry.isDirectory()) {
+      // Build/test tools commonly leave bin/obj/node_modules in the staging
+      // copy. They are deliberately invisible to the Agent and must not turn
+      // an otherwise valid source diff into an out-of-scope edit.
+      if (generatedDirectoryNames.has(entry.name) || entry.name.startsWith(".forexpore")) continue;
+      await collectAllFiles(root, relativePath, result);
+    }
     else if (entry.isFile()) result.set(relativePath, snapshotBytes(await readFile(absolute)));
   }
 }

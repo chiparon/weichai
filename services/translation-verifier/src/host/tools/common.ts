@@ -4,6 +4,7 @@ import type {
   FunctionGroupFunctionResult,
   TargetFunctionCoverage,
   VerificationFunction,
+  VerificationReason,
 } from "../../types.js";
 import type { AgentRunBudget } from "../agent.js";
 import { readFile } from "node:fs/promises";
@@ -74,6 +75,7 @@ export type FunctionGroupTestRun = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  reason?: VerificationReason;
 };
 
 export type FunctionGroupTestRunner = {

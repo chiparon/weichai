@@ -82,6 +82,24 @@ export interface WorkspaceTranslationPlan {
   steps: Array<{ id: string; description: string; files: string[]; dependsOn: string[] }>;
 }
 
+/** Host-observed verifier feedback handed back to the same Translator run. */
+export interface WorkspaceVerificationFeedback {
+  attempt: number;
+  status: "failure";
+  reason?: string;
+  issue?: { kind: "translation" | "test" | "environment" | "unknown"; description: string };
+  functions?: Array<{
+    source: { path: string; name: string; signature?: string };
+    target: { path: string; name: string; signature?: string };
+    status: "passed" | "unverified";
+    executed: boolean;
+    lineCoverage: number | null;
+    branchCoverage: number | null;
+    reason?: string;
+  }>;
+  unmatchedFunctions?: Array<{ path: string; name: string; signature?: string }>;
+}
+
 /** Owned by the backend configuration, never by the model or HTTP payload. */
 export interface WorkspaceCompileCommand {
   executable: string;
@@ -133,6 +151,9 @@ export interface WorkspaceTranslationRun {
   error?: string;
   /** A passing fixed test suite is evidence, not a proof of all behaviors. */
   acceptance: "compilation-only" | "behavior-verified";
+  /** Latest host verifier failure awaiting repair by this same Translator. */
+  latestVerificationFeedback?: WorkspaceVerificationFeedback;
+  verificationRepairs?: Array<{ at: string; attempt: number; feedback: WorkspaceVerificationFeedback; status: "requested" | "completed" | "failed" }>;
   verification?: {
     command: WorkspaceCompileCommand;
     criteria: Array<{ path: string; hash: string }>;
@@ -167,6 +188,9 @@ export interface WorkspaceTranslationRun {
       analyzerOutput?: string;
       analyzerOutputTruncated?: boolean;
       analyzerOutputError?: string;
+      /** How the host resolved the Analyzer stage. */
+      analyzerStatus?: "accepted" | "fallback";
+      analyzerFallbackReason?: string;
     }>;
     /** Number of changed source lines across the accepted diff. */
     incrementalLines?: number;

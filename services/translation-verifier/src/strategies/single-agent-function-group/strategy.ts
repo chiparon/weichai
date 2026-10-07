@@ -31,6 +31,7 @@ function toVerificationResult(
   const test = result.functionGroupTest;
   return {
     status: "translationStatus" in result ? result.translationStatus : "failure",
+    ...(test.reason ? { reason: test.reason } : {}),
     ...(result.issue ? { issue: result.issue } : {}),
     functions: test.functions,
   };
@@ -65,7 +66,6 @@ export function createSingleAgentFunctionGroupTask(
       "Inspect the relevant source and target files before making a judgment.",
       "Create tests for the target function group in authorized target test roots, run run_function_group_tests, and use the Host result as the test status.",
       "The Host records a separate result for every target function; do not infer or invent coverage values.",
-      "For C# use xUnit [Fact] tests under the authorized test root; do not create or modify a project file.",
       "After the final test run, call finish_function_group with statuses matching the Host result.",
       "If the task cannot be verified reliably, call report_uncertain instead of guessing.",
       "A terminal tool call must be the only call in its turn.",
@@ -78,8 +78,9 @@ export function createSingleAgentFunctionGroupTask(
       ...input.functions.map(({ source, target }) =>
         `- ${formatFunction(source.path, source.name, source.signature)} -> ${formatFunction(target.path, target.name, target.signature)}`,
       ),
-      `Translation run: ${input.translationRun.id}`,
-      `Translation evidence: ${JSON.stringify(input.translationRun)}`,
+      ...(input.unmatchedFunctions?.length
+        ? [`Unmatched target functions (do not claim they were source-verified): ${input.unmatchedFunctions.map((item) => formatFunction(item.path, item.name, item.signature)).join(", ")}`]
+        : []),
     ].join("\n"),
     tools: [
       createListSourceFilesTool(),

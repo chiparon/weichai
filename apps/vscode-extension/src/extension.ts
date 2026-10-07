@@ -202,7 +202,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // an explicitly non-production VS Code development/test host.
       allowInMemory: context.extensionMode !== vscode.ExtensionMode.Production,
     });
-    const reranker = new ConfiguredModelReranker(() => loadSettings().adaptationApiUrl, () => backend.ensure(), undefined,
+    const reranker = new ConfiguredModelReranker(backendEndpoint, () => backend.ensure(), undefined,
       () => JSON.stringify({ endpoint: loadSettings().adaptationApiUrl, llm: loadSettings().llm }));
     runtimeOptions.moduleCandidateReranker = reranker;
     codeIntelligence = new CodeIntelligenceHost({

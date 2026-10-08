@@ -236,6 +236,8 @@ function CandidateDetail({ target, candidate }: { target: ModuleTarget | null; c
 
 function CodeComparison({ target, candidate }: { target: ModuleTarget | null; candidate: SearchCandidate }) {
   const targetSource = target?.source?.trim();
+  const targetModule = candidate.kind === 'module' ? candidate.sourceModule : null;
+
   return (
     <section className="code-comparison" aria-label="目标模块与参考实现代码对比">
       <header className="code-comparison-header">
@@ -246,6 +248,46 @@ function CodeComparison({ target, candidate }: { target: ModuleTarget | null; ca
           <Columns2 size={12} /> 参考实现 <small>{candidate.language}</small>
         </span>
       </header>
+
+      {targetModule && candidate.kind === 'module' ? (
+        <div className="module-comparison-summary">
+          <div className="comparison-column">
+            <h4>目标模块特征</h4>
+            <dl className="module-comparison-stats">
+              <div>
+                <dt>语言</dt>
+                <dd>{target?.language ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>API 数量</dt>
+                <dd>{target?.signature?.split(/\n/).filter(line => line.trim().startsWith('function') || line.trim().startsWith('class')).length ?? 0}</dd>
+              </div>
+              <div>
+                <dt>状态</dt>
+                <dd>{target?.source ? '已实现' : '待实现'}</dd>
+              </div>
+            </dl>
+          </div>
+          <div className="comparison-column">
+            <h4>参考模块特征</h4>
+            <dl className="module-comparison-stats">
+              <div>
+                <dt>语言</dt>
+                <dd>{candidate.language}</dd>
+              </div>
+              <div>
+                <dt>API 数量</dt>
+                <dd>{targetModule.coreApis?.length ?? 0}</dd>
+              </div>
+              <div>
+                <dt>文件数</dt>
+                <dd>{targetModule.sourceFiles?.length ?? 0}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      ) : null}
+
       <div className="code-comparison-panes">
         <div className="code-comparison-pane is-target">
           {targetSource ? (
